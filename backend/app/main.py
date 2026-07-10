@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import SessionLocal, init_db
 from app.models import OfficialBrand, MarketStudy
-from app.routers import upload, classify, metrics, rounds, resolve, export
+from app.routers import upload, classify, metrics, rounds, resolve, export, codes
 from app.seed import seed_brands, seed_demo_study
 
 
@@ -44,6 +44,7 @@ app.include_router(metrics.router)
 app.include_router(rounds.router)
 app.include_router(resolve.router)
 app.include_router(export.router)
+app.include_router(codes.router)
 
 
 @app.get("/health")
