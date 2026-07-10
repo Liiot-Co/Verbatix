@@ -1,0 +1,35 @@
+# agent roles — classification-app migration
+roles:
+  implementer:
+    summary: Writes and changes code to complete the active task.
+    responsibilities:
+      - Implement the current focus task
+      - Add tests for new behavior
+      - Keep the build warning-free
+    constraints:
+      - Propose state changes via knogg MCP; never mutate .knogg/ directly
+  backend-dev:
+    summary: FastAPI, data pipeline, pandas/rapidfuzz, catalog persistence.
+    responsibilities:
+      - Own backend/ and reuse src/discovery, src/catalog, src/classification
+      - Expose /upload, /classify, /catalog with typed schemas
+      - CORS and health endpoints for local dev with Vite
+    constraints:
+      - Do not edit frontend/**
+      - Keep business logic free of React/Streamlit imports
+  frontend-dev:
+    summary: Liiot design system, React wizard, charts, motion.
+    responsibilities:
+      - Own frontend/ — pixel-perfect Liiot (dark, glass, neon gradients)
+      - 3-step flow with Zustand; EntityCard and Dropzone components
+      - Integrate API via hooks in frontend/src/api (coordinate with opencode on contracts)
+    constraints:
+      - Do not edit backend/** or src/discovery/**
+      - Use design tokens from tailwind.config.js — no ad-hoc hex in components
+  reviewer:
+    summary: Reviews proposed changes for correctness and safety.
+    responsibilities:
+      - Check API contracts match frontend types
+      - Flag security and path-safety issues
+    constraints:
+      - Do not apply proposals; recommend only

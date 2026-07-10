@@ -1,0 +1,74 @@
+# architecture — classification-app (post-migración Liiot)
+vision: "Archivo bruto → dashboard accionable en ≤ 3 pasos."
+
+stack:
+  frontend:
+    framework: "Vite + React + TypeScript"
+    styling: "Tailwind CSS (tokens Liiot)"
+    state: Zustand
+    motion: framer-motion
+    charts: recharts
+    upload: react-dropzone
+    owner: claude
+    path: frontend/
+  backend:
+    framework: FastAPI
+    processing: "pandas, rapidfuzz, openpyxl"
+    persistence: "SQLite (living catalog — src/catalog/store.py)"
+    owner: opencode
+    path: backend/
+  poc_legacy:
+    note: "Streamlit PoC frozen at src/ui/ — reference only"
+    path: src/ui/
+
+components:
+  - name: discovery
+    owner: opencode
+    path: src/discovery/
+    purpose: "Ingest, clean, n-grams, thresholds, fuzzy clustering."
+  - name: catalog
+    owner: opencode
+    path: src/catalog/
+    purpose: "SQLite products, aliases, candidates, human-review promotion."
+  - name: classification
+    owner: opencode
+    path: src/classification/
+    purpose: "Alias-exact + fuzzy labeling against approved catalog."
+  - name: api
+    owner: opencode
+    path: backend/
+    purpose: "REST: POST /upload, POST /classify, GET /catalog."
+  - name: web
+    owner: claude
+    path: frontend/
+    purpose: "3-step wizard UI — Dropzone, EntityCards, Dashboard."
+
+ux_flow:
+  step1:
+    name: "Carga y Descubrimiento"
+    user_action: "Drop Excel/CSV + select text column"
+    api: POST /upload
+    ui: "Glass capsule dropzone + Liiot loader"
+  step2:
+    name: "Revisión Inteligente"
+    user_action: "Approve / reject / merge entity clusters"
+    api: "POST /classify (partial) + session state"
+    ui: "EntityCard — canonical + aliases, ✅/❌"
+  step3:
+    name: "Resultados y Catálogo"
+    user_action: "Explore classified data + export"
+    api: "GET /catalog, POST /classify (finalize)"
+    ui: "KPIs + Recharts neon + export"
+
+data_flow:
+  - "Excel/CSV → /upload → clusters JSON → Step2 review → /classify → catalog DB"
+  - "catalog → classification → metrics JSON → Step3 dashboard"
+
+parallel_lanes:
+  opencode:
+    - backend/**
+    - src/discovery/**
+    - src/catalog/**
+    - src/classification/**
+  claude:
+    - frontend/**

@@ -1,0 +1,19 @@
+services:
+  backend:
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+    command: uvicorn app.main:app --reload --host ${KLASS_HOST} --port ${KLASS_PORT}
+
+  frontend:
+    build:
+      context: ./frontend
+      target: build
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    command: bun run dev -- --host 0.0.0.0
+    ports:
+      - "${FRONTEND_PORT}:5173"
+    environment:
+      VITE_BACKEND_URL: http://backend:8001

@@ -1,0 +1,25 @@
+generated_at: 2026-06-04
+project: classification-app
+focus:
+  stage: Stage 1 — MVP Discovery & Classification
+  task: Cursor lane (catalog+classifier+UI) done; awaiting opencode discovery
+  status: in_progress
+  owner: cursor
+constraints:
+- 'Stack: Streamlit + SQLite + pandas + rapidfuzz (recommended demo stack, §27)'
+- No prior brand dictionary — products are discovered from the survey data itself
+- Always keep both respuesta_original and respuesta_limpia for every answer
+- Discovery candidates require human review before entering the living catalog
+- 'Out of scope for MVP: custom NLP models, multi-user/roles, cloud deploy, CRM, auto-translation'
+- 'Parallel lanes must not share files: opencode owns src/discovery/*, cursor owns src/catalog/*, src/classification/*, src/ui/*'
+next_actions:
+- 'opencode: D1 — Excel ingest + manual open-answer column selection (src/discovery/ingest.py)'
+- 'opencode: D2 — text cleaning + uni/bi/tri-gram extraction + frequency counting (src/discovery/pipeline.py)'
+- 'cursor: C1 — SQLite living-catalog store for products + aliases + candidates (src/catalog/store.py)'
+- 'cursor: C2 — alias-exact + rapidfuzz classifier (src/classification/classifier.py)'
+- 'opencode: D1 — implement src/discovery/ingest.py'
+- 'opencode: D2 — implement src/discovery/pipeline.py'
+- 'opencode: D3 — implement src/discovery/clustering.py'
+recent_decisions: []
+handoff_summary: 'classification-app discovers products from open-ended survey answers and classifies responses against a living catalog. Work is split into two parallel lanes coordinated by knogg: opencode builds the discovery pipeline (ingest -> clean -> n-grams -> count -> threshold -> fuzzy cluster) and cursor builds the catalog store, classifier, and Streamlit dashboard. Claim a task with `knogg task claim <id> --agent <you>` before editing its files.'
+source_hash: 109be163043a2e74

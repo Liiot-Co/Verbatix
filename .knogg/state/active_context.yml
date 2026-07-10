@@ -1,0 +1,54 @@
+project:
+  name: classification-app
+focus:
+  stage: Stage 4 — Learning Loop + Multi-Round Architecture
+  task: Relational DB schema + cascade learning + round management
+  status: in_progress
+
+constraints:
+  - 'Schema: Round → SurveyResponse → OfficialBrand ← BrandVariation (SQLAlchemy/SQLModel)'
+  - 'Pipeline: BrandVariation lookup → RapidFuzz ≥85% → auto_approved | requires_human'
+  - 'Learning: POST /resolve-anomaly inserta BrandVariation + re-clasifica en cascada'
+  - 'Rounds: cada upload vinculado a un round_id; UI permite crear o elegir ronda'
+  - 'Export: GET /export/{round_id} → CSV con JOIN SurveyResponse ⨝ OfficialBrand'
+  - 'Frontend: cascade visual — resolver 1 card auto-limpia siblings con mismo extracted_term'
+  - 'Export button activo solo cuando requires_human queue = 0'
+  - 'Lanes: opencode → backend/**; claude → frontend/**'
+
+next_actions:
+  - 'opencode: O2 — SQLAlchemy models (Round, OfficialBrand, BrandVariation, SurveyResponse) + Alembic migration'
+  - 'opencode: O3 — seed script: poblar OfficialBrand + BrandVariation con diccionario base'
+  - 'opencode: O4 — POST /rounds (create) + GET /rounds (list) + POST /upload requiere round_id'
+  - 'opencode: O5 — pipeline cascade: BrandVariation lookup → RapidFuzz → status + official_brand_id'
+  - 'opencode: O6 — POST /resolve-anomaly: {response_id, resolved_brand} → upsert BrandVariation → cascade re-classify pendientes del mismo round'
+  - 'opencode: O7 — GET /export/{round_id} → CSV JOIN SurveyResponse ⨝ OfficialBrand'
+  - 'claude: CL2 — Round selector en Step1 (crear nueva / elegir existente) antes del Dropzone'
+  - 'claude: CL3 — EntityCards → POST /resolve-anomaly; exit animation framer-motion; contadores live'
+  - 'claude: CL4 — cascade visual: resolver 1 card → auto-collapse hermanas con mismo extracted_term'
+  - 'claude: CL5 — export button condicional (activo cuando queue requires_human = 0)'
+
+api_contract:
+  POST /rounds:
+    body: '{name: string}'
+    response: '{id: number, name: string, created_at: string}'
+  GET /rounds:
+    response: '[{id, name, created_at, total, auto_approved, requires_human}]'
+  POST /upload:
+    body: 'multipart: file, answer_column, round_id (int)'
+    response: '{round_id, total, auto_approved, requires_human, items: SurveyResponseItem[]}'
+  POST /resolve-anomaly:
+    body: '{response_id: number, resolved_brand: string}'
+    response: '{resolved: SurveyResponseItem, cascade_resolved: SurveyResponseItem[]}'
+  GET /metrics/{round_id}:
+    response: '{total, auto_approved, requires_human, manual_resolved, top_brands[]}'
+  GET /export/{round_id}:
+    response: 'CSV stream: original_text, extracted_term, official_brand, confidence, status'
+
+handoff:
+  summary: >
+    Refactor DB a esquema relacional (Round/OfficialBrand/BrandVariation/SurveyResponse).
+    Pipeline ahora cruza BrandVariation (diccionario vivo) antes de RapidFuzz.
+    POST /resolve-anomaly = núcleo del aprendizaje: actualiza BrandVariation + re-clasifica
+    en cascada todos los requires_human del round con el mismo extracted_term.
+    Frontend refleja esto visualmente: resolver 1 card → las hermanas desaparecen solas.
+version: 3

@@ -1,0 +1,41 @@
+name: klass-dev
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: klass-backend:dev
+    container_name: klass-backend
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend:/app         # hot-reload: code changes reflect immediately
+      - ./data:/app/data       # persist SQLite across restarts
+    environment:
+      KLASS_DB_PATH: /app/data/catalog.sqlite
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --log-level info
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    image: klass-frontend:dev
+    container_name: klass-frontend
+    ports:
+      - "4200:5173"
+    volumes:
+      - ./frontend/src:/app/src           # hot-reload source
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/public:/app/public
+    environment:
+      VITE_BACKEND_URL: http://backend:8001
+    depends_on:
+      backend:
+        condition: service_healthy

@@ -1,0 +1,206 @@
+stages:
+- name: Stage 1 — PoC Streamlit
+  goal: Prove discovery + classification pipeline from open survey answers.
+  status: done
+- name: Stage 2 — Migración React + FastAPI (Demo Liiot)
+  goal: Replace Streamlit with Liiot design system UI (3 steps) backed by FastAPI. Step1 Upload/Discover → Step2 Entity review → Step3 Dashboard + export.
+  status: in_progress
+- name: Stage 3 — Classification quality
+  goal: Context rules, ambiguous terms, re-processing rounds, quality metrics.
+  status: todo
+stages_append:
+- name: Stage 1 — PoC Streamlit
+  tasks:
+  - id: D1
+    owner: opencode
+    status: done
+    allowed_roles:
+    - implementer
+    - backend-dev
+    desc: Excel ingest + column selection (src/discovery/ingest.py).
+    files:
+    - src/discovery/ingest.py
+  - id: D2
+    owner: opencode
+    status: done
+    allowed_roles:
+    - implementer
+    - backend-dev
+    desc: Cleaning + n-gram extraction + frequency counts (src/discovery/pipeline.py).
+    files:
+    - src/discovery/pipeline.py
+  - id: D3
+    owner: opencode
+    status: done
+    allowed_roles:
+    - implementer
+    - backend-dev
+    desc: Stopwords + thresholds + rapidfuzz clustering (src/discovery/clustering.py).
+    files:
+    - src/discovery/clustering.py
+  - id: C1
+    owner: cursor
+    status: done
+    allowed_roles:
+    - implementer
+    desc: SQLite living catalog (src/catalog/store.py).
+    files:
+    - src/catalog/store.py
+  - id: C2
+    owner: cursor
+    status: done
+    allowed_roles:
+    - implementer
+    desc: Classifier alias-exact + fuzzy (src/classification/classifier.py).
+    files:
+    - src/classification/classifier.py
+  - id: C3
+    owner: cursor
+    status: done
+    allowed_roles:
+    - implementer
+    desc: Streamlit PoC UI (src/ui/app.py) — superseded by React migration.
+    files:
+    - src/ui/app.py
+- name: Stage 2 — Fase 1 Backend
+  tasks:
+  - id: O1
+    owner: opencode
+    desc: Extract discovery + classification + catalog logic from PoC into reusable Python services (no Streamlit deps). Reuse src/discovery, src/catalog, src/classification.
+    files:
+    - backend/app/services/**
+    - src/discovery/**
+    - src/catalog/**
+    - src/classification/**
+    status: in_progress
+    allowed_roles:
+    - backend-dev
+    - implementer
+  - id: O2
+    owner: opencode
+    desc: 'Scaffold FastAPI project (backend/): main, config, CORS, health, Dockerfile.'
+    files:
+    - backend/**
+    status: in_progress
+    allowed_roles:
+    - backend-dev
+    - implementer
+  - id: O3
+    owner: opencode
+    desc: POST /upload — receive Excel/CSV + answer_column; run clean/tokenize/cluster; return JSON entities + aliases + clusters for Step 1.
+    files:
+    - backend/app/routers/upload.py
+    - backend/app/schemas/**
+    status: in_progress
+    allowed_roles:
+    - backend-dev
+    - implementer
+  - id: O4
+    owner: opencode
+    desc: POST /classify + GET /catalog — persist human approvals; return mapped dataset + metrics for Step 3 dashboard.
+    files:
+    - backend/app/routers/classify.py
+    - backend/app/routers/catalog.py
+    status: in_progress
+    allowed_roles:
+    - backend-dev
+    - implementer
+- name: Stage 2 — Fase 2 UI Foundation
+  tasks:
+  - id: CL1
+    owner: claude
+    desc: Init Vite + React + TypeScript in frontend/ (Knogg workspace).
+    files:
+    - frontend/package.json
+    - frontend/vite.config.ts
+    - frontend/tsconfig.json
+    status: in_progress
+    allowed_roles:
+    - frontend-dev
+    - implementer
+  - id: CL2
+    owner: claude
+    desc: 'Tailwind Liiot tokens: bg #1A0B2E, text #A098B0, gradient #b066ff→#6dd5ed, glassmorphism utilities (backdrop-blur, semi-transparent borders).'
+    files:
+    - frontend/tailwind.config.js
+    - frontend/src/styles/**
+    status: in_progress
+    allowed_roles:
+    - frontend-dev
+    - implementer
+  - id: CL3
+    owner: claude
+    desc: App shell + 3-step wizard (Step1/Step2/Step3) with framer-motion transitions; Zustand store for step index and session payload.
+    files:
+    - frontend/src/App.tsx
+    - frontend/src/store/**
+    - frontend/src/pages/**
+    status: in_progress
+    allowed_roles:
+    - frontend-dev
+    - implementer
+- name: Stage 2 — Fase 3 Integration
+  tasks:
+  - id: CL4
+    owner: claude
+    desc: Step 1 UI — glass capsule Dropzone (react-dropzone), column picker, Liiot loader while clustering runs.
+    files:
+    - frontend/src/pages/Step1Upload.tsx
+    - frontend/src/components/Dropzone.tsx
+    status: in_progress
+    allowed_roles:
+    - frontend-dev
+    - implementer
+  - id: O5
+    owner: opencode
+    desc: Wire Step 1 to POST /upload — API client, types, error handling.
+    files:
+    - frontend/src/api/**
+    - frontend/src/hooks/useUpload.ts
+    status: in_progress
+    allowed_roles:
+    - backend-dev
+    - implementer
+  - id: CL5
+    owner: claude
+    desc: Step 2 — EntityCard per cluster (canonical + aliases); quick actions Approve / Reject / Merge; Zustand review decisions.
+    files:
+    - frontend/src/pages/Step2Review.tsx
+    - frontend/src/components/EntityCard.tsx
+    status: in_progress
+    allowed_roles:
+    - frontend-dev
+    - implementer
+  - id: CL6
+    owner: claude
+    desc: 'Step 3 — Dashboard: KPI cards + Recharts (neon Liiot palette), export catalog.'
+    files:
+    - frontend/src/pages/Step3Dashboard.tsx
+    - frontend/src/components/charts/**
+    status: in_progress
+    allowed_roles:
+    - frontend-dev
+    - implementer
+  - id: O6
+    owner: opencode
+    desc: Wire Step 2→3 to POST /classify + GET /catalog; feed dashboard metrics.
+    files:
+    - frontend/src/hooks/useClassify.ts
+    - frontend/src/hooks/useCatalog.ts
+    status: in_progress
+    allowed_roles:
+    - backend-dev
+    - implementer
+- name: Stage 2 — Fase 4 UX Polish
+  tasks:
+  - id: CL7
+    owner: claude
+    desc: Tech loaders Step1→Step2; dark toasts for approve/reject/export feedback (framer-motion).
+    files:
+    - frontend/src/components/Loader.tsx
+    - frontend/src/components/Toast.tsx
+    status: in_progress
+    allowed_roles:
+    - frontend-dev
+    - implementer
+add_task: null

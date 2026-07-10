@@ -1,0 +1,11 @@
+# decision log
+decisions:
+  - id: ADR-0001
+    title: Migración PoC Streamlit → React + FastAPI (Demo Liiot)
+    status: accepted
+    scope: classification-app
+    reason: >-
+      La PoC validó discovery + classification. El demo Liiot exige UX de 3 pasos,
+      design system dark/glass y separación frontend (Claude) / backend (OpenCode)
+      coordinada por Knogg. FastAPI expone /upload, /classify, /catalog; React consume
+      con Vite + Tailwind tokens Liiot.

@@ -1,0 +1,8 @@
+services:
+  backend:
+    volumes: []
+    command: uvicorn app.main:app --host ${KLASS_HOST:-0.0.0.0} --port ${KLASS_PORT:-8001} --workers 2
+
+  frontend:
+    ports:
+      - "${FRONTEND_PORT:-80}:80"

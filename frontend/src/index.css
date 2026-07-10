@@ -1,0 +1,102 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Noise texture overlay ── */
+@layer base {
+  :root {
+    --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  }
+
+  body {
+    @apply bg-p-bg text-p-text antialiased;
+    background-image: var(--noise);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+}
+
+/* ── Design system components ── */
+@layer components {
+
+  /* Glass card — porcelain surface with soft shadow */
+  .card {
+    @apply bg-white/70 backdrop-blur-glass border border-p-border rounded-2xl shadow-sm;
+    background-image: var(--noise);
+  }
+
+  .card-subtle {
+    @apply bg-p-surface-2/80 backdrop-blur-glass border border-p-border rounded-xl;
+    background-image: var(--noise);
+  }
+
+  /* Primary button — lavanda gradient */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm text-white
+           bg-gradient-to-br from-p-accent to-p-accent-mid
+           hover:opacity-90 active:scale-[0.98] transition-all
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  /* Ghost button */
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-p-text-muted
+           border border-p-border hover:border-p-border-mid hover:text-p-text hover:bg-p-bg-subtle
+           transition-all active:scale-[0.98];
+  }
+
+  /* Danger ghost */
+  .btn-danger {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-p-error
+           border border-p-border hover:bg-red-50 transition-all active:scale-[0.98];
+  }
+
+  /* Confidence bar — filled based on --conf CSS var */
+  .confidence-bar {
+    @apply h-1.5 rounded-full bg-p-bg-subtle overflow-hidden;
+  }
+  .confidence-fill {
+    @apply h-full rounded-full transition-all duration-500;
+    background: linear-gradient(90deg, #7B5EA7, #9B7DC8);
+    width: calc(var(--conf, 0) * 100%);
+  }
+
+  /* Status badges */
+  .badge-auto {
+    @apply text-[10px] font-semibold px-2 py-0.5 rounded-full
+           bg-emerald-50 text-emerald-700 border border-emerald-200;
+  }
+  .badge-human {
+    @apply text-[10px] font-semibold px-2 py-0.5 rounded-full
+           bg-amber-50 text-amber-700 border border-amber-200;
+  }
+  .badge-generic {
+    @apply text-[10px] font-semibold px-2 py-0.5 rounded-full
+           bg-p-bg-subtle text-p-text-faint border border-p-border;
+  }
+
+  /* Input base */
+  .input {
+    @apply w-full bg-white border border-p-border rounded-lg px-3 py-2 text-sm
+           text-p-text placeholder-p-text-faint
+           focus:outline-none focus:ring-2 focus:ring-p-accent/30 focus:border-p-accent-mid
+           transition-all;
+  }
+
+  /* Accent text gradient */
+  .text-accent-gradient {
+    @apply bg-gradient-to-r from-p-accent to-p-accent-mid bg-clip-text text-transparent;
+  }
+
+  /* Shimmer skeleton */
+  .skeleton {
+    @apply rounded-lg bg-gradient-to-r from-p-bg-subtle via-white to-p-bg-subtle;
+    background-size: 200% 100%;
+    @apply animate-shimmer;
+  }
+}
