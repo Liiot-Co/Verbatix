@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { SurveyItem, UploadResult, Metrics } from "../api/types";
+import type { SurveyItem, UploadResult, Metrics, Code } from "../api/types";
 
 export type WizardStage = "upload" | "configure" | "processing" | "review" | "done";
 export type FileStatus = "pending" | "classifying" | "reviewing" | "done" | "error";
@@ -57,6 +57,10 @@ interface WizardState {
     resolved: SurveyItem,
     cascade: SurveyItem[]
   ) => void;
+
+  codebookStudyId: number | null;
+  codebook: Code[];
+  setCodebook: (studyId: number, codes: Code[]) => void;
 }
 
 let toastId = 0;
@@ -120,4 +124,8 @@ export const useWizardStore = create<WizardState>((set) => ({
         }),
       };
     }),
+
+  codebookStudyId: null,
+  codebook: [],
+  setCodebook: (studyId, codes) => set({ codebookStudyId: studyId, codebook: codes }),
 }));

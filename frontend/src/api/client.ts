@@ -97,8 +97,8 @@ export async function createCode(studyId: number, name: string, netId?: number |
   });
 }
 
-export async function setResponseCodes(responseId: number, codeIds: number[]): Promise<unknown> {
-  return request(`/responses/${responseId}/codes`, {
+export async function setResponseCodes(responseId: number, codeIds: number[]): Promise<SurveyItem> {
+  return request<SurveyItem>(`/responses/${responseId}/codes`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code_ids: codeIds }),

@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useWizardStore } from "@/store/useWizardStore";
 import { resolveAnomaly } from "@/api/client";
 import EntityCard from "@/components/EntityCard";
+import CodePicker from "@/components/CodePicker";
 import type { SurveyItem } from "@/api/types";
 
 interface Props {
@@ -237,6 +238,9 @@ export default function ReviewStage({ onAdvance }: Props) {
               onReject={() => handleReject(focusedItem.id)}
               onEdit={(brand) => resolve(focusedItem.id, brand)}
             />
+            <div className="card p-5 mt-3">
+              <CodePicker key={focusedItem.id} item={focusedItem} fileId={activeEntry.id} />
+            </div>
           </div>
         </div>
       ) : (
