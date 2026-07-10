@@ -1,10 +1,26 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import OfficialBrand, SurveyResponse
+from app.models import Code, Net, OfficialBrand, ResponseCode, SurveyResponse
 
 router = APIRouter(prefix="/api", tags=["metrics"])
+
+
+def _code_distribution(items: list, db: Session) -> list[dict]:
+    response_ids = [i.id for i in items]
+    if not response_ids:
+        return []
+    rows = (
+        db.query(Code.name.label("code"), Net.name.label("net"), func.count(ResponseCode.id).label("count"))
+        .join(ResponseCode, ResponseCode.code_id == Code.id)
+        .outerjoin(Net, Code.net_id == Net.id)
+        .filter(ResponseCode.response_id.in_(response_ids))
+        .group_by(Code.id, Net.id)
+        .all()
+    )
+    return [{"net": r.net, "code": r.code, "count": r.count} for r in rows]
 
 
 def _compute(items: list, db: Session) -> dict:
@@ -36,6 +52,7 @@ def _compute(items: list, db: Session) -> dict:
         "generic": generic,
         "manual_resolved": manual,
         "top_brands": [{"brand": b, "count": c} for b, c in top],
+        "code_distribution": _code_distribution(items, db),
     }
 
 
