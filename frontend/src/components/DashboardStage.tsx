@@ -17,20 +17,20 @@ import { useWizardStore } from "@/store/useWizardStore";
 import { getMetrics, exportUrl } from "@/api/client";
 
 const PALETTE = [
-  "#7B5EA7",
-  "#9B7DC8",
-  "#3D7A5F",
-  "#9C7020",
-  "#A03030",
-  "#B0A499",
+  "#7B4FA6",
+  "#E08A4B",
+  "#16A34A",
+  "#D97706",
+  "#DC2626",
+  "#8A8A98",
 ];
 
 const TIP = {
   contentStyle: {
     background: "#fff",
-    border: "1px solid rgba(60,40,20,0.10)",
+    border: "1px solid #EBEBF0",
     borderRadius: 10,
-    color: "#2C2622",
+    color: "#0E0E14",
     fontSize: 12,
   },
 };
@@ -112,7 +112,16 @@ export default function DashboardStage({ onReset }: Props) {
       count: b.count,
     }));
 
-    return { autoPct, statusData, topBrands };
+    const codeDist = metrics.code_distribution ?? [];
+    const maxCodeCount = Math.max(1, ...codeDist.map((c) => c.count));
+    const netGroups = new Map<string, typeof codeDist>();
+    for (const c of codeDist) {
+      const key = c.net ?? "Sin neto";
+      if (!netGroups.has(key)) netGroups.set(key, []);
+      netGroups.get(key)!.push(c);
+    }
+
+    return { autoPct, statusData, topBrands, codeDist, maxCodeCount, netGroups: Array.from(netGroups.entries()) };
   }, [metrics]);
 
   if (doneFiles.length === 0) {
@@ -161,7 +170,10 @@ export default function DashboardStage({ onReset }: Props) {
               download={`clasificacion_${selectedEntry.name}.xlsx`}
               className="btn-primary text-sm"
             >
-              <Download className="w-4 h-4" /> Exportar XLSX
+              <Download className="w-4 h-4" />
+              {derived && derived.codeDist.length > 0
+                ? "Exportar matriz (0/1)"
+                : "Exportar XLSX"}
             </a>
           )}
         </div>
@@ -283,6 +295,40 @@ export default function DashboardStage({ onReset }: Props) {
                 Sin datos aún
               </p>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Cross Net/Code distribution */}
+      {derived && derived.codeDist.length > 0 && (
+        <div className="card p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-p-text">
+            Distribución por neto / código
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4">
+            {derived.netGroups.map(([netName, codes]) => (
+              <div key={netName} className="space-y-1.5">
+                <div className="text-[11px] font-mono uppercase tracking-wider text-p-text-faint">
+                  {netName}
+                </div>
+                {codes.map((c) => (
+                  <div key={c.code} className="flex items-center gap-2">
+                    <span className="text-xs text-p-text-muted w-28 shrink-0 truncate text-right">
+                      {c.code}
+                    </span>
+                    <div className="flex-1 bg-p-bg-subtle rounded h-4 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-p-accent to-p-accent-mid rounded"
+                        style={{ width: `${(c.count / derived.maxCodeCount) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-xs font-mono text-p-text-faint w-8 shrink-0 text-right">
+                      {c.count}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
         </div>
       )}
