@@ -4,6 +4,7 @@ import { useWizardStore, type WizardStage } from "@/store/useWizardStore";
 import { useWizardOrchestrator } from "@/hooks/useWizardOrchestrator";
 import AppShell from "@/components/AppShell";
 import CodebookView from "@/components/CodebookView";
+import HistoryView from "@/components/HistoryView";
 import UploadStage from "@/components/UploadStage";
 import ProcessModal from "@/components/ProcessModal";
 import ReviewStage from "@/components/ReviewStage";
@@ -139,21 +140,13 @@ function ProjectView() {
   );
 }
 
-function HistoryPlaceholder() {
-  return (
-    <div className="flex-1 flex items-center justify-center text-p-text-muted text-sm">
-      Historial de estudios — próximamente.
-    </div>
-  );
-}
-
 export default function App() {
   const view = useWizardStore((s) => s.view);
 
   return (
     <AppShell>
       {view === "project" && <ProjectView />}
-      {view === "history" && <HistoryPlaceholder />}
+      {view === "history" && <HistoryView />}
       {view === "codebook" && <CodebookView />}
       <ToastStack />
     </AppShell>

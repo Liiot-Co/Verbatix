@@ -1,4 +1,4 @@
-import type { Round, UploadResult, ResolveRequest, ResolveResult, Metrics, MarketStudy, Net, Code } from "./types";
+import type { Round, UploadResult, ResolveRequest, ResolveResult, Metrics, MarketStudy, Net, Code, SurveyItem } from "./types";
 
 const BASE = "/api";
 
@@ -103,4 +103,15 @@ export async function setResponseCodes(responseId: number, codeIds: number[]): P
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code_ids: codeIds }),
   });
+}
+
+// ── Historial ────────────────────────────────────────────────────────
+
+export async function getRoundResponses(roundId: number, status?: string): Promise<SurveyItem[]> {
+  const qs = status ? `?status=${status}` : "";
+  return request<SurveyItem[]>(`/rounds/${roundId}/responses${qs}`);
+}
+
+export async function deleteRound(roundId: number): Promise<{ status: string }> {
+  return request(`/rounds/${roundId}`, { method: "DELETE" });
 }

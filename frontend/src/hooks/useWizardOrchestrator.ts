@@ -1,6 +1,7 @@
 import { useCallback } from "react";
-import { useWizardStore } from "@/store/useWizardStore";
-import { createRound, uploadFile, getMetrics } from "@/api/client";
+import { useWizardStore, type FileEntry } from "@/store/useWizardStore";
+import { createRound, uploadFile, getMetrics, getRoundResponses } from "@/api/client";
+import type { Round } from "@/api/types";
 
 function waitUntilFileDone(fileId: string): Promise<void> {
   const current = useWizardStore
@@ -93,6 +94,42 @@ export function useWizardOrchestrator() {
     }
   }, []);
 
+  const continueRound = useCallback(async (round: Round) => {
+    const { setFiles, setActiveFileId, setStage, setActiveStudyId, setView, showToast } =
+      useWizardStore.getState();
+
+    try {
+      const pending = await getRoundResponses(round.id, "requires_human");
+      const entry: FileEntry = {
+        id: crypto.randomUUID(),
+        file: new File([], round.name),
+        name: round.name,
+        column: null,
+        columns: [],
+        roundId: round.id,
+        uploadResult: null,
+        items: pending,
+        metrics: null,
+        status: pending.length > 0 ? "reviewing" : "done",
+      };
+      setFiles([entry]);
+      setActiveFileId(entry.id);
+      if (round.study_id) setActiveStudyId(round.study_id);
+
+      if (pending.length > 0) {
+        setStage("review");
+      } else {
+        const metrics = await getMetrics(round.id);
+        setFiles([{ ...entry, metrics }]);
+        setStage("done");
+      }
+      setView("project");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Error desconocido";
+      showToast(`No se pudo continuar el round: ${msg}`, "error");
+    }
+  }, []);
+
   const resetWizard = useCallback(() => {
     const { setFiles, setStage, setActiveFileId, setFocusedItemIdx } =
       useWizardStore.getState();
@@ -102,5 +139,5 @@ export function useWizardOrchestrator() {
     setFocusedItemIdx(0);
   }, []);
 
-  return { startProcessing, advanceToNextFile, resetWizard };
+  return { startProcessing, advanceToNextFile, resetWizard, continueRound };
 }
