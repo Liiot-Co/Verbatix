@@ -7,3 +7,4 @@ rapidfuzz>=3.10
 python-multipart>=0.0.18
 spacy>=3.7
 sqlalchemy>=2.0
+pytest>=8.0
