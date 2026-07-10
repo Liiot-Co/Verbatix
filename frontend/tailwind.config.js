@@ -5,21 +5,23 @@ export default {
     extend: {
       colors: {
         p: {
-          bg:           "#F5F1EC",
-          "bg-subtle":  "#EDE8E0",
-          surface:      "#FFFFFF",
-          "surface-2":  "#F0EBE3",
-          text:         "#2C2622",
-          "text-muted": "#7A6F68",
-          "text-faint": "#B0A499",
-          accent:       "#7B5EA7",
-          "accent-mid": "#9B7DC8",
-          "accent-soft":"#C4B0E0",
-          border:       "rgba(60,40,20,0.10)",
-          "border-mid": "rgba(60,40,20,0.18)",
-          success:      "#3D7A5F",
-          warning:      "#9C7020",
-          error:        "#A03030",
+          bg:           "var(--p-bg)",
+          "bg-subtle":  "var(--p-bg-subtle)",
+          surface:      "var(--p-surface)",
+          "surface-2":  "var(--p-surface-2)",
+          text:         "var(--p-text)",
+          "text-muted": "var(--p-text-muted)",
+          "text-faint": "var(--p-text-faint)",
+          accent: ({ opacityValue }) =>
+            `oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h)${opacityValue !== undefined ? ` / ${opacityValue}` : ""})`,
+          "accent-mid": ({ opacityValue }) =>
+            `oklch(var(--p-accent-mid-l) var(--p-accent-mid-c) var(--p-accent-mid-h)${opacityValue !== undefined ? ` / ${opacityValue}` : ""})`,
+          "accent-soft":"var(--p-accent-soft)",
+          border:       "var(--p-border)",
+          "border-mid": "var(--p-border-mid)",
+          success:      "var(--p-success)",
+          warning:      "var(--p-warning)",
+          error:        "var(--p-error)",
         },
       },
       fontFamily: {

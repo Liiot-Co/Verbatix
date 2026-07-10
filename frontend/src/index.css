@@ -1,18 +1,33 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ── Noise texture overlay ── */
+/* ── Verbatix Light design tokens ──
+   CSS variables so a future [data-theme=dark] only needs to redefine
+   this block — no component changes. */
 @layer base {
   :root {
-    --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+    --p-bg:            #FAFAFA;
+    --p-bg-subtle:     #F3F3F7;
+    --p-surface:       #FFFFFF;
+    --p-surface-2:     #F8F8FB;
+    --p-text:          #0E0E14;
+    --p-text-muted:    #52525E;
+    --p-text-faint:    #8A8A98;
+    --p-accent-l: 0.64; --p-accent-c: 0.11; --p-accent-h: 292;
+    --p-accent-mid-l: 0.70; --p-accent-mid-c: 0.18; --p-accent-mid-h: 50;
+    --p-accent-soft:   oklch(0.64 0.11 292 / 0.12);
+    --p-border:        #EBEBF0;
+    --p-border-mid:    #D4D4DC;
+    --p-success:       #16A34A;
+    --p-warning:       #D97706;
+    --p-error:         #DC2626;
   }
 
   body {
     @apply bg-p-bg text-p-text antialiased;
-    background-image: var(--noise);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
@@ -24,15 +39,13 @@
 /* ── Design system components ── */
 @layer components {
 
-  /* Glass card — porcelain surface with soft shadow */
+  /* Card — flat surface, soft shadow (Verbatix Light) */
   .card {
-    @apply bg-white/70 backdrop-blur-glass border border-p-border rounded-2xl shadow-sm;
-    background-image: var(--noise);
+    @apply bg-p-surface border border-p-border rounded-2xl shadow-sm;
   }
 
   .card-subtle {
-    @apply bg-p-surface-2/80 backdrop-blur-glass border border-p-border rounded-xl;
-    background-image: var(--noise);
+    @apply bg-p-surface-2 border border-p-border rounded-xl;
   }
 
   /* Primary button — lavanda gradient */
@@ -61,8 +74,7 @@
     @apply h-1.5 rounded-full bg-p-bg-subtle overflow-hidden;
   }
   .confidence-fill {
-    @apply h-full rounded-full transition-all duration-500;
-    background: linear-gradient(90deg, #7B5EA7, #9B7DC8);
+    @apply h-full rounded-full transition-all duration-500 bg-gradient-to-r from-p-accent to-p-accent-mid;
     width: calc(var(--conf, 0) * 100%);
   }
 
@@ -82,7 +94,7 @@
 
   /* Input base */
   .input {
-    @apply w-full bg-white border border-p-border rounded-lg px-3 py-2 text-sm
+    @apply w-full bg-p-surface border border-p-border rounded-lg px-3 py-2 text-sm
            text-p-text placeholder-p-text-faint
            focus:outline-none focus:ring-2 focus:ring-p-accent/30 focus:border-p-accent-mid
            transition-all;
