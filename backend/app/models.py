@@ -55,7 +55,7 @@ class Round(Base):
     name = Column(String, nullable=False, unique=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     study_id = Column(Integer, ForeignKey("market_studies.id"), nullable=True)
-    responses = relationship("SurveyResponse", back_populates="round")
+    responses = relationship("SurveyResponse", back_populates="round", cascade="all, delete-orphan")
     study = relationship("MarketStudy", back_populates="rounds")
 
 
