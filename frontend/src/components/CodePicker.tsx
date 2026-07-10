@@ -15,6 +15,7 @@ export default function CodePicker({ item, fileId }: Props) {
   const codebookStudyId   = useWizardStore((s) => s.codebookStudyId);
   const setCodebook       = useWizardStore((s) => s.setCodebook);
   const resolveItemsForFile = useWizardStore((s) => s.resolveItemsForFile);
+  const recordResolution   = useWizardStore((s) => s.recordResolution);
   const showToast         = useWizardStore((s) => s.showToast);
 
   const [selected, setSelected] = useState<Set<number>>(
@@ -54,8 +55,10 @@ export default function CodePicker({ item, fileId }: Props) {
   const persist = async (next: Set<number>) => {
     setSaving(true);
     try {
+      const wasPending = item.status === "requires_human";
       const updated = await setResponseCodes(item.id, Array.from(next));
       resolveItemsForFile(fileId, updated, []);
+      if (wasPending && updated.status !== "requires_human") recordResolution();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Error al guardar códigos", "error");
     } finally {

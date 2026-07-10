@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Loader2, Zap } from "lucide-react";
+import { Loader2, Zap, PartyPopper } from "lucide-react";
 import { useState } from "react";
 import { useWizardStore } from "@/store/useWizardStore";
 import { resolveAnomaly } from "@/api/client";
 import EntityCard from "@/components/EntityCard";
 import CodePicker from "@/components/CodePicker";
+import SessionSummary from "@/components/SessionSummary";
 import type { SurveyItem } from "@/api/types";
 
 interface Props {
   onAdvance: () => void;
 }
+
+const MILESTONES = [25, 50, 75, 100];
 
 function CascadeBanner({ count, brand }: { count: number; brand: string }) {
   return (
@@ -31,6 +34,21 @@ function CascadeBanner({ count, brand }: { count: number; brand: string }) {
   );
 }
 
+function MilestoneBanner({ pct }: { pct: number }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9, y: -8 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.9 }}
+      transition={{ type: "spring", stiffness: 400, damping: 22 }}
+      className="fixed top-16 left-1/2 -translate-x-1/2 z-50 card px-4 py-2 flex items-center gap-2 text-sm shadow-lg border-p-accent/30"
+    >
+      <PartyPopper className="w-4 h-4 text-p-accent" />
+      <span className="font-semibold text-p-text">{pct}% completado</span>
+    </motion.div>
+  );
+}
+
 export default function ReviewStage({ onAdvance }: Props) {
   const files               = useWizardStore((s) => s.files);
   const activeFileId        = useWizardStore((s) => s.activeFileId);
@@ -38,11 +56,16 @@ export default function ReviewStage({ onAdvance }: Props) {
   const showToast           = useWizardStore((s) => s.showToast);
   const focusedIdx          = useWizardStore((s) => s.focusedItemIdx);
   const setFocusedIdx       = useWizardStore((s) => s.setFocusedItemIdx);
+  const session             = useWizardStore((s) => s.session);
+  const startSession        = useWizardStore((s) => s.startSession);
+  const recordResolution    = useWizardStore((s) => s.recordResolution);
 
   const [resolving, setResolving] = useState<number | null>(null);
   const [cascade, setCascade]     = useState<{ count: number; brand: string } | null>(null);
+  const [milestone, setMilestone] = useState<number | null>(null);
 
   const autoAdvancedRef = useRef<Set<string>>(new Set());
+  const firedMilestonesRef = useRef<Set<number>>(new Set());
 
   const activeEntry   = files.find((f) => f.id === activeFileId);
   const currentIdx    = files.findIndex((f) => f.id === activeFileId) + 1;
@@ -63,6 +86,21 @@ export default function ReviewStage({ onAdvance }: Props) {
     const timer = setTimeout(onAdvance, 1500);
     return () => clearTimeout(timer);
   }, [activeFileId, pending.length]);
+
+  // Gamification: start the session clock once, celebrate milestones
+  useEffect(() => {
+    if (total > 0) startSession();
+  }, [total, startSession]);
+
+  useEffect(() => {
+    const pct = Math.round(progress * 100);
+    const hit = MILESTONES.find((m) => pct >= m && !firedMilestonesRef.current.has(m));
+    if (hit) {
+      firedMilestonesRef.current.add(hit);
+      setMilestone(hit);
+      setTimeout(() => setMilestone(null), 2200);
+    }
+  }, [progress]);
 
   // Arrow key navigation
   useEffect(() => {
@@ -92,6 +130,7 @@ export default function ReviewStage({ onAdvance }: Props) {
           resolved_brand: brand,
         });
         resolveItemsForFile(activeFileId, result.resolved, result.cascade_resolved);
+        recordResolution(result.cascade_resolved.length);
 
         if (result.cascade_resolved.length > 0) {
           setCascade({ count: result.cascade_resolved.length, brand });
@@ -110,7 +149,7 @@ export default function ReviewStage({ onAdvance }: Props) {
         setResolving(null);
       }
     },
-    [activeFileId, resolveItemsForFile, showToast, setFocusedIdx, pending.length]
+    [activeFileId, resolveItemsForFile, recordResolution, showToast, setFocusedIdx, pending.length]
   );
 
   const handleApprove = useCallback(
@@ -131,6 +170,7 @@ export default function ReviewStage({ onAdvance }: Props) {
           resolved_brand: "__rejected__",
         });
         resolveItemsForFile(activeFileId, result.resolved, []);
+        recordResolution();
         showToast("Rechazado", "info");
       } catch {
         showToast("Error al rechazar", "error");
@@ -138,7 +178,7 @@ export default function ReviewStage({ onAdvance }: Props) {
         setResolving(null);
       }
     },
-    [activeFileId, resolveItemsForFile, showToast]
+    [activeFileId, resolveItemsForFile, recordResolution, showToast]
   );
 
   if (!activeEntry) return null;
@@ -191,6 +231,11 @@ export default function ReviewStage({ onAdvance }: Props) {
         {cascade && (
           <CascadeBanner count={cascade.count} brand={cascade.brand} />
         )}
+      </AnimatePresence>
+
+      {/* Milestone celebration */}
+      <AnimatePresence>
+        {milestone !== null && <MilestoneBanner pct={milestone} />}
       </AnimatePresence>
 
       {pending.length > 0 && focusedItem ? (
@@ -257,6 +302,7 @@ export default function ReviewStage({ onAdvance }: Props) {
               ? `Avanzando al archivo ${currentIdx + 1} de ${totalFiles}...`
               : "Todas las respuestas fueron resueltas."}
           </p>
+          <SessionSummary session={session} />
           <button
             onClick={onAdvance}
             className="btn-primary text-sm mx-auto"

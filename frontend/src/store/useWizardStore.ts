@@ -61,7 +61,32 @@ interface WizardState {
   codebookStudyId: number | null;
   codebook: Code[];
   setCodebook: (studyId: number, codes: Code[]) => void;
+
+  session: SessionStats;
+  startSession: () => void;
+  recordResolution: (cascadeCount?: number) => void;
+  resetSession: () => void;
 }
+
+export interface SessionStats {
+  startedAt: number | null;
+  resolvedCount: number;
+  cascadeCount: number;
+  currentStreak: number;
+  maxStreak: number;
+  lastActionAt: number | null;
+}
+
+const STREAK_GAP_MS = 10_000;
+
+const initialSession: SessionStats = {
+  startedAt: null,
+  resolvedCount: 0,
+  cascadeCount: 0,
+  currentStreak: 0,
+  maxStreak: 0,
+  lastActionAt: null,
+};
 
 let toastId = 0;
 
@@ -128,4 +153,28 @@ export const useWizardStore = create<WizardState>((set) => ({
   codebookStudyId: null,
   codebook: [],
   setCodebook: (studyId, codes) => set({ codebookStudyId: studyId, codebook: codes }),
+
+  session: initialSession,
+  startSession: () =>
+    set((s) => ({
+      session: s.session.startedAt ? s.session : { ...initialSession, startedAt: Date.now() },
+    })),
+  recordResolution: (cascadeCount = 0) =>
+    set((s) => {
+      const now = Date.now();
+      const withinStreak =
+        s.session.lastActionAt !== null && now - s.session.lastActionAt <= STREAK_GAP_MS;
+      const currentStreak = withinStreak ? s.session.currentStreak + 1 : 1;
+      return {
+        session: {
+          ...s.session,
+          resolvedCount: s.session.resolvedCount + 1,
+          cascadeCount: s.session.cascadeCount + cascadeCount,
+          currentStreak,
+          maxStreak: Math.max(s.session.maxStreak, currentStreak),
+          lastActionAt: now,
+        },
+      };
+    }),
+  resetSession: () => set({ session: initialSession }),
 }));

@@ -131,12 +131,13 @@ export function useWizardOrchestrator() {
   }, []);
 
   const resetWizard = useCallback(() => {
-    const { setFiles, setStage, setActiveFileId, setFocusedItemIdx } =
+    const { setFiles, setStage, setActiveFileId, setFocusedItemIdx, resetSession } =
       useWizardStore.getState();
     setFiles([]);
     setStage("upload");
     setActiveFileId(null);
     setFocusedItemIdx(0);
+    resetSession();
   }, []);
 
   return { startProcessing, advanceToNextFile, resetWizard, continueRound };
