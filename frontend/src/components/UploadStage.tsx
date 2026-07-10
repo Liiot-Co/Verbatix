@@ -6,9 +6,11 @@ import {
   X,
   AlertCircle,
   ArrowRight,
+  BookOpen,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useWizardStore, type FileEntry } from "@/store/useWizardStore";
+import { useWizardOrchestrator } from "@/hooks/useWizardOrchestrator";
 
 async function parseColumns(file: File): Promise<string[]> {
   return new Promise((resolve, reject) => {
@@ -37,7 +39,7 @@ export default function UploadStage() {
   const files      = useWizardStore((s) => s.files);
   const setFiles   = useWizardStore((s) => s.setFiles);
   const updateFile = useWizardStore((s) => s.updateFile);
-  const setStage   = useWizardStore((s) => s.setStage);
+  const { startProcessing } = useWizardOrchestrator();
 
   const onDrop = useCallback(async (accepted: File[]) => {
     const current = useWizardStore.getState().files;
@@ -63,7 +65,11 @@ export default function UploadStage() {
     entries.forEach(async (entry) => {
       try {
         const columns = await parseColumns(entry.file);
-        updateFile(entry.id, { columns });
+        updateFile(entry.id, {
+          columns,
+          // Pre-select when there's only one candidate — one less click
+          column: columns.length === 1 ? columns[0]! : null,
+        });
       } catch {
         updateFile(entry.id, {
           status: "error",
@@ -91,6 +97,7 @@ export default function UploadStage() {
     files.length > 0 &&
     files.every((f) => f.name.trim() !== "") &&
     files.every((f) => f.columns.length > 0) &&
+    files.every((f) => f.column !== null) &&
     files.every((f) => f.status !== "error");
 
   return (
@@ -132,7 +139,7 @@ export default function UploadStage() {
         </div>
       </div>
 
-      {/* File list + name inputs */}
+      {/* File list + name + column selection, one continuous surface */}
       <AnimatePresence>
         {files.length > 0 && (
           <motion.div
@@ -140,6 +147,15 @@ export default function UploadStage() {
             animate={{ opacity: 1, y: 0 }}
             className="space-y-3"
           >
+            {/* Compact pipeline note — replaces the old confirm-step modal */}
+            <div className="card-subtle px-4 py-3 flex items-start gap-2.5">
+              <BookOpen className="w-3.5 h-3.5 text-p-accent shrink-0 mt-0.5" />
+              <p className="text-xs text-p-text-muted leading-relaxed">
+                Cada archivo se clasifica y revisa por separado — las marcas
+                que apruebes mejoran las clasificaciones del siguiente.
+              </p>
+            </div>
+
             {files.map((entry) => (
               <motion.div
                 key={entry.id}
@@ -188,26 +204,49 @@ export default function UploadStage() {
                 {entry.status === "error" ? (
                   <p className="text-xs text-p-error">{entry.errorMessage}</p>
                 ) : (
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                      Nombre de la ronda
-                    </label>
-                    <input
-                      type="text"
-                      value={entry.name}
-                      onChange={(e) =>
-                        updateFile(entry.id, { name: e.target.value })
-                      }
-                      placeholder='ej. "Q3 2024 Latam"'
-                      className="input w-full text-sm"
-                    />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                        Nombre de la ronda
+                      </label>
+                      <input
+                        type="text"
+                        value={entry.name}
+                        onChange={(e) =>
+                          updateFile(entry.id, { name: e.target.value })
+                        }
+                        placeholder='ej. "Q3 2024 Latam"'
+                        className="input w-full text-sm"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                        Columna de respuestas
+                      </label>
+                      <select
+                        value={entry.column ?? ""}
+                        disabled={entry.columns.length === 0}
+                        onChange={(e) =>
+                          updateFile(entry.id, { column: e.target.value || null })
+                        }
+                        className="input w-full text-sm disabled:opacity-50"
+                      >
+                        <option value="">Selecciona...</option>
+                        {entry.columns.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 )}
               </motion.div>
             ))}
 
             <button
-              onClick={() => setStage("configure")}
+              onClick={() => startProcessing()}
               disabled={!canProcesar}
               className="btn-primary w-full justify-center"
             >
