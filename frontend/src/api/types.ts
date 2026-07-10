@@ -10,6 +10,13 @@ export interface Round {
   requires_human?: number;
 }
 
+export interface CodeAssignment {
+  code_id: number;
+  name: string;
+  confidence: number;
+  origin?: "auto" | "manual";
+}
+
 export interface SurveyItem {
   id: number;
   original_text: string;
@@ -18,6 +25,7 @@ export interface SurveyItem {
   official_brand_id: number | null;
   confidence: number;
   status: ItemStatus;
+  codes?: CodeAssignment[];
 }
 
 export interface UploadResult {
