@@ -6,7 +6,9 @@ from rapidfuzz import fuzz
 from app.database import get_db
 from app.models import (
     BrandVariation,
+    Code,
     OfficialBrand,
+    ResponseCode,
     SurveyResponse,
 )
 
@@ -94,4 +96,36 @@ def _to_item(resp: SurveyResponse, db: Session) -> dict:
         "suggested_brand": brand_name,
         "confidence": resp.confidence,
         "status": resp.status,
+        "codes": [
+            {"code_id": rc.code_id, "name": rc.code.name, "confidence": rc.confidence, "origin": rc.origin}
+            for rc in resp.codes
+        ],
     }
+
+
+class SetCodesRequest(BaseModel):
+    code_ids: list[int]
+
+
+@router.put("/responses/{response_id}/codes")
+def set_response_codes(response_id: int, body: SetCodesRequest, db: Session = Depends(get_db)):
+    resp = db.get(SurveyResponse, response_id)
+    if not resp:
+        raise HTTPException(status_code=404, detail="Response not found")
+
+    study_id = resp.round.study_id if resp.round else None
+    if body.code_ids:
+        found = db.query(Code).filter(Code.id.in_(body.code_ids), Code.study_id == study_id).all()
+        if len(found) != len(set(body.code_ids)):
+            raise HTTPException(status_code=400, detail="One or more code_ids do not exist in this study")
+
+    db.query(ResponseCode).filter(ResponseCode.response_id == response_id).delete()
+    for code_id in body.code_ids:
+        db.add(ResponseCode(response_id=response_id, code_id=code_id, confidence=0.0, origin="manual"))
+
+    if resp.status == "requires_human":
+        resp.status = "manual_resolved"
+
+    db.commit()
+    db.refresh(resp)
+    return _to_item(resp, db)
