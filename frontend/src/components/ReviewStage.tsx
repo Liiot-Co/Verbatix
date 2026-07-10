@@ -142,13 +142,15 @@ export default function ReviewStage({ onAdvance }: Props) {
 
   if (!activeEntry) return null;
 
+  const focusedItem = pending[focusedIdx] ?? null;
+
   return (
-    <div className="max-w-3xl mx-auto space-y-5">
+    <div className="flex flex-col h-full gap-4">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold text-p-text tracking-tight">
-            Revisa las marcas
+            Centro de Resolución
           </h1>
           <p className="text-sm text-p-text-muted">
             Archivo {currentIdx} de {totalFiles} ·{" "}
@@ -167,7 +169,7 @@ export default function ReviewStage({ onAdvance }: Props) {
       </div>
 
       {/* Progress bar */}
-      <div className="card-subtle px-4 py-3 space-y-2">
+      <div className="card-subtle px-4 py-3 space-y-2 shrink-0">
         <div className="flex justify-between text-xs text-p-text-muted">
           <span>
             {done} de {total} resueltos
@@ -190,45 +192,77 @@ export default function ReviewStage({ onAdvance }: Props) {
         )}
       </AnimatePresence>
 
-      {/* Cards */}
-      <AnimatePresence mode="popLayout">
-        {pending.length > 0 ? (
-          pending.map((item, idx) => (
+      {pending.length > 0 && focusedItem ? (
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-4">
+          {/* LEFT: pending queue */}
+          <div className="card overflow-hidden flex flex-col min-h-0">
+            <div className="px-4 py-2.5 border-b border-p-border shrink-0 flex items-center justify-between">
+              <span className="text-xs font-mono uppercase tracking-wider text-p-text-faint">
+                Cola pendiente
+              </span>
+              <span className="text-xs font-mono text-p-text-faint">{pending.length}</span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {pending.map((item, idx) => (
+                <button
+                  key={item.id}
+                  onClick={() => setFocusedIdx(idx)}
+                  className={[
+                    "w-full text-left px-4 py-2.5 flex items-center gap-3 border-b border-p-border last:border-0 transition-colors",
+                    idx === focusedIdx ? "bg-p-accent-soft" : "hover:bg-p-bg-subtle",
+                  ].join(" ")}
+                >
+                  <span className="text-[10px] font-mono text-p-text-faint w-5 shrink-0">
+                    {idx + 1}
+                  </span>
+                  <span className="text-sm text-p-text truncate flex-1">
+                    {item.original_text}
+                  </span>
+                  <span className="text-[10px] font-mono text-p-text-faint shrink-0">
+                    {Math.round(item.confidence * 100)}%
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* RIGHT: action panel for the focused item */}
+          <div className="min-h-0 overflow-y-auto">
             <EntityCard
-              key={item.id}
-              item={item}
-              focused={focusedIdx === idx && resolving === null}
-              onFocus={() => setFocusedIdx(idx)}
-              onApprove={() => handleApprove(item)}
-              onReject={() => handleReject(item.id)}
-              onEdit={(brand) => resolve(item.id, brand)}
+              key={focusedItem.id}
+              item={focusedItem}
+              focused={resolving === null}
+              onFocus={() => {}}
+              onApprove={() => handleApprove(focusedItem)}
+              onReject={() => handleReject(focusedItem.id)}
+              onEdit={(brand) => resolve(focusedItem.id, brand)}
             />
-          ))
-        ) : (
-          <motion.div
-            key="done"
-            initial={{ opacity: 0, scale: 0.97 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="card p-10 text-center space-y-3"
+          </div>
+        </div>
+      ) : (
+        <motion.div
+          key="done"
+          initial={{ opacity: 0, scale: 0.97 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="card p-10 text-center space-y-3"
+        >
+          <p className="text-2xl">✓</p>
+          <p className="font-semibold text-p-text">Cola completada</p>
+          <p className="text-sm text-p-text-muted">
+            {currentIdx < totalFiles
+              ? `Avanzando al archivo ${currentIdx + 1} de ${totalFiles}...`
+              : "Todas las respuestas fueron resueltas."}
+          </p>
+          <button
+            onClick={onAdvance}
+            className="btn-primary text-sm mx-auto"
           >
-            <p className="text-2xl">✓</p>
-            <p className="font-semibold text-p-text">Cola completada</p>
-            <p className="text-sm text-p-text-muted">
-              {currentIdx < totalFiles
-                ? `Avanzando al archivo ${currentIdx + 1} de ${totalFiles}...`
-                : "Todas las respuestas fueron resueltas."}
-            </p>
-            <button
-              onClick={onAdvance}
-              className="btn-primary text-sm mx-auto"
-            >
-              {currentIdx < totalFiles
-                ? `Ir al archivo ${currentIdx + 1} →`
-                : "Ir al Dashboard →"}
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            {currentIdx < totalFiles
+              ? `Ir al archivo ${currentIdx + 1} →`
+              : "Ir al Dashboard →"}
+          </button>
+        </motion.div>
+      )}
 
       {resolving !== null && (
         <div className="fixed bottom-6 right-6 card px-4 py-2 flex items-center gap-2 text-sm shadow-lg">

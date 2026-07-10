@@ -57,10 +57,7 @@ export default function EntityCard({ item, focused, onFocus, onApprove, onReject
       onClick={onFocus}
       onFocus={onFocus}
       tabIndex={0}
-      className={[
-        "card p-4 space-y-3 cursor-pointer outline-none transition-all",
-        focused ? "ring-2 ring-p-accent shadow-md" : "hover:border-p-border-mid",
-      ].join(" ")}
+      className="card p-5 space-y-4 outline-none"
     >
       {/* Original text */}
       <p className="text-xs text-p-text-muted font-mono leading-relaxed line-clamp-2">

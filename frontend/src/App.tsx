@@ -104,7 +104,10 @@ function ProjectView() {
       </header>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto px-6 py-8">
+      <main className={[
+        "flex-1 px-6 py-6 min-h-0",
+        stage === "review" ? "overflow-hidden flex flex-col" : "overflow-y-auto py-8",
+      ].join(" ")}>
         <AnimatePresence mode="wait">
           <motion.div
             key={pageKey}
@@ -112,6 +115,7 @@ function ProjectView() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
+            className={stage === "review" ? "flex-1 min-h-0" : undefined}
           >
             {(stage === "upload" || stage === "configure") && <UploadStage />}
             {stage === "processing" && (
