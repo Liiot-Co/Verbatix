@@ -21,7 +21,7 @@ function waitUntilFileDone(fileId: string): Promise<void> {
 
 export function useWizardOrchestrator() {
   const startProcessing = useCallback(async () => {
-    const { files, setStage, updateFile, setActiveFileId, showToast } =
+    const { files, setStage, updateFile, setActiveFileId, showToast, activeStudyId } =
       useWizardStore.getState();
 
     for (const entry of files) {
@@ -33,11 +33,11 @@ export function useWizardOrchestrator() {
         let roundName = entry.name;
         let round;
         try {
-          round = await createRound(roundName);
+          round = await createRound(roundName, activeStudyId);
         } catch (e) {
           if (e instanceof Error && e.message.includes("409")) {
             roundName = `${entry.name}_${Date.now()}`;
-            round = await createRound(roundName);
+            round = await createRound(roundName, activeStudyId);
           } else {
             throw e;
           }

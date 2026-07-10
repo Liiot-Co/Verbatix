@@ -1,4 +1,4 @@
-import type { Round, UploadResult, ResolveRequest, ResolveResult, Metrics } from "./types";
+import type { Round, UploadResult, ResolveRequest, ResolveResult, Metrics, MarketStudy, Net, Code } from "./types";
 
 const BASE = "/api";
 
@@ -15,11 +15,11 @@ export async function getRounds(): Promise<Round[]> {
   return request<Round[]>("/rounds");
 }
 
-export async function createRound(name: string): Promise<Round> {
+export async function createRound(name: string, studyId?: number | null): Promise<Round> {
   return request<Round>("/rounds", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, study_id: studyId ?? null }),
   });
 }
 
@@ -49,4 +49,58 @@ export async function getMetrics(roundId: number): Promise<Metrics> {
 
 export function exportUrl(roundId: number): string {
   return `${BASE}/export/${roundId}`;
+}
+
+// ── Studies / Netos / Codigos ────────────────────────────────────────
+
+export async function getStudies(): Promise<MarketStudy[]> {
+  return request<MarketStudy[]>("/studies");
+}
+
+export async function createStudy(name: string, client?: string): Promise<MarketStudy> {
+  return request<MarketStudy>("/studies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, client: client ?? null }),
+  });
+}
+
+export async function importCodebook(studyId: number, fromStudyId: number): Promise<{ imported_nets: number; imported_codes: number }> {
+  return request(`/studies/${studyId}/import-codebook`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from_study_id: fromStudyId }),
+  });
+}
+
+export async function getNets(studyId: number): Promise<Net[]> {
+  return request<Net[]>(`/nets?study_id=${studyId}`);
+}
+
+export async function createNet(studyId: number, name: string): Promise<Net> {
+  return request<Net>("/nets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ study_id: studyId, name }),
+  });
+}
+
+export async function getCodes(studyId: number): Promise<Code[]> {
+  return request<Code[]>(`/codes?study_id=${studyId}`);
+}
+
+export async function createCode(studyId: number, name: string, netId?: number | null, keywords?: string): Promise<Code> {
+  return request<Code>("/codes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ study_id: studyId, name, net_id: netId ?? null, keywords: keywords ?? null }),
+  });
+}
+
+export async function setResponseCodes(responseId: number, codeIds: number[]): Promise<unknown> {
+  return request(`/responses/${responseId}/codes`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code_ids: codeIds }),
+  });
 }

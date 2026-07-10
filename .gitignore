@@ -6,3 +6,5 @@ data/*.xlsx
 data/*.xls
 *.sqlite
 *.db
+frontend/dist/
+frontend/node_modules/.tmp/

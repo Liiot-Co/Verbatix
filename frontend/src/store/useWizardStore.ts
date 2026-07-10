@@ -3,6 +3,7 @@ import type { SurveyItem, UploadResult, Metrics } from "../api/types";
 
 export type WizardStage = "upload" | "configure" | "processing" | "review" | "done";
 export type FileStatus = "pending" | "classifying" | "reviewing" | "done" | "error";
+export type AppView = "project" | "history" | "codebook";
 
 export interface FileEntry {
   id: string;
@@ -25,6 +26,12 @@ interface Toast {
 }
 
 interface WizardState {
+  view: AppView;
+  setView: (v: AppView) => void;
+
+  activeStudyId: number | null;
+  setActiveStudyId: (id: number | null) => void;
+
   stage: WizardStage;
   setStage: (s: WizardStage) => void;
 
@@ -55,6 +62,12 @@ interface WizardState {
 let toastId = 0;
 
 export const useWizardStore = create<WizardState>((set) => ({
+  view: "project",
+  setView: (view) => set({ view }),
+
+  activeStudyId: null,
+  setActiveStudyId: (activeStudyId) => set({ activeStudyId }),
+
   stage: "upload",
   setStage: (stage) => set({ stage }),
 

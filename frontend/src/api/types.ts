@@ -4,6 +4,7 @@ export interface Round {
   id: number;
   name: string;
   created_at: string;
+  study_id: number | null;
   total?: number;
   auto_approved?: number;
   requires_human?: number;
@@ -43,6 +44,12 @@ export interface BrandCount {
   count: number;
 }
 
+export interface CodeDistributionEntry {
+  net: string | null;
+  code: string;
+  count: number;
+}
+
 export interface Metrics {
   total: number;
   auto_approved: number;
@@ -50,4 +57,27 @@ export interface Metrics {
   generic: number;
   manual_resolved: number;
   top_brands: BrandCount[];
+  code_distribution?: CodeDistributionEntry[];
+}
+
+export interface MarketStudy {
+  id: number;
+  name: string;
+  client: string | null;
+  round_count: number;
+  codebook_size: number;
+}
+
+export interface Net {
+  id: number;
+  name: string;
+  study_id: number;
+}
+
+export interface Code {
+  id: number;
+  name: string;
+  study_id: number;
+  keywords: string | null;
+  net: { id: number; name: string } | null;
 }

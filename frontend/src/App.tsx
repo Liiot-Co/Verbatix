@@ -2,6 +2,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Upload, ScanSearch, LayoutDashboard } from "lucide-react";
 import { useWizardStore, type WizardStage } from "@/store/useWizardStore";
 import { useWizardOrchestrator } from "@/hooks/useWizardOrchestrator";
+import AppShell from "@/components/AppShell";
+import CodebookView from "@/components/CodebookView";
 import UploadStage from "@/components/UploadStage";
 import ProcessModal from "@/components/ProcessModal";
 import ReviewStage from "@/components/ReviewStage";
@@ -72,7 +74,7 @@ function WizardProgress() {
   );
 }
 
-export default function App() {
+function ProjectView() {
   const stage    = useWizardStore((s) => s.stage);
   const setStage = useWizardStore((s) => s.setStage);
   const files    = useWizardStore((s) => s.files);
@@ -91,23 +93,17 @@ export default function App() {
   const pageKey = stage === "configure" ? "upload" : stage;
 
   return (
-    <div className="min-h-screen bg-p-bg">
-      {/* Header */}
-      <header className="sticky top-0 z-20 border-b border-p-border bg-p-bg/80 backdrop-blur-glass">
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-sm text-p-text tracking-tight">
-              klass
-            </span>
-            <span className="text-p-text-faint text-xs">·</span>
-            <span className="text-xs text-p-text-muted">clasificación</span>
-          </div>
+    <>
+      {/* Top bar */}
+      <header className="shrink-0 h-[52px] px-5 border-b border-p-border bg-p-surface flex items-center gap-3">
+        <span className="text-xs text-p-text-muted">Proyecto</span>
+        <div className="ml-auto">
           <WizardProgress />
         </div>
       </header>
 
       {/* Main content */}
-      <main className="max-w-5xl mx-auto px-6 py-10">
+      <main className="flex-1 overflow-y-auto px-6 py-8">
         <AnimatePresence mode="wait">
           <motion.div
             key={pageKey}
@@ -139,8 +135,27 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+    </>
+  );
+}
 
-      <ToastStack />
+function HistoryPlaceholder() {
+  return (
+    <div className="flex-1 flex items-center justify-center text-p-text-muted text-sm">
+      Historial de estudios — próximamente.
     </div>
+  );
+}
+
+export default function App() {
+  const view = useWizardStore((s) => s.view);
+
+  return (
+    <AppShell>
+      {view === "project" && <ProjectView />}
+      {view === "history" && <HistoryPlaceholder />}
+      {view === "codebook" && <CodebookView />}
+      <ToastStack />
+    </AppShell>
   );
 }
