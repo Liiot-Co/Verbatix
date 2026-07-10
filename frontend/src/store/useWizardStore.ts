@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { SurveyItem, UploadResult, Metrics, Code } from "../api/types";
 
-export type WizardStage = "upload" | "configure" | "processing" | "review" | "done";
+export type WizardStage = "upload" | "processing" | "review" | "done";
 export type FileStatus = "pending" | "classifying" | "reviewing" | "done" | "error";
 export type AppView = "project" | "history" | "codebook";
 
@@ -31,6 +31,9 @@ interface WizardState {
 
   activeStudyId: number | null;
   setActiveStudyId: (id: number | null) => void;
+
+  activeStudyName: string | null;
+  setActiveStudyName: (name: string | null) => void;
 
   stage: WizardStage;
   setStage: (s: WizardStage) => void;
@@ -96,6 +99,9 @@ export const useWizardStore = create<WizardState>((set) => ({
 
   activeStudyId: null,
   setActiveStudyId: (activeStudyId) => set({ activeStudyId }),
+
+  activeStudyName: null,
+  setActiveStudyName: (activeStudyName) => set({ activeStudyName }),
 
   stage: "upload",
   setStage: (stage) => set({ stage }),

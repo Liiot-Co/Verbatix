@@ -19,6 +19,7 @@ export default function AppShell({ children }: AppShellProps) {
   const setView = useWizardStore((s) => s.setView);
   const activeStudyId = useWizardStore((s) => s.activeStudyId);
   const setActiveStudyId = useWizardStore((s) => s.setActiveStudyId);
+  const setActiveStudyName = useWizardStore((s) => s.setActiveStudyName);
 
   const [studies, setStudies] = useState<MarketStudy[]>([]);
   const [creating, setCreating] = useState(false);
@@ -39,6 +40,10 @@ export default function AppShell({ children }: AppShellProps) {
   }, []);
 
   const activeStudy = studies.find((s) => s.id === activeStudyId) ?? null;
+
+  useEffect(() => {
+    setActiveStudyName(activeStudy?.name ?? null);
+  }, [activeStudy?.name, setActiveStudyName]);
 
   const handleCreateStudy = async () => {
     if (!newName.trim()) return;
@@ -166,8 +171,22 @@ export default function AppShell({ children }: AppShellProps) {
       </aside>
 
       {/* Main */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-p-bg">
-        {children}
+      <div className="relative flex-1 flex flex-col overflow-hidden min-w-0 bg-p-bg">
+        {/* Subtle corner glows — frame the content area, decorative only */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-0"
+          style={{
+            background:
+              "radial-gradient(520px circle at 100% 0%, oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.07), transparent 55%)," +
+              "radial-gradient(520px circle at 0% 100%, oklch(var(--p-accent-mid-l) var(--p-accent-mid-c) var(--p-accent-mid-h) / 0.06), transparent 55%)," +
+              "radial-gradient(400px circle at 0% 0%, oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.03), transparent 55%)," +
+              "radial-gradient(400px circle at 100% 100%, oklch(var(--p-accent-mid-l) var(--p-accent-mid-c) var(--p-accent-mid-h) / 0.03), transparent 55%)",
+          }}
+        />
+        <div className="relative z-10 flex-1 flex flex-col overflow-hidden min-w-0">
+          {children}
+        </div>
       </div>
     </div>
   );

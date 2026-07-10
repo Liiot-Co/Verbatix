@@ -6,7 +6,6 @@ import AppShell from "@/components/AppShell";
 import CodebookView from "@/components/CodebookView";
 import HistoryView from "@/components/HistoryView";
 import UploadStage from "@/components/UploadStage";
-import ProcessModal from "@/components/ProcessModal";
 import ReviewStage from "@/components/ReviewStage";
 import DashboardStage from "@/components/DashboardStage";
 import Loader from "@/components/Loader";
@@ -15,7 +14,7 @@ import ToastStack from "@/components/ToastStack";
 type StageGroup = 1 | 2 | 3;
 
 function stageToGroup(stage: WizardStage): StageGroup {
-  if (stage === "upload" || stage === "configure") return 1;
+  if (stage === "upload") return 1;
   if (stage === "processing" || stage === "review") return 2;
   return 3;
 }
@@ -77,27 +76,21 @@ function WizardProgress() {
 
 function ProjectView() {
   const stage    = useWizardStore((s) => s.stage);
-  const setStage = useWizardStore((s) => s.setStage);
   const files    = useWizardStore((s) => s.files);
   const activeFileId = useWizardStore((s) => s.activeFileId);
+  const activeStudyName = useWizardStore((s) => s.activeStudyName);
 
-  const { startProcessing, advanceToNextFile, resetWizard } =
-    useWizardOrchestrator();
+  const { advanceToNextFile, resetWizard } = useWizardOrchestrator();
 
   const activeEntry = files.find((f) => f.id === activeFileId);
 
-  const handleConfirm = () => {
-    startProcessing();
-  };
-
-  // Use a stable key so upload+configure share the same page transition
-  const pageKey = stage === "configure" ? "upload" : stage;
-
   return (
     <>
-      {/* Top bar */}
+      {/* Top bar — left anchor orients the user in the active study */}
       <header className="shrink-0 h-[52px] px-5 border-b border-p-border bg-p-surface flex items-center gap-3">
-        <span className="text-xs text-p-text-muted">Proyecto</span>
+        <span className="text-xs text-p-text-muted truncate">
+          {activeStudyName ?? "Proyecto"}
+        </span>
         <div className="ml-auto">
           <WizardProgress />
         </div>
@@ -110,14 +103,14 @@ function ProjectView() {
       ].join(" ")}>
         <AnimatePresence mode="wait">
           <motion.div
-            key={pageKey}
+            key={stage}
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
             className={stage === "review" ? "flex-1 min-h-0" : undefined}
           >
-            {(stage === "upload" || stage === "configure") && <UploadStage />}
+            {stage === "upload" && <UploadStage />}
             {stage === "processing" && (
               <Loader
                 text={`Clasificando "${activeEntry?.name ?? "archivo"}"...`}
@@ -130,16 +123,6 @@ function ProjectView() {
           </motion.div>
         </AnimatePresence>
       </main>
-
-      {/* Configure modal — portal, overlays UploadStage */}
-      <AnimatePresence>
-        {stage === "configure" && (
-          <ProcessModal
-            onClose={() => setStage("upload")}
-            onConfirm={handleConfirm}
-          />
-        )}
-      </AnimatePresence>
     </>
   );
 }
