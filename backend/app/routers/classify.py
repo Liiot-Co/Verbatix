@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
-from app.models import OfficialBrand, BrandVariation, SurveyResponse
-from app.services.pipeline import classify_text
+from app.models import OfficialBrand, BrandVariation, ResponseCode, SurveyResponse
+from app.services.pipeline import classify_codes, classify_text
 
 router = APIRouter(prefix="/api", tags=["classify"])
 
@@ -69,6 +69,16 @@ def classify_decisions(payload: ClassifyRequest, db: Session = Depends(get_db)):
             resp.official_brand_id = result["official_brand_id"]
             resp.confidence = result["confidence"]
 
+        if not resp.codes:
+            study_id = resp.round.study_id if resp.round else None
+            for m in classify_codes(resp.original_text, study_id, db):
+                db.add(ResponseCode(
+                    response_id=resp.id,
+                    code_id=m["code_id"],
+                    confidence=m["confidence"],
+                    origin="auto",
+                ))
+
     db.commit()
 
     all_items = db.query(SurveyResponse).order_by(SurveyResponse.id).all()
@@ -87,6 +97,10 @@ def classify_decisions(payload: ClassifyRequest, db: Session = Depends(get_db)):
             "official_brand_id": r.official_brand_id,
             "confidence": r.confidence,
             "status": r.status,
+            "codes": [
+                {"code_id": rc.code_id, "name": rc.code.name, "confidence": rc.confidence}
+                for rc in r.codes
+            ],
         })
 
     auto = sum(1 for i in items if i["status"] == "auto_approved")

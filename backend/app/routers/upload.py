@@ -7,8 +7,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Round, SurveyResponse
-from app.services.pipeline import classify_text
+from app.models import ResponseCode, Round, SurveyResponse
+from app.services.pipeline import classify_codes, classify_text
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
@@ -68,6 +68,15 @@ async def upload_file(
             db.add(sr)
             db.flush()
 
+            code_matches = classify_codes(text, rnd.study_id, db)
+            for m in code_matches:
+                db.add(ResponseCode(
+                    response_id=sr.id,
+                    code_id=m["code_id"],
+                    confidence=m["confidence"],
+                    origin="auto",
+                ))
+
             items.append({
                 "id": sr.id,
                 "original_text": sr.original_text,
@@ -76,6 +85,7 @@ async def upload_file(
                 "official_brand_id": result["official_brand_id"],
                 "confidence": sr.confidence,
                 "status": sr.status,
+                "codes": code_matches,
             })
 
         db.commit()

@@ -5,7 +5,7 @@ import spacy
 from rapidfuzz import fuzz
 from sqlalchemy.orm import Session
 
-from app.models import BrandVariation, OfficialBrand
+from app.models import BrandVariation, Code, OfficialBrand
 
 _nlp = spacy.load("es_core_news_sm")
 
@@ -148,3 +148,34 @@ def classify_text(text: str, db: Session) -> dict:
         "confidence": best_conf,
         "status": "requires_human",
     }
+
+
+_CODE_MATCH_THRESHOLD = 80
+
+
+def classify_codes(text: str, study_id: int | None, db: Session) -> list[dict]:
+    """Fuzzy-match `text` against the codebook of `study_id`. Additive: does not
+    touch classify_text / brand classification."""
+    if not study_id:
+        return []
+
+    clean = _clean(text)
+    codes = db.query(Code).filter(Code.study_id == study_id).all()
+
+    matches = []
+    for code in codes:
+        score = fuzz.WRatio(clean, code.name.lower())
+        if code.keywords:
+            for kw in code.keywords.split(","):
+                kw = kw.strip().lower()
+                if kw:
+                    score = max(score, fuzz.partial_ratio(clean, kw))
+        if score >= _CODE_MATCH_THRESHOLD:
+            matches.append({
+                "code_id": code.id,
+                "name": code.name,
+                "confidence": round(score / 100.0, 3),
+            })
+
+    matches.sort(key=lambda m: -m["confidence"])
+    return matches
