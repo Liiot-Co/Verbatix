@@ -100,6 +100,10 @@ export function useWizardOrchestrator() {
 
     try {
       const pending = await getRoundResponses(round.id, "requires_human");
+      // Fix the pending count as this round's "total" for the progress bar —
+      // ReviewStage reads uploadResult.requires_human, and it must stay fixed
+      // (not recompute from the shrinking `pending` array) for progress/milestones
+      // to work on this rehydration path same as the fresh-upload path.
       const entry: FileEntry = {
         id: crypto.randomUUID(),
         file: new File([], round.name),
@@ -107,7 +111,14 @@ export function useWizardOrchestrator() {
         column: null,
         columns: [],
         roundId: round.id,
-        uploadResult: null,
+        uploadResult: {
+          round_id: round.id,
+          total: round.total ?? pending.length,
+          auto_approved: round.auto_approved ?? 0,
+          requires_human: pending.length,
+          generic: 0,
+          items: [],
+        },
         items: pending,
         metrics: null,
         status: pending.length > 0 ? "reviewing" : "done",

@@ -31,7 +31,7 @@ export default function EntityCard({ item, focused, onFocus, onApprove, onReject
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT") return;
-      if (e.key === "Enter" || e.key === "a") { e.preventDefault(); onApprove(); }
+      if (e.key === "a") { e.preventDefault(); onApprove(); }
       else if (e.key === "r")                  { e.preventDefault(); onReject(); }
       else if (e.key === "e")                  { e.preventDefault(); setEditing(true); }
     };
@@ -111,7 +111,7 @@ export default function EntityCard({ item, focused, onFocus, onApprove, onReject
             <button
               onClick={(e) => { e.stopPropagation(); onApprove(); }}
               className="btn-ghost text-xs text-p-success border-emerald-200 hover:bg-emerald-50"
-              title="Aprobar (Enter / A)"
+              title="Aprobar (A)"
             >
               <Check className="w-3.5 h-3.5" /> Aprobar
             </button>

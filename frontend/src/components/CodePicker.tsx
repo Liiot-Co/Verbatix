@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Check } from "lucide-react";
 import { useWizardStore } from "@/store/useWizardStore";
 import { getCodes, createCode, setResponseCodes } from "@/api/client";
 import type { SurveyItem } from "@/api/types";
@@ -7,9 +7,10 @@ import type { SurveyItem } from "@/api/types";
 interface Props {
   item: SurveyItem;
   fileId: string;
+  onSaved: () => void;
 }
 
-export default function CodePicker({ item, fileId }: Props) {
+export default function CodePicker({ item, fileId, onSaved }: Props) {
   const activeStudyId    = useWizardStore((s) => s.activeStudyId);
   const codebook          = useWizardStore((s) => s.codebook);
   const codebookStudyId   = useWizardStore((s) => s.codebookStudyId);
@@ -52,26 +53,32 @@ export default function CodePicker({ item, fileId }: Props) {
     return Array.from(nets.entries());
   }, [filtered]);
 
-  const persist = async (next: Set<number>) => {
+  // Toggling only updates local selection — persisting is an explicit
+  // action (Enter / Guardar), since a PUT can flip the item's status
+  // to manual_resolved and drop it out of the pending queue.
+  const toggle = (codeId: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(codeId)) next.delete(codeId);
+      else next.add(codeId);
+      return next;
+    });
+  };
+
+  const save = async () => {
     setSaving(true);
     try {
       const wasPending = item.status === "requires_human";
-      const updated = await setResponseCodes(item.id, Array.from(next));
+      const updated = await setResponseCodes(item.id, Array.from(selected));
       resolveItemsForFile(fileId, updated, []);
       if (wasPending && updated.status !== "requires_human") recordResolution();
+      showToast("Códigos guardados", "success");
+      onSaved();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Error al guardar códigos", "error");
     } finally {
       setSaving(false);
     }
-  };
-
-  const toggle = (codeId: number) => {
-    const next = new Set(selected);
-    if (next.has(codeId)) next.delete(codeId);
-    else next.add(codeId);
-    setSelected(next);
-    persist(next);
   };
 
   const handleCreateCode = async () => {
@@ -82,11 +89,16 @@ export default function CodePicker({ item, fileId }: Props) {
     toggle(code.id);
   };
 
-  // Keys 1..9 toggle the first suggested codes
+  // Keys 1..9 toggle the first suggested codes; Enter saves the set and advances
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        save();
+        return;
+      }
       const n = Number(e.key);
       if (n >= 1 && n <= 9 && suggested[n - 1]) {
         e.preventDefault();
@@ -169,6 +181,12 @@ export default function CodePicker({ item, fileId }: Props) {
           <Plus className="w-3.5 h-3.5" />
         </button>
       </div>
+
+      <button className="btn-primary text-xs w-full justify-center" onClick={save} disabled={saving}>
+        <Check className="w-3.5 h-3.5" />
+        Guardar códigos
+        <kbd className="font-mono text-[10px] opacity-70 ml-1">↵</kbd>
+      </button>
     </div>
   );
 }

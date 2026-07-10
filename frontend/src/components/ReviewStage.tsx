@@ -284,7 +284,12 @@ export default function ReviewStage({ onAdvance }: Props) {
               onEdit={(brand) => resolve(focusedItem.id, brand)}
             />
             <div className="card p-5 mt-3">
-              <CodePicker key={focusedItem.id} item={focusedItem} fileId={activeEntry.id} />
+              <CodePicker
+                key={focusedItem.id}
+                item={focusedItem}
+                fileId={activeEntry.id}
+                onSaved={() => setFocusedIdx(Math.max(0, Math.min(focusedIdx, pending.length - 2)))}
+              />
             </div>
           </div>
         </div>
