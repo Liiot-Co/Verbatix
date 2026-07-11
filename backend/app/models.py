@@ -10,6 +10,10 @@ class MarketStudy(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     client = Column(String, nullable=True)
+    # "brands": resolving a brand closes the item. "codebook": assigning
+    # codes closes it. Set once at study creation — drives which surface
+    # is primary in the review step (see ReviewStage.tsx).
+    mode = Column(String, nullable=False, default="brands")
     created_at = Column(DateTime, default=datetime.utcnow)
     nets = relationship("Net", back_populates="study")
     codes = relationship("Code", back_populates="study")

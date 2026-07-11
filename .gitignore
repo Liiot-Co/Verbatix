@@ -8,3 +8,6 @@ data/*.xls
 *.db
 frontend/dist/
 frontend/node_modules/.tmp/
+
+node_modules/
+.pytest_cache/

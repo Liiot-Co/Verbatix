@@ -68,10 +68,13 @@ export interface Metrics {
   code_distribution?: CodeDistributionEntry[];
 }
 
+export type StudyMode = "brands" | "codebook";
+
 export interface MarketStudy {
   id: number;
   name: string;
   client: string | null;
+  mode: StudyMode;
   round_count: number;
   codebook_size: number;
 }

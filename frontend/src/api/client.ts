@@ -1,4 +1,4 @@
-import type { Round, UploadResult, ResolveRequest, ResolveResult, Metrics, MarketStudy, Net, Code, SurveyItem } from "./types";
+import type { Round, UploadResult, ResolveRequest, ResolveResult, Metrics, MarketStudy, StudyMode, Net, Code, SurveyItem } from "./types";
 
 const BASE = "/api";
 
@@ -43,6 +43,10 @@ export async function resolveAnomaly(payload: ResolveRequest): Promise<ResolveRe
   });
 }
 
+export async function reopenResponse(responseId: number): Promise<SurveyItem> {
+  return request<SurveyItem>(`/responses/${responseId}/reopen`, { method: "POST" });
+}
+
 export async function getMetrics(roundId: number): Promise<Metrics> {
   return request<Metrics>(`/metrics/${roundId}`);
 }
@@ -57,11 +61,11 @@ export async function getStudies(): Promise<MarketStudy[]> {
   return request<MarketStudy[]>("/studies");
 }
 
-export async function createStudy(name: string, client?: string): Promise<MarketStudy> {
+export async function createStudy(name: string, client?: string, mode: StudyMode = "brands"): Promise<MarketStudy> {
   return request<MarketStudy>("/studies", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, client: client ?? null }),
+    body: JSON.stringify({ name, client: client ?? null, mode }),
   });
 }
 

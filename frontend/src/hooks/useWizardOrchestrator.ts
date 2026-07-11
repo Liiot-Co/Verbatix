@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useWizardStore, type FileEntry } from "@/store/useWizardStore";
 import { createRound, uploadFile, getMetrics, getRoundResponses } from "@/api/client";
 import type { Round } from "@/api/types";
@@ -21,16 +22,17 @@ function waitUntilFileDone(fileId: string): Promise<void> {
 }
 
 export function useWizardOrchestrator() {
+  const navigate = useNavigate();
+
   const startProcessing = useCallback(async () => {
-    const { files, setStage, updateFile, setActiveFileId, showToast, activeStudyId } =
+    const { files, updateFile, setActiveFileId, showToast, activeStudyId } =
       useWizardStore.getState();
 
     for (const entry of files) {
-      setStage("processing");
+      navigate("/project/processing");
       updateFile(entry.id, { status: "classifying" });
 
       try {
-        // Create round — retry with timestamp suffix on 409 duplicate name
         let roundName = entry.name;
         let round;
         try {
@@ -45,7 +47,6 @@ export function useWizardOrchestrator() {
         }
         updateFile(entry.id, { roundId: round.id, name: roundName });
 
-        // Upload and classify
         const result = await uploadFile(entry.file, entry.column!, round.id);
         updateFile(entry.id, {
           uploadResult: result,
@@ -64,12 +65,10 @@ export function useWizardOrchestrator() {
         return;
       }
 
-      // Hand off to review stage and wait for user to finish
       setActiveFileId(entry.id);
-      setStage("review");
+      navigate("/project/review");
       await waitUntilFileDone(entry.id);
 
-      // Fetch final metrics after review is done
       const freshEntry = useWizardStore
         .getState()
         .files.find((f) => f.id === entry.id);
@@ -83,7 +82,7 @@ export function useWizardOrchestrator() {
       }
     }
 
-    setStage("done");
+    navigate("/project/dashboard");
   }, []);
 
   const advanceToNextFile = useCallback(() => {
@@ -95,15 +94,11 @@ export function useWizardOrchestrator() {
   }, []);
 
   const continueRound = useCallback(async (round: Round) => {
-    const { setFiles, setActiveFileId, setStage, setActiveStudyId, setView, showToast } =
+    const { setFiles, setActiveFileId, setActiveStudyId, showToast } =
       useWizardStore.getState();
 
     try {
       const pending = await getRoundResponses(round.id, "requires_human");
-      // Fix the pending count as this round's "total" for the progress bar —
-      // ReviewStage reads uploadResult.requires_human, and it must stay fixed
-      // (not recompute from the shrinking `pending` array) for progress/milestones
-      // to work on this rehydration path same as the fresh-upload path.
       const entry: FileEntry = {
         id: crypto.randomUUID(),
         file: new File([], round.name),
@@ -128,13 +123,12 @@ export function useWizardOrchestrator() {
       if (round.study_id) setActiveStudyId(round.study_id);
 
       if (pending.length > 0) {
-        setStage("review");
+        navigate("/project/review");
       } else {
         const metrics = await getMetrics(round.id);
         setFiles([{ ...entry, metrics }]);
-        setStage("done");
+        navigate("/project/dashboard");
       }
-      setView("project");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Error desconocido";
       showToast(`No se pudo continuar el round: ${msg}`, "error");
@@ -149,7 +143,8 @@ export function useWizardOrchestrator() {
     setActiveFileId(null);
     setFocusedItemIdx(0);
     resetSession();
-  }, []);
+    navigate("/project/upload");
+  }, [navigate]);
 
   return { startProcessing, advanceToNextFile, resetWizard, continueRound };
 }

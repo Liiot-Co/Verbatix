@@ -1,10 +1,8 @@
 import { create } from "zustand";
-import type { SurveyItem, UploadResult, Metrics, Code } from "../api/types";
+import type { SurveyItem, UploadResult, Metrics, Code, StudyMode } from "../api/types";
 
 export type WizardStage = "upload" | "processing" | "review" | "done";
 export type FileStatus = "pending" | "classifying" | "reviewing" | "done" | "error";
-export type AppView = "project" | "history" | "codebook";
-
 export interface FileEntry {
   id: string;
   file: File;
@@ -23,17 +21,19 @@ interface Toast {
   id: number;
   message: string;
   type: "success" | "error" | "info";
+  actionLabel?: string;
+  onAction?: () => void;
 }
 
 interface WizardState {
-  view: AppView;
-  setView: (v: AppView) => void;
-
   activeStudyId: number | null;
   setActiveStudyId: (id: number | null) => void;
 
   activeStudyName: string | null;
   setActiveStudyName: (name: string | null) => void;
+
+  activeStudyMode: StudyMode;
+  setActiveStudyMode: (mode: StudyMode) => void;
 
   stage: WizardStage;
   setStage: (s: WizardStage) => void;
@@ -52,7 +52,11 @@ interface WizardState {
   setLoading: (v: boolean) => void;
 
   toasts: Toast[];
-  showToast: (message: string, type?: Toast["type"]) => void;
+  showToast: (
+    message: string,
+    type?: Toast["type"],
+    action?: { label: string; onAction: () => void }
+  ) => void;
   dismissToast: (id: number) => void;
 
   resolveItemsForFile: (
@@ -60,6 +64,8 @@ interface WizardState {
     resolved: SurveyItem,
     cascade: SurveyItem[]
   ) => void;
+
+  reopenItemForFile: (fileId: string, item: SurveyItem) => void;
 
   codebookStudyId: number | null;
   codebook: Code[];
@@ -75,33 +81,50 @@ export interface SessionStats {
   startedAt: number | null;
   resolvedCount: number;
   cascadeCount: number;
-  currentStreak: number;
-  maxStreak: number;
-  lastActionAt: number | null;
 }
-
-const STREAK_GAP_MS = 10_000;
 
 const initialSession: SessionStats = {
   startedAt: null,
   resolvedCount: 0,
   cascadeCount: 0,
-  currentStreak: 0,
-  maxStreak: 0,
-  lastActionAt: null,
 };
 
 let toastId = 0;
 
-export const useWizardStore = create<WizardState>((set) => ({
-  view: "project",
-  setView: (view) => set({ view }),
+const ACTIVE_STUDY_KEY = "verbatix:activeStudyId";
 
-  activeStudyId: null,
-  setActiveStudyId: (activeStudyId) => set({ activeStudyId }),
+function readStoredStudyId(): number | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_STUDY_KEY);
+    return raw ? Number(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredStudyId(id: number | null) {
+  try {
+    if (id === null) localStorage.removeItem(ACTIVE_STUDY_KEY);
+    else localStorage.setItem(ACTIVE_STUDY_KEY, String(id));
+  } catch {
+    // storage unavailable (private mode, etc.) — resume just won't persist
+  }
+}
+
+export const useWizardStore = create<WizardState>((set) => ({
+  // Reading synchronously at store creation means the very first render
+  // already knows which study to resume — no flash of the study picker.
+  activeStudyId: readStoredStudyId(),
+  setActiveStudyId: (activeStudyId) => {
+    writeStoredStudyId(activeStudyId);
+    set({ activeStudyId });
+  },
 
   activeStudyName: null,
   setActiveStudyName: (activeStudyName) => set({ activeStudyName }),
+
+  activeStudyMode: "brands",
+  setActiveStudyMode: (activeStudyMode) => set({ activeStudyMode }),
 
   stage: "upload",
   setStage: (stage) => set({ stage }),
@@ -123,12 +146,15 @@ export const useWizardStore = create<WizardState>((set) => ({
   setLoading: (loading) => set({ loading }),
 
   toasts: [],
-  showToast: (message, type = "info") => {
+  showToast: (message, type = "info", action) => {
     const id = ++toastId;
-    set((s) => ({ toasts: [...s.toasts, { id, message, type }] }));
+    const toast: Toast = action
+      ? { id, message, type, actionLabel: action.label, onAction: action.onAction }
+      : { id, message, type };
+    set((s) => ({ toasts: [...s.toasts, toast] }));
     setTimeout(
       () => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
-      4000
+      action ? 5000 : 4000
     );
   },
   dismissToast: (id) =>
@@ -156,6 +182,20 @@ export const useWizardStore = create<WizardState>((set) => ({
       };
     }),
 
+  reopenItemForFile: (fileId, item) =>
+    set((s) => ({
+      files: s.files.map((f) => {
+        if (f.id !== fileId) return f;
+        const exists = f.items.some((it) => it.id === item.id);
+        return {
+          ...f,
+          items: exists
+            ? f.items.map((it) => (it.id === item.id ? item : it))
+            : [item, ...f.items],
+        };
+      }),
+    })),
+
   codebookStudyId: null,
   codebook: [],
   setCodebook: (studyId, codes) => set({ codebookStudyId: studyId, codebook: codes }),
@@ -166,21 +206,12 @@ export const useWizardStore = create<WizardState>((set) => ({
       session: s.session.startedAt ? s.session : { ...initialSession, startedAt: Date.now() },
     })),
   recordResolution: (cascadeCount = 0) =>
-    set((s) => {
-      const now = Date.now();
-      const withinStreak =
-        s.session.lastActionAt !== null && now - s.session.lastActionAt <= STREAK_GAP_MS;
-      const currentStreak = withinStreak ? s.session.currentStreak + 1 : 1;
-      return {
-        session: {
-          ...s.session,
-          resolvedCount: s.session.resolvedCount + 1,
-          cascadeCount: s.session.cascadeCount + cascadeCount,
-          currentStreak,
-          maxStreak: Math.max(s.session.maxStreak, currentStreak),
-          lastActionAt: now,
-        },
-      };
-    }),
+    set((s) => ({
+      session: {
+        ...s.session,
+        resolvedCount: s.session.resolvedCount + 1,
+        cascadeCount: s.session.cascadeCount + cascadeCount,
+      },
+    })),
   resetSession: () => set({ session: initialSession }),
 }));

@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import {
   FileSpreadsheet,
@@ -11,6 +11,8 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { useWizardStore, type FileEntry } from "@/store/useWizardStore";
 import { useWizardOrchestrator } from "@/hooks/useWizardOrchestrator";
+import { getRounds } from "@/api/client";
+import type { Round } from "@/api/types";
 
 async function parseColumns(file: File): Promise<string[]> {
   return new Promise((resolve, reject) => {
@@ -39,7 +41,23 @@ export default function UploadStage() {
   const files      = useWizardStore((s) => s.files);
   const setFiles   = useWizardStore((s) => s.setFiles);
   const updateFile = useWizardStore((s) => s.updateFile);
-  const { startProcessing } = useWizardOrchestrator();
+  const activeStudyId = useWizardStore((s) => s.activeStudyId);
+  const { startProcessing, continueRound } = useWizardOrchestrator();
+
+  // Surface any in-progress round for this study up front — refreshing or
+  // navigating away shouldn't bury unfinished work in Historial.
+  const [pendingRound, setPendingRound] = useState<Round | null>(null);
+  useEffect(() => {
+    if (!activeStudyId) return;
+    getRounds()
+      .then((rounds) => {
+        const inProgress = rounds.find(
+          (r) => r.study_id === activeStudyId && (r.requires_human ?? 0) > 0
+        );
+        setPendingRound(inProgress ?? null);
+      })
+      .catch(() => {});
+  }, [activeStudyId]);
 
   const onDrop = useCallback(async (accepted: File[]) => {
     const current = useWizardStore.getState().files;
@@ -103,13 +121,38 @@ export default function UploadStage() {
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <div className="space-y-1">
-        <h1 className="text-2xl font-semibold text-p-text tracking-tight">
+        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">
           Carga tus encuestas
         </h1>
-        <p className="text-sm text-p-text-muted">
+        <p className="font-subtitle text-sm text-p-text-muted">
           Sube uno o varios archivos — cada uno se clasifica como una ronda independiente
         </p>
       </div>
+
+      {/* Resume banner — the primary action when a review was left mid-way */}
+      {pendingRound && (
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="card p-4 flex items-center gap-3 border-p-warning/30 bg-p-warning/5"
+        >
+          <AlertCircle className="w-4 h-4 text-p-warning shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-p-text truncate">
+              Revisión en curso: {pendingRound.name}
+            </p>
+            <p className="text-xs text-p-text-muted">
+              {pendingRound.requires_human} {pendingRound.requires_human === 1 ? "pendiente" : "pendientes"} de validación
+            </p>
+          </div>
+          <button
+            onClick={() => continueRound(pendingRound)}
+            className="btn-primary text-xs py-1.5 shrink-0"
+          >
+            Continuar <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </motion.div>
+      )}
 
       {/* Dropzone */}
       <div
@@ -159,7 +202,6 @@ export default function UploadStage() {
             {files.map((entry) => (
               <motion.div
                 key={entry.id}
-                layout
                 initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: 8, scale: 0.97 }}

@@ -25,8 +25,12 @@ export default {
         },
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
-        mono: ["JetBrains Mono", "monospace"],
+        // Body copy (Liiot brandbook)
+        sans: ["Open Sans", "system-ui", "sans-serif"],
+        // Wordmark/icon lockup + page H1s
+        heading: ["Givonic", "system-ui", "sans-serif"],
+        // Subtitle/description line under a heading
+        subtitle: ["Satoshi", "system-ui", "sans-serif"],
       },
       backdropBlur: {
         glass: "12px",

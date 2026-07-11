@@ -13,15 +13,14 @@ export default function SessionSummary({ session }: { session: SessionStats }) {
     { label: "Resueltos", value: session.resolvedCount },
     { label: "Cascadas", value: session.cascadeCount },
     { label: "Tiempo", value: formatElapsed(elapsed) },
-    { label: "Racha máxima", value: session.maxStreak },
   ];
 
   return (
-    <div className="grid grid-cols-4 gap-2 pt-2">
+    <div className="grid grid-cols-3 gap-2 pt-2">
       {stats.map((s) => (
         <div key={s.label} className="text-center">
           <div className="text-lg font-bold text-p-text">{s.value}</div>
-          <div className="text-[10px] font-mono uppercase tracking-wider text-p-text-faint">
+          <div className="text-xs font-subtitle uppercase tracking-wider text-p-text-faint">
             {s.label}
           </div>
         </div>

@@ -51,17 +51,17 @@ export default function CodebookView() {
   return (
     <div className="flex-1 overflow-y-auto px-8 py-7">
       <div className="mb-6">
-        <div className="font-mono text-[11px] tracking-[0.18em] uppercase text-p-text-faint mb-1.5">
+        <div className="font-subtitle text-[11px] tracking-[0.18em] uppercase text-p-text-faint mb-1.5">
           Libro de códigos
         </div>
-        <h2 className="font-sans font-extrabold text-2xl tracking-tight text-p-text">
+        <h2 className="font-heading font-extrabold text-2xl tracking-tight text-p-text">
           Netos y códigos del estudio activo
         </h2>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
         <div className="card p-4 flex flex-col gap-2">
-          <div className="font-mono text-[10.5px] tracking-wider uppercase text-p-text-faint">Nuevo neto</div>
+          <div className="font-subtitle text-[10.5px] tracking-wider uppercase text-p-text-faint">Nuevo neto</div>
           <div className="flex gap-2">
             <input className="input text-sm" placeholder="Nombre del neto" value={newNetName}
               onChange={(e) => setNewNetName(e.target.value)}
@@ -70,7 +70,7 @@ export default function CodebookView() {
           </div>
         </div>
         <div className="card p-4 flex flex-col gap-2">
-          <div className="font-mono text-[10.5px] tracking-wider uppercase text-p-text-faint">Nuevo código</div>
+          <div className="font-subtitle text-[10.5px] tracking-wider uppercase text-p-text-faint">Nuevo código</div>
           <div className="flex gap-2">
             <select className="input text-sm w-32" value={newNetId} onChange={(e) => setNewNetId(e.target.value === "" ? "" : Number(e.target.value))}>
               <option value="">Sin neto</option>

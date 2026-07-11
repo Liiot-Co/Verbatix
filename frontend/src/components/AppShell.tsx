@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
-import { LayoutGrid, History as HistoryIcon, Tag, Plus, ChevronDown } from "lucide-react";
-import { useWizardStore, type AppView } from "@/store/useWizardStore";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Upload, ScanSearch, LayoutDashboard, History as HistoryIcon, Tag, Plus, ChevronDown } from "lucide-react";
+import { useWizardStore } from "@/store/useWizardStore";
 import { getStudies, createStudy } from "@/api/client";
 import type { MarketStudy } from "@/api/types";
 
-const NAV_ITEMS: { view: AppView; label: string; icon: typeof LayoutGrid }[] = [
-  { view: "project", label: "Proyecto", icon: LayoutGrid },
-  { view: "history", label: "Historial", icon: HistoryIcon },
-  { view: "codebook", label: "Códigos", icon: Tag },
+const NAV_ITEMS: { path: string; label: string; icon: typeof Upload }[] = [
+  { path: "/project/upload", label: "Carga", icon: Upload },
+  { path: "/project/review", label: "Revisión", icon: ScanSearch },
+  { path: "/project/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/history", label: "Historial", icon: HistoryIcon },
+  { path: "/codebook", label: "Códigos", icon: Tag },
 ];
 
 interface AppShellProps {
@@ -15,22 +18,23 @@ interface AppShellProps {
 }
 
 export default function AppShell({ children }: AppShellProps) {
-  const view = useWizardStore((s) => s.view);
-  const setView = useWizardStore((s) => s.setView);
+  const navigate = useNavigate();
+  const location = useLocation();
   const activeStudyId = useWizardStore((s) => s.activeStudyId);
   const setActiveStudyId = useWizardStore((s) => s.setActiveStudyId);
   const setActiveStudyName = useWizardStore((s) => s.setActiveStudyName);
+  const setActiveStudyMode = useWizardStore((s) => s.setActiveStudyMode);
 
   const [studies, setStudies] = useState<MarketStudy[]>([]);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
 
   const loadStudies = () => {
+    // No silent auto-select — landing on a study is an explicit choice
+    // made from the study picker (see StudyPicker.tsx), not a side effect
+    // of the sidebar mounting.
     getStudies()
-      .then((list) => {
-        setStudies(list);
-        if (!activeStudyId && list[0]) setActiveStudyId(list[0].id);
-      })
+      .then((list) => setStudies(list))
       .catch(() => {});
   };
 
@@ -43,7 +47,8 @@ export default function AppShell({ children }: AppShellProps) {
 
   useEffect(() => {
     setActiveStudyName(activeStudy?.name ?? null);
-  }, [activeStudy?.name, setActiveStudyName]);
+    if (activeStudy?.mode) setActiveStudyMode(activeStudy.mode);
+  }, [activeStudy?.name, activeStudy?.mode, setActiveStudyName, setActiveStudyMode]);
 
   const handleCreateStudy = async () => {
     if (!newName.trim()) return;
@@ -66,22 +71,22 @@ export default function AppShell({ children }: AppShellProps) {
               </svg>
             </div>
             <div>
-              <div className="font-sans font-extrabold text-[15px] tracking-tight text-p-text leading-tight">Verbatix</div>
-              <div className="font-mono text-[10px] tracking-[0.18em] uppercase text-p-text-faint mt-0.5">Studio</div>
+              <div className="font-heading font-extrabold text-[15px] tracking-tight text-p-text leading-tight">Verbatix</div>
+              <div className="font-subtitle text-[10px] tracking-[0.18em] uppercase text-p-text-faint mt-0.5">Studio</div>
             </div>
           </div>
         </div>
 
         <nav className="flex-1 p-2 flex flex-col gap-1 overflow-y-auto">
-          <div className="font-mono text-[10px] tracking-[0.22em] uppercase text-p-text-faint px-2 pt-2.5 pb-1.5">
+          <div className="font-subtitle text-[10px] tracking-[0.22em] uppercase text-p-text-faint px-2 pt-2.5 pb-1.5">
             Principal
           </div>
-          {NAV_ITEMS.map(({ view: v, label, icon: Icon }) => {
-            const active = view === v;
+          {NAV_ITEMS.map(({ path, label, icon: Icon }) => {
+            const active = location.pathname === path;
             return (
               <button
-                key={v}
-                onClick={() => setView(v)}
+                key={path}
+                onClick={() => navigate(path)}
                 className={[
                   "relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
                   active ? "bg-p-bg-subtle text-p-text" : "text-p-text-muted hover:bg-p-bg-subtle/60 hover:text-p-text",
@@ -97,17 +102,17 @@ export default function AppShell({ children }: AppShellProps) {
           })}
 
           <div className="h-px bg-p-border my-2.5 mx-0.5" />
-          <div className="font-mono text-[10px] tracking-[0.22em] uppercase text-p-text-faint px-2 pb-1.5">
+          <div className="font-subtitle text-[10px] tracking-[0.22em] uppercase text-p-text-faint px-2 pb-1.5">
             Estudio activo
           </div>
 
           {activeStudy ? (
             <div className="p-3 rounded-lg border border-p-border bg-p-bg-subtle/60 mx-0.5">
-              <div className="font-mono text-[10.5px] tracking-wider uppercase text-p-accent mb-1">
+              <div className="font-subtitle text-[10.5px] tracking-wider uppercase text-p-accent mb-1">
                 EST-{String(activeStudy.id).padStart(4, "0")}
               </div>
               <div className="text-sm font-semibold text-p-text leading-tight mb-2">{activeStudy.name}</div>
-              <div className="text-[11px] font-mono text-p-text-faint">
+              <div className="text-[11px] font-subtitle text-p-text-faint">
                 {activeStudy.codebook_size} códigos · {activeStudy.round_count} rondas
               </div>
             </div>

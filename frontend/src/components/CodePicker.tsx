@@ -1,21 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Check } from "lucide-react";
 import { useWizardStore } from "@/store/useWizardStore";
-import { getCodes, createCode, setResponseCodes } from "@/api/client";
+import { getCodes, createCode, setResponseCodes, reopenResponse } from "@/api/client";
+import { playSound } from "@/lib/sound";
 import type { SurveyItem } from "@/api/types";
 
 interface Props {
   item: SurveyItem;
   fileId: string;
   onSaved: () => void;
+  /** ← in the game bindings — reject the whole response. */
+  onReject: () => void;
 }
 
-export default function CodePicker({ item, fileId, onSaved }: Props) {
+export default function CodePicker({ item, fileId, onSaved, onReject }: Props) {
   const activeStudyId    = useWizardStore((s) => s.activeStudyId);
   const codebook          = useWizardStore((s) => s.codebook);
   const codebookStudyId   = useWizardStore((s) => s.codebookStudyId);
   const setCodebook       = useWizardStore((s) => s.setCodebook);
   const resolveItemsForFile = useWizardStore((s) => s.resolveItemsForFile);
+  const reopenItemForFile  = useWizardStore((s) => s.reopenItemForFile);
   const recordResolution   = useWizardStore((s) => s.recordResolution);
   const showToast         = useWizardStore((s) => s.showToast);
 
@@ -25,6 +29,7 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
   const [search, setSearch] = useState("");
   const [newCodeName, setNewCodeName] = useState("");
   const [saving, setSaving] = useState(false);
+  const newCodeInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setSelected(new Set((item.codes ?? []).map((c) => c.code_id)));
@@ -66,13 +71,24 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
   };
 
   const save = async () => {
+    playSound("classify");
     setSaving(true);
     try {
       const wasPending = item.status === "requires_human";
       const updated = await setResponseCodes(item.id, Array.from(selected));
       resolveItemsForFile(fileId, updated, []);
       if (wasPending && updated.status !== "requires_human") recordResolution();
-      showToast("Códigos guardados", "success");
+      showToast("Códigos guardados", "success", {
+        label: "Deshacer",
+        onAction: async () => {
+          try {
+            const reopened = await reopenResponse(item.id);
+            reopenItemForFile(fileId, reopened);
+          } catch {
+            showToast("No se pudo deshacer", "error");
+          }
+        },
+      });
       onSaved();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Error al guardar códigos", "error");
@@ -89,7 +105,8 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
     toggle(code.id);
   };
 
-  // Keys 1..9 toggle the first suggested codes; Enter saves the set and advances
+  // Game bindings: 1-9 toggle suggested codes, Enter saves+advances,
+  // ← rejects the response, → jumps to "create new code" (mirrors EntityCard).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
@@ -99,6 +116,8 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
         save();
         return;
       }
+      if (e.key === "ArrowLeft") { e.preventDefault(); onReject(); return; }
+      if (e.key === "ArrowRight") { e.preventDefault(); newCodeInputRef.current?.focus(); return; }
       const n = Number(e.key);
       if (n >= 1 && n <= 9 && suggested[n - 1]) {
         e.preventDefault();
@@ -108,13 +127,13 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [suggested, selected]);
+  }, [suggested, selected, onReject]);
 
   if (!activeStudyId) return null;
 
   return (
     <div className="space-y-3">
-      <div className="text-[10px] font-mono uppercase tracking-wider text-p-text-faint">
+      <div className="text-[10px] font-subtitle uppercase tracking-wider text-p-text-faint">
         Códigos {saving && "· guardando..."}
       </div>
 
@@ -131,7 +150,7 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
                   : "bg-p-bg-subtle border-p-border text-p-text-muted",
               ].join(" ")}
             >
-              {idx < 9 && <span className="font-mono opacity-60">{idx + 1}</span>}
+              {idx < 9 && <span className="font-subtitle opacity-60">{idx + 1}</span>}
               {c.name}
             </button>
           ))}
@@ -148,7 +167,7 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
       <div className="max-h-40 overflow-y-auto flex flex-col gap-2">
         {grouped.map(([netName, codes]) => (
           <div key={netName}>
-            <div className="text-[10px] font-mono uppercase text-p-text-faint mb-1">{netName}</div>
+            <div className="text-[10px] font-subtitle uppercase text-p-text-faint mb-1">{netName}</div>
             <div className="flex flex-wrap gap-1.5">
               {codes.map((c) => (
                 <button
@@ -171,11 +190,15 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
 
       <div className="flex gap-2">
         <input
+          ref={newCodeInputRef}
           className="input text-xs py-1.5 flex-1"
           placeholder="Crear código nuevo..."
           value={newCodeName}
           onChange={(e) => setNewCodeName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleCreateCode()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleCreateCode();
+            if (e.key === "Escape") newCodeInputRef.current?.blur();
+          }}
         />
         <button className="btn-ghost text-xs px-2" onClick={handleCreateCode}>
           <Plus className="w-3.5 h-3.5" />
@@ -185,7 +208,7 @@ export default function CodePicker({ item, fileId, onSaved }: Props) {
       <button className="btn-primary text-xs w-full justify-center" onClick={save} disabled={saving}>
         <Check className="w-3.5 h-3.5" />
         Guardar códigos
-        <kbd className="font-mono text-[10px] opacity-70 ml-1">↵</kbd>
+        <kbd className="font-subtitle text-[10px] opacity-70 ml-1">↵</kbd>
       </button>
     </div>
   );

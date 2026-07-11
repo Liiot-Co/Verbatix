@@ -103,6 +103,22 @@ def _to_item(resp: SurveyResponse, db: Session) -> dict:
     }
 
 
+@router.post("/responses/{response_id}/reopen")
+def reopen_response(response_id: int, db: Session = Depends(get_db)):
+    """Undo a resolve/save — puts the item back in the pending queue.
+    ponytail: doesn't revert cascade-resolved siblings or clear the brand/codes
+    already set; the user just gets another pass at this item. Full undo of
+    the cascade would need per-action snapshots, add if this bites someone.
+    """
+    resp = db.get(SurveyResponse, response_id)
+    if not resp:
+        raise HTTPException(status_code=404, detail="Response not found")
+    resp.status = "requires_human"
+    db.commit()
+    db.refresh(resp)
+    return _to_item(resp, db)
+
+
 class SetCodesRequest(BaseModel):
     code_ids: list[int]
 

@@ -27,6 +27,17 @@ function Stack() {
           >
             {ICONS[t.type]}
             <span className="text-sm text-p-text flex-1">{t.message}</span>
+            {t.onAction && (
+              <button
+                onClick={() => {
+                  t.onAction?.();
+                  dismissToast(t.id);
+                }}
+                className="text-xs font-semibold text-p-accent hover:underline shrink-0"
+              >
+                {t.actionLabel ?? "Deshacer"}
+              </button>
+            )}
             <button
               onClick={() => dismissToast(t.id)}
               className="text-p-text-faint hover:text-p-text transition-colors"

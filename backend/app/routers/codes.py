@@ -14,19 +14,23 @@ router = APIRouter(prefix="/api", tags=["codes"])
 class StudyCreate(BaseModel):
     name: str
     client: str | None = None
+    mode: str = "brands"
 
 
 class StudyResponse(BaseModel):
     id: int
     name: str
     client: str | None = None
+    mode: str = "brands"
     round_count: int = 0
     codebook_size: int = 0
 
 
 @router.post("/studies", response_model=StudyResponse)
 def create_study(body: StudyCreate, db: Session = Depends(get_db)):
-    study = MarketStudy(name=body.name, client=body.client)
+    if body.mode not in ("brands", "codebook"):
+        raise HTTPException(status_code=422, detail="mode must be 'brands' or 'codebook'")
+    study = MarketStudy(name=body.name, client=body.client, mode=body.mode)
     db.add(study)
     db.commit()
     db.refresh(study)
@@ -54,6 +58,7 @@ def _study_to_response(study: MarketStudy, db: Session) -> StudyResponse:
         id=study.id,
         name=study.name,
         client=study.client,
+        mode=study.mode,
         round_count=round_count or 0,
         codebook_size=codebook_size or 0,
     )

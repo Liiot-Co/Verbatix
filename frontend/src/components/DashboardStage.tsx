@@ -141,10 +141,10 @@ export default function DashboardStage({ onReset }: Props) {
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-p-text tracking-tight">
+          <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">
             Dashboard
           </h1>
-          <p className="text-sm text-p-text-muted">
+          <p className="font-subtitle text-sm text-p-text-muted">
             {doneFiles.length}{" "}
             {doneFiles.length === 1 ? "ronda clasificada" : "rondas clasificadas"}
           </p>
@@ -308,7 +308,7 @@ export default function DashboardStage({ onReset }: Props) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4">
             {derived.netGroups.map(([netName, codes]) => (
               <div key={netName} className="space-y-1.5">
-                <div className="text-[11px] font-mono uppercase tracking-wider text-p-text-faint">
+                <div className="text-[11px] font-subtitle uppercase tracking-wider text-p-text-faint">
                   {netName}
                 </div>
                 {codes.map((c) => (
@@ -322,7 +322,7 @@ export default function DashboardStage({ onReset }: Props) {
                         style={{ width: `${(c.count / derived.maxCodeCount) * 100}%` }}
                       />
                     </div>
-                    <span className="text-xs font-mono text-p-text-faint w-8 shrink-0 text-right">
+                    <span className="text-xs font-subtitle text-p-text-faint w-8 shrink-0 text-right">
                       {c.count}
                     </span>
                   </div>

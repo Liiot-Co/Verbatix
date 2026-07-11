@@ -66,16 +66,16 @@ export default function HistoryView() {
       >
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-p-text truncate">{round.name}</div>
-          <div className="text-[11px] font-mono text-p-text-faint">
+          <div className="text-[11px] font-subtitle text-p-text-faint">
             {total} registros · {pending} pendientes
           </div>
         </div>
         {complete ? (
-          <span className="text-[11px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full text-p-success bg-p-success/10 border border-p-success/20">
+          <span className="text-[11px] font-subtitle uppercase tracking-wider px-2 py-0.5 rounded-full text-p-success bg-p-success/10 border border-p-success/20">
             Completado
           </span>
         ) : (
-          <span className="text-[11px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full text-p-warning bg-p-warning/10 border border-p-warning/20">
+          <span className="text-[11px] font-subtitle uppercase tracking-wider px-2 py-0.5 rounded-full text-p-warning bg-p-warning/10 border border-p-warning/20">
             En proceso
           </span>
         )}
@@ -101,10 +101,10 @@ export default function HistoryView() {
     <div className="flex-1 overflow-y-auto px-8 py-7">
       <div className="mb-6 flex items-end justify-between">
         <div>
-          <div className="font-mono text-[11px] tracking-[0.18em] uppercase text-p-text-faint mb-1.5">
+          <div className="font-subtitle text-[11px] tracking-[0.18em] uppercase text-p-text-faint mb-1.5">
             Actividad · Timeline
           </div>
-          <h2 className="font-sans font-extrabold text-2xl tracking-tight text-p-text">
+          <h2 className="font-heading font-extrabold text-2xl tracking-tight text-p-text">
             Historial de estudios
           </h2>
         </div>
@@ -128,7 +128,7 @@ export default function HistoryView() {
             <div className="flex items-center justify-between mb-3">
               <div>
                 <div className="font-semibold text-sm text-p-text">{study.name}</div>
-                <div className="text-[11px] font-mono text-p-text-faint">
+                <div className="text-[11px] font-subtitle text-p-text-faint">
                   {study.codebook_size} códigos en el libro
                 </div>
               </div>
