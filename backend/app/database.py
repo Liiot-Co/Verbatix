@@ -1,26 +1,19 @@
-from pathlib import Path
-
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.models import Base
 
-db_path = Path(settings.db_path)
-db_path.parent.mkdir(parents=True, exist_ok=True)
+url = settings.database_url
+if url.startswith("postgres://"):
+    url = url.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(f"sqlite:///{db_path}", echo=False)
+engine = create_engine(url, echo=False, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine)
 
 
-def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
-    # ponytail: create_all doesn't ALTER existing tables — patch columns
-    # added after the first deploy by hand. Upgrade to Alembic if more show up.
-    with engine.begin() as conn:
-        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(market_studies)"))}
-        if "mode" not in cols:
-            conn.execute(text("ALTER TABLE market_studies ADD COLUMN mode VARCHAR NOT NULL DEFAULT 'brands'"))
+def check_db() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("select 1"))
 
 
 def get_db():

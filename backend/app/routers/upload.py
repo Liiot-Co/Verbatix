@@ -1,107 +1,230 @@
+import hashlib
+import re
 import tempfile
+import unicodedata
+import uuid
 from pathlib import Path
+from typing import List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import ResponseCode, Round, SurveyResponse
-from app.services.pipeline import classify_codes, classify_text
+from app.models import Studio, ImportedFile, Verbatim, MentionGroup
 
 router = APIRouter(prefix="/api", tags=["upload"])
 
 
-class UploadResponse(BaseModel):
+class UploadSummary(BaseModel):
     status: str
-    round_id: int
-    total: int
-    auto_approved: int
-    requires_human: int
-    generic: int
-    items: list[dict]
+    imported_file_id: str
+    studio_id: str
+    total_rows: int
+    unique_mentions: int
+    file_name: str
 
 
-@router.post("/upload")
+def clean_text(text: str) -> str:
+    """Normaliza el texto: minúsculas, remueve tildes, puntuación y espacios extras."""
+    if not text or pd.isna(text):
+        return ""
+    text = str(text).lower().strip()
+    # Remover tildes
+    nfkd_form = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in nfkd_form if not unicodedata.combining(c))
+    # Cambiar puntuación por espacios
+    text = re.sub(r"[^\w\s]", " ", text)
+    # Colapsar espacios múltiples
+    return re.sub(r"\s+", " ", text).strip()
+
+
+@router.post("/upload", response_model=UploadSummary)
 async def upload_file(
     file: UploadFile = File(...),
     answer_column: str = Form(...),
-    round_id: int = Form(...),
+    studio_id: str = Form(...),
+    sheet_name: str = Form("Hoja1"),
     db: Session = Depends(get_db),
 ):
-    rnd = db.query(Round).get(round_id)
-    if not rnd:
-        raise HTTPException(status_code=404, detail="Round not found")
+    # 1. Validar que el studio_id sea un UUID válido y exista
+    try:
+        studio_uuid = uuid.UUID(studio_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El studio_id proporcionado no es un UUID válido",
+        )
 
+    studio = db.query(Studio).filter(Studio.id == studio_uuid).first()
+    if not studio:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Estudio con ID {studio_id} no encontrado",
+        )
+
+    # 2. Leer archivo y calcular checksum
+    file_content = await file.read()
+    checksum = hashlib.sha256(file_content).hexdigest()
+
+    # Comprobar si ya existe un archivo importado con el mismo checksum en este estudio
+    existing_file = (
+        db.query(ImportedFile)
+        .filter(ImportedFile.studio_id == studio_uuid, ImportedFile.checksum == checksum)
+        .first()
+    )
+    if existing_file:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Este archivo ya fue importado en este estudio (ID archivo: {existing_file.id})",
+        )
+
+    # Guardar en archivo temporal para que pandas pueda leerlo
     suffix = Path(file.filename or "upload.xlsx").suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        file_content = await file.read()
         tmp.write(file_content)
         tmp_path = tmp.name
 
     try:
-        df = pd.read_excel(tmp_path, engine="openpyxl")
+        # 3. Leer Excel con pandas
+        try:
+            df = pd.read_excel(tmp_path, sheet_name=sheet_name, engine="openpyxl")
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error al leer la hoja '{sheet_name}' del Excel: {e}",
+            )
+
         if answer_column not in df.columns:
             raise HTTPException(
-                status_code=400,
-                detail=f"Column '{answer_column}' not found",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"La columna de respuestas '{answer_column}' no se encuentra en el archivo. Columnas disponibles: {list(df.columns)}",
             )
 
-        items: list[dict] = []
-        for row_index, row in df.iterrows():
-            text = str(row[answer_column]).strip()
-            if not text or text.lower() in ("nan", "none", ""):
+        # 4. Crear registro en imported_files con estado validating
+        imported_file = ImportedFile(
+            studio_id=studio_uuid,
+            file_type="verbatims_xlsx",
+            sheet_name=sheet_name,
+            original_filename=file.filename or "upload.xlsx",
+            checksum=checksum,
+            status="validating",
+        )
+        db.add(imported_file)
+        db.flush()
+
+        # Determinar columna de ID de encuestado si existe
+        id_col = None
+        for col in df.columns:
+            if str(col).lower() in ("id", "respondentid", "respondent_id", "folio", "caseid", "case_id", "respondent external id"):
+                id_col = col
+                break
+
+        # 5. Iterar filas y procesar verbatims y grupos de menciones
+        total_rows = 0
+        mention_cache = {}  # Cache de normalized_text -> MentionGroup para este upload
+
+        for idx, row in df.iterrows():
+            raw_text = row[answer_column]
+            if pd.isna(raw_text):
+                continue
+            
+            raw_text_str = str(raw_text).strip()
+            if not raw_text_str:
                 continue
 
-            result = classify_text(text, db)
+            cleaned = clean_text(raw_text_str)
+            # Siempre se conserva respuesta_original y respuesta_limpia
+            original_text = raw_text_str
+            normalized_text = cleaned
 
-            sr = SurveyResponse(
-                round_id=round_id,
-                original_text=text,
-                extracted_term=result["extracted_term"],
-                confidence=result["confidence"],
-                status=result["status"],
-                official_brand_id=result["official_brand_id"],
-                external_row_id=str(row_index),
+            # Obtener ID de encuestado o usar el índice de fila
+            resp_id = str(row[id_col]).strip() if (id_col is not None and not pd.isna(row[id_col])) else f"row_{idx}"
+
+            # Controlar que no dupliquemos verbatims de la misma persona para la misma pregunta en este estudio
+            existing_verbatim = (
+                db.query(Verbatim)
+                .filter(
+                    Verbatim.studio_id == studio_uuid,
+                    Verbatim.respondent_external_id == resp_id,
+                    Verbatim.question_key == answer_column,
+                )
+                .first()
             )
-            db.add(sr)
-            db.flush()
+            if existing_verbatim:
+                continue
 
-            code_matches = classify_codes(text, rnd.study_id, db)
-            for m in code_matches:
-                db.add(ResponseCode(
-                    response_id=sr.id,
-                    code_id=m["code_id"],
-                    confidence=m["confidence"],
-                    origin="auto",
-                ))
+            # Buscar o crear el grupo de mención
+            if normalized_text in mention_cache:
+                m_group = mention_cache[normalized_text]
+                m_group.frequency_count += 1
+            else:
+                m_group = (
+                    db.query(MentionGroup)
+                    .filter(
+                        MentionGroup.studio_id == studio_uuid,
+                        MentionGroup.normalized_text == normalized_text,
+                    )
+                    .first()
+                )
+                if m_group:
+                    m_group.frequency_count += 1
+                else:
+                    m_group = MentionGroup(
+                        studio_id=studio_uuid,
+                        normalized_text=normalized_text,
+                        sample_text=original_text[:200],  # Recorte para muestra
+                        frequency_count=1,
+                        status="pending_review",
+                    )
+                    db.add(m_group)
+                    db.flush()
+                mention_cache[normalized_text] = m_group
 
-            items.append({
-                "id": sr.id,
-                "original_text": sr.original_text,
-                "extracted_term": sr.extracted_term,
-                "suggested_brand": result["suggested_brand"],
-                "official_brand_id": result["official_brand_id"],
-                "confidence": sr.confidence,
-                "status": sr.status,
-                "codes": code_matches,
-            })
+            # Crear Verbatim
+            verbatim = Verbatim(
+                studio_id=studio_uuid,
+                mention_group_id=m_group.id,
+                imported_file_id=imported_file.id,
+                respondent_external_id=resp_id,
+                question_key=answer_column,
+                original_text=original_text,
+                normalized_text=normalized_text,
+                coding_status="pending",
+            )
+            db.add(verbatim)
+            total_rows += 1
+
+        # 6. Actualizar el estado del archivo importado
+        imported_file.total_rows = total_rows
+        imported_file.status = "validated"
+        
+        # 7. Actualizar el estado del estudio
+        studio.status = "files_uploaded"
 
         db.commit()
 
-        auto = sum(1 for i in items if i["status"] == "auto_approved")
-        human = sum(1 for i in items if i["status"] == "requires_human")
-        generic = sum(1 for i in items if i["status"] == "generic")
+        # Contar total de grupos de menciones en el estudio
+        unique_mentions = db.query(MentionGroup).filter(MentionGroup.studio_id == studio_uuid).count()
 
-        return UploadResponse(
+        return UploadSummary(
             status="ok",
-            round_id=round_id,
-            total=len(items),
-            auto_approved=auto,
-            requires_human=human,
-            generic=generic,
-            items=items,
+            imported_file_id=str(imported_file.id),
+            studio_id=str(studio_uuid),
+            total_rows=total_rows,
+            unique_mentions=unique_mentions,
+            file_name=imported_file.original_filename,
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno durante la importación del archivo: {e}",
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
