@@ -15,9 +15,7 @@ class Settings(BaseSettings):
     supabase_url: str
     supabase_secret_key: str
     supabase_jwks_url: str
-
-    ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "gemma4:e2b"
+    
     classification_batch_size: int = 200
 
     model_config = {"env_file": ".env", "extra": "ignore"}

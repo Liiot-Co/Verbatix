@@ -249,7 +249,6 @@ class Verbatim(Base):
     normalized_text = Column(String, nullable=True)
     input_code_number = Column(Integer, nullable=True)
     coding_status = Column(String, nullable=False, default="pending")
-<<<<<<< Updated upstream
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
@@ -261,15 +260,10 @@ class Verbatim(Base):
     __table_args__ = (
         UniqueConstraint("studio_id", "respondent_external_id", "question_key", name="verbatims_studio_id_respondent_external_id_question_key_key"),
     )
-=======
-    imported_file_id = Column(GUID, ForeignKey("imported_files.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
->>>>>>> Stashed changes
 
 
 class VerbatimCode(Base):
     __tablename__ = "verbatim_codes"
-<<<<<<< Updated upstream
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     verbatim_id = Column(UUID(as_uuid=True), ForeignKey("verbatims.id", ondelete="CASCADE"), nullable=False)
@@ -286,11 +280,3 @@ class VerbatimCode(Base):
     verbatim = relationship("Verbatim", back_populates="codes")
 
     __table_args__ = (UniqueConstraint("verbatim_id", "code_id", name="verbatim_codes_verbatim_id_code_id_key"),)
-=======
-    id = Column(GUID, primary_key=True, default=new_uuid)
-    verbatim_id = Column(GUID, ForeignKey("verbatims.id"), nullable=False)
-    code_id = Column(GUID, ForeignKey("codes.id"), nullable=False)
-    origin = Column(String, nullable=False)  # llm | fuzzy | analyst_manual
-    confidence = Column(Numeric, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
->>>>>>> Stashed changes

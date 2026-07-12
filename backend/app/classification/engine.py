@@ -1,17 +1,10 @@
 import uuid
 
-<<<<<<< Updated upstream
 from sqlalchemy import text
-=======
->>>>>>> Stashed changes
 from sqlalchemy.orm import Session
 
 from app.classification.ollama_client import classify_batch
 from app.config import settings
-<<<<<<< Updated upstream
-=======
-from app.models import Code, Codebook, Round, Verbatim, VerbatimCode
->>>>>>> Stashed changes
 
 
 def _chunks(items: list, size: int):
@@ -19,7 +12,6 @@ def _chunks(items: list, size: int):
         yield items[i : i + size]
 
 
-<<<<<<< Updated upstream
 def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
     """Classifies pending mention_groups of a studio against its codebook using the local LLM.
 
@@ -124,49 +116,3 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
     db.commit()
 
     return {"run_id": str(run_id), "groups_classified": auto_coded, "anomalies": anomalies, "total": len(groups)}
-=======
-def classify_verbatims(db: Session, round_id: uuid.UUID, verbatim_ids: list[uuid.UUID] | None = None) -> dict:
-    """Classifies pending verbatims of a round against its codebook using the local LLM.
-
-    Used directly for reasons studies (all pending verbatims), and as the entry point
-    for whatever's left unresolved after brand fuzzy matching (verbatim_ids narrowed
-    to that leftover set) — same engine, per docs/ideas/verbatix-sharpen.md.
-    """
-    round_ = db.get(Round, round_id)
-    if not round_:
-        raise ValueError(f"Round {round_id} not found")
-
-    codebook = db.query(Codebook).filter_by(round_id=round_id).first()
-    codes = db.query(Code).filter_by(codebook_id=codebook.id, is_active=True).all()
-    codes_by_number = {c.code_number: c for c in codes}
-    codebook_payload = [{"code_number": c.code_number, "label": c.label} for c in codes]
-
-    query = db.query(Verbatim).filter_by(round_id=round_id, coding_status="pending")
-    if verbatim_ids is not None:
-        query = query.filter(Verbatim.id.in_(verbatim_ids))
-    verbatims = query.all()
-    verbatims_by_id = {str(v.id): v for v in verbatims}
-
-    classified = 0
-    needs_review = 0
-    for batch in _chunks(verbatims, settings.classification_batch_size):
-        payload = [{"id": str(v.id), "text": v.original_text} for v in batch]
-        results = classify_batch(codebook_payload, payload)
-
-        for result in results:
-            verbatim = verbatims_by_id.get(result["verbatim_id"])
-            if verbatim is None:
-                continue
-            matched_codes = [codes_by_number[n] for n in result["code_numbers"] if n in codes_by_number]
-            if not matched_codes:
-                verbatim.coding_status = "needs_review"
-                needs_review += 1
-                continue
-            for code in matched_codes:
-                db.add(VerbatimCode(verbatim_id=verbatim.id, code_id=code.id, origin="llm"))
-            verbatim.coding_status = "coded"
-            classified += 1
-        db.commit()
-
-    return {"classified": classified, "needs_review": needs_review, "total": len(verbatims)}
->>>>>>> Stashed changes

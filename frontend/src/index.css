@@ -35,7 +35,7 @@
     --p-text-muted: #52525E;
     --p-text-faint: #8A8A98;
     --p-accent-l: 0.64; --p-accent-c: 0.11; --p-accent-h: 292;
-    --p-accent-mid-l: 0.70; --p-accent-mid-c: 0.18; --p-accent-mid-h: 50;
+    --p-accent-mid-l: 0.62; --p-accent-mid-c: 0.14; --p-accent-mid-h: 40;
     --p-accent-soft: oklch(0.64 0.11 292 / 0.12);
     --p-border: #EBEBF0;
     --p-border-mid: #D4D4DC;
