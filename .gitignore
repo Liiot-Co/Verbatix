@@ -4,6 +4,7 @@ __pycache__/
 .env
 data/*.xlsx
 data/*.xls
+data/uploads/
 *.sqlite
 *.db
 frontend/dist/

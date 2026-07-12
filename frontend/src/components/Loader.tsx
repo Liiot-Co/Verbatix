@@ -4,10 +4,7 @@ const DOTS = [0, 1, 2];
 
 export default function Loader({ text = "Procesando..." }: { text?: string }) {
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="flex flex-col items-center justify-center py-24 gap-5"
+    <div className="flex flex-col items-center justify-center py-24 gap-5"
     >
       {/* Orbiting dots */}
       <div className="relative w-10 h-10">
@@ -31,6 +28,6 @@ export default function Loader({ text = "Procesando..." }: { text?: string }) {
         ))}
       </div>
       <p className="text-sm text-p-text-muted font-medium">{text}</p>
-    </motion.div>
+    </div>
   );
 }

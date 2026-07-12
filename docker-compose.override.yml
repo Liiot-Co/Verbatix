@@ -12,6 +12,8 @@ services:
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js
+      - ./frontend/index.html:/app/index.html
     command: bun run dev -- --host 0.0.0.0
     ports:
       - "${FRONTEND_PORT}:5173"

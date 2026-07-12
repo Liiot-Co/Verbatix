@@ -1,6 +1,17 @@
-import type { Round, UploadResult, ResolveRequest, ResolveResult, Metrics, MarketStudy, StudyMode, Net, Code, SurveyItem } from "./types";
+import type {
+  ColumnMap,
+  ImportResult,
+  Paginated,
+  ProjectDetail,
+  ProjectListItem,
+  Round,
+  RoundStatus,
+  Study,
+  UploadedFile,
+  Verbatim,
+} from "./types";
 
-const BASE = "/api";
+const BASE = "/api/v1";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, options);
@@ -11,111 +22,94 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function getRounds(): Promise<Round[]> {
-  return request<Round[]>("/rounds");
+const jsonHeaders = { "Content-Type": "application/json" };
+
+export async function getProjects(): Promise<Paginated<ProjectListItem>> {
+  return request<Paginated<ProjectListItem>>("/projects");
 }
 
-export async function createRound(name: string, studyId?: number | null): Promise<Round> {
-  return request<Round>("/rounds", {
+export async function createProject(
+  externalCode: string,
+  name: string,
+  clientName?: string
+): Promise<{ id: string; external_code: string; name: string; client_name: string | null; created_at: string }> {
+  return request("/projects", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, study_id: studyId ?? null }),
+    headers: jsonHeaders,
+    body: JSON.stringify({ external_code: externalCode, name, client_name: clientName ?? null }),
   });
 }
 
-export async function uploadFile(
-  file: File,
-  answerColumn: string,
-  roundId: number,
-): Promise<UploadResult> {
+export async function getProject(projectId: string): Promise<ProjectDetail> {
+  return request<ProjectDetail>(`/projects/${projectId}`);
+}
+
+export interface CreateStudyInput {
+  name: string;
+  coding_type: "brands" | "reasons";
+  survey_question?: string | undefined;
+}
+
+export async function createStudy(projectId: string, input: CreateStudyInput): Promise<Study> {
+  return request<Study>(`/projects/${projectId}/studies`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input),
+  });
+}
+
+export interface CreateRoundInput {
+  name: string;
+  round_number: number;
+  origin_mode: "from_scratch" | "homologated";
+  source_round_id?: string | null | undefined;
+  min_mentions_threshold: number;
+  audit_percentage: number;
+}
+
+export async function createRound(studyId: string, input: CreateRoundInput): Promise<Round> {
+  return request<Round>(`/studies/${studyId}/rounds`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getRound(roundId: string): Promise<RoundStatus> {
+  return request<RoundStatus>(`/rounds/${roundId}`);
+}
+
+export async function uploadFile(roundId: string, file: File): Promise<UploadedFile> {
   const form = new FormData();
   form.append("file", file);
-  form.append("answer_column", answerColumn);
-  form.append("round_id", String(roundId));
-  return request<UploadResult>("/upload", { method: "POST", body: form });
+  return request<UploadedFile>(`/rounds/${roundId}/files`, { method: "POST", body: form });
 }
 
-export async function resolveAnomaly(payload: ResolveRequest): Promise<ResolveResult> {
-  return request<ResolveResult>("/resolve-anomaly", {
+export async function importFile(
+  roundId: string,
+  fileId: string,
+  verbatimsSheet: string,
+  columnMap: ColumnMap,
+  codebookSheet?: string
+): Promise<ImportResult> {
+  return request<ImportResult>(`/rounds/${roundId}/files/${fileId}/import`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      verbatims_sheet: verbatimsSheet,
+      codebook_sheet: codebookSheet ?? null,
+      column_map: columnMap,
+    }),
   });
 }
 
-export async function reopenResponse(responseId: number): Promise<SurveyItem> {
-  return request<SurveyItem>(`/responses/${responseId}/reopen`, { method: "POST" });
-}
-
-export async function getMetrics(roundId: number): Promise<Metrics> {
-  return request<Metrics>(`/metrics/${roundId}`);
-}
-
-export function exportUrl(roundId: number): string {
-  return `${BASE}/export/${roundId}`;
-}
-
-// ── Studies / Netos / Codigos ────────────────────────────────────────
-
-export async function getStudies(): Promise<MarketStudy[]> {
-  return request<MarketStudy[]>("/studies");
-}
-
-export async function createStudy(name: string, client?: string, mode: StudyMode = "brands"): Promise<MarketStudy> {
-  return request<MarketStudy>("/studies", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, client: client ?? null, mode }),
-  });
-}
-
-export async function importCodebook(studyId: number, fromStudyId: number): Promise<{ imported_nets: number; imported_codes: number }> {
-  return request(`/studies/${studyId}/import-codebook`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ from_study_id: fromStudyId }),
-  });
-}
-
-export async function getNets(studyId: number): Promise<Net[]> {
-  return request<Net[]>(`/nets?study_id=${studyId}`);
-}
-
-export async function createNet(studyId: number, name: string): Promise<Net> {
-  return request<Net>("/nets", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ study_id: studyId, name }),
-  });
-}
-
-export async function getCodes(studyId: number): Promise<Code[]> {
-  return request<Code[]>(`/codes?study_id=${studyId}`);
-}
-
-export async function createCode(studyId: number, name: string, netId?: number | null, keywords?: string): Promise<Code> {
-  return request<Code>("/codes", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ study_id: studyId, name, net_id: netId ?? null, keywords: keywords ?? null }),
-  });
-}
-
-export async function setResponseCodes(responseId: number, codeIds: number[]): Promise<SurveyItem> {
-  return request<SurveyItem>(`/responses/${responseId}/codes`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code_ids: codeIds }),
-  });
-}
-
-// ── Historial ────────────────────────────────────────────────────────
-
-export async function getRoundResponses(roundId: number, status?: string): Promise<SurveyItem[]> {
-  const qs = status ? `?status=${status}` : "";
-  return request<SurveyItem[]>(`/rounds/${roundId}/responses${qs}`);
-}
-
-export async function deleteRound(roundId: number): Promise<{ status: string }> {
-  return request(`/rounds/${roundId}`, { method: "DELETE" });
+export async function getVerbatims(
+  roundId: string,
+  page = 1,
+  pageSize = 50,
+  status?: string
+): Promise<Paginated<Verbatim>> {
+  const qs = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  if (status) qs.set("status", status);
+  return request<Paginated<Verbatim>>(`/rounds/${roundId}/verbatims?${qs.toString()}`);
 }
