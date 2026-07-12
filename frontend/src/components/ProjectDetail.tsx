@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowRight, FastForward, Plus, Tag } from "lucide-react";
 import { getProject } from "@/api/client";
-import type { ProjectDetail as ProjectDetailType, RoundSummary, StudySummary } from "@/api/types";
+import type { ProjectDetail as ProjectDetailType, RoundSummary, StudioSummary } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -10,13 +10,14 @@ import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShor
 const STATUS_TONE: Record<string, string> = {
   created: "text-p-text-faint bg-p-bg-subtle border-p-border",
   files_uploaded: "text-p-accent bg-p-accent-soft border-p-accent/20",
+  preliminary_ready: "text-p-accent bg-p-accent-soft border-p-accent/20",
   draft: "text-p-text-faint bg-p-bg-subtle border-p-border",
   completed: "text-p-success bg-p-success/10 border-p-success/20",
 };
 
-function latestRoundOf(project: ProjectDetailType): RoundSummary | null {
-  for (const study of project.studies) {
-    if (study.rounds[0]) return study.rounds[0];
+function latestStudioOf(project: ProjectDetailType): StudioSummary | null {
+  for (const round of project.rounds) {
+    if (round.studios[0]) return round.studios[0];
   }
   return null;
 }
@@ -54,7 +55,7 @@ export default function ProjectDetail() {
         meta: true,
         shift: true,
         action: () => navigate(`/wizard?projectId=${projectId ?? ""}`),
-        description: "Nuevo study",
+        description: "Nueva ronda",
         category: "Acciones",
       },
     ]);
@@ -79,7 +80,7 @@ export default function ProjectDetail() {
     );
   }
 
-  const latestRound = latestRoundOf(project);
+  const latestStudio = latestStudioOf(project);
 
   return (
     <div className="max-w-4xl mx-auto py-4 space-y-6">
@@ -95,85 +96,85 @@ export default function ProjectDetail() {
                 {project.client_name}
               </span>
             )}
-            <span>{project.studies_count} {project.studies_count === 1 ? "estudio" : "estudios"}</span>
+            <span>{project.rounds.length} {project.rounds.length === 1 ? "ronda" : "rondas"}</span>
           </div>
         </div>
 
         {/* General actions */}
         <div className="flex items-center gap-2">
-          {latestRound && (
+          {latestStudio && (
             <button
-              onClick={() => navigate(`/rounds/${latestRound.id}/verbatims`)}
+              onClick={() => navigate(`/studios/${latestStudio.id}/preliminary`)}
               className="btn-ghost text-sm py-2"
-              title="Atajo directo a la última ronda"
+              title="Atajo directo al último estudio"
             >
-              <FastForward className="w-4 h-4" /> Continuar última ronda
+              <FastForward className="w-4 h-4" /> Continuar último estudio
             </button>
           )}
           <button onClick={() => navigate(`/wizard?projectId=${project.id}`)} className="btn-primary text-sm py-2">
-            <Plus className="w-4 h-4" /> Nuevo study
+            <Plus className="w-4 h-4" /> Nueva ronda
           </button>
         </div>
       </div>
 
-      {project.studies.length === 0 ? (
+      {project.rounds.length === 0 ? (
         <div className="card-subtle p-10 flex flex-col items-center justify-center gap-3 text-center">
           <Tag className="w-8 h-8 text-p-text-faint" />
           <div>
-            <div className="text-sm font-semibold text-p-text">Sin studies todavía</div>
-            <p className="text-xs text-p-text-faint mt-1">Crea el primero (marcas o razones) para empezar.</p>
+            <div className="text-sm font-semibold text-p-text">Sin rondas todavía</div>
+            <p className="text-xs text-p-text-faint mt-1">Crea la primera ronda para empezar.</p>
           </div>
           <button onClick={() => navigate(`/wizard?projectId=${project.id}`)} className="btn-primary text-sm mt-2">
-            <Plus className="w-4 h-4" /> Nuevo study
+            <Plus className="w-4 h-4" /> Nueva ronda
           </button>
         </div>
       ) : (
         <div className="space-y-4">
-          {project.studies.map((study: StudySummary) => (
+          {project.rounds.map((round: RoundSummary) => (
             <div
-              key={study.id}
+              key={round.id}
               className="card p-4 space-y-3"
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-p-text">{study.name}</span>
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border border-p-border bg-p-bg-subtle uppercase tracking-wide text-p-text-muted">
-                    {study.coding_type === "brands" ? "Marcas" : "Razones"}
-                  </span>
+                  <span className="text-xs font-semibold text-p-text-faint">R{round.round_number}</span>
+                  <span className="text-sm font-bold text-p-text">{round.name}</span>
                 </div>
                 <button
-                  onClick={() => navigate(`/wizard?projectId=${project.id}&studyId=${study.id}`)}
+                  onClick={() => navigate(`/wizard?projectId=${project.id}&roundId=${round.id}`)}
                   className="btn-ghost text-xs py-1 px-2"
                 >
-                  <Plus className="w-3.5 h-3.5" /> Nueva ronda
+                  <Plus className="w-3.5 h-3.5" /> Nuevo estudio
                 </button>
               </div>
 
-              {study.rounds.length === 0 ? (
-                <p className="text-xs text-p-text-faint">Sin rondas todavía.</p>
+              {round.studios.length === 0 ? (
+                <p className="text-xs text-p-text-faint">Sin estudios todavía.</p>
               ) : (
                 <div className="space-y-1.5">
-                  {study.rounds.map((round) => (
+                  {round.studios.map((studio) => (
                     <button
-                      key={round.id}
-                      onClick={() => navigate(`/rounds/${round.id}/verbatims`)}
+                      key={studio.id}
+                      onClick={() => navigate(`/studios/${studio.id}/preliminary`)}
                       className="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-p-border hover:border-p-accent/40 hover:bg-p-bg-subtle/60 transition-colors text-left group"
                     >
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-xs font-semibold text-p-text-faint shrink-0">R{round.round_number}</span>
-                        <span className="text-sm text-p-text truncate">{round.name}</span>
+                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border border-p-border bg-p-bg-subtle uppercase tracking-wide text-p-text-muted shrink-0">
+                          {studio.coding_type === "brands" ? "Marcas" : "Razones"}
+                        </span>
+                        <span className="text-sm text-p-text truncate">{studio.name}</span>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="text-xs text-p-text-faint">
-                          {round.progress.coded}/{round.progress.total}
+                          {studio.auto_coded}/{studio.verbatims_total}
                         </span>
                         <span
                           className={[
                             "text-[11px] font-semibold px-2 py-0.5 rounded-full border",
-                            STATUS_TONE[round.status] ?? STATUS_TONE.created,
+                            STATUS_TONE[studio.status] ?? STATUS_TONE.created,
                           ].join(" ")}
                         >
-                          {round.status}
+                          {studio.status}
                         </span>
                         <ArrowRight className="w-3.5 h-3.5 text-p-text-faint group-hover:translate-x-0.5 transition-transform" />
                       </div>

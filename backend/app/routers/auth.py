@@ -24,6 +24,15 @@ class SignUpIn(BaseModel):
 @router.post("/signup")
 def signup(payload: SignUpIn):
     """Crea cuenta via Supabase Auth. Devuelve JWT si auto-confirm está activo."""
+    if settings.app_mode == "local":
+        # No hay cuentas en local: cualquier email/password "funciona" y
+        # entra como el dev user fijo (igual que /login).
+        return {
+            "id": settings.local_dev_user_id,
+            "email": payload.email,
+            "access_token": "local-dev-token",
+            "token_type": "bearer",
+        }
     r = httpx.post(
         f"{settings.supabase_url.rstrip('/')}/auth/v1/signup",
         headers={
@@ -53,6 +62,18 @@ class LoginIn(BaseModel):
 @router.post("/login")
 def login(payload: LoginIn):
     """Obtiene un JWT de Supabase Auth."""
+    if settings.app_mode == "local":
+        # Sin Supabase Auth que consultar: cualquier email/password entra
+        # como el dev user fijo (current_user() en app.core.auth ya lo
+        # devuelve sin mirar el token; este solo alimenta la pantalla de
+        # login para que el flujo normal del front funcione).
+        return {
+            "access_token": "local-dev-token",
+            "refresh_token": None,
+            "token_type": "bearer",
+            "expires_in": None,
+            "user": {"id": settings.local_dev_user_id, "email": payload.email or settings.local_dev_user_email},
+        }
     r = httpx.post(
         f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=password",
         headers={

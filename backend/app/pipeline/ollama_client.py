@@ -56,7 +56,7 @@ def classify_batch(codebook: list[dict], verbatims: list[dict]) -> list[dict]:
             "format": RESULT_SCHEMA,
             "stream": False,
         },
-        timeout=120,
+        timeout=300,
     )
     response.raise_for_status()
     content = response.json()["message"]["content"]

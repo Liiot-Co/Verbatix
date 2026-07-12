@@ -3,17 +3,18 @@ import type {
   ImportResult,
   LoginPayload,
   LoginResponse,
-  Paginated,
+  PreliminarySummary,
+  ProcessResult,
   ProjectDetail,
   ProjectListItem,
   Round,
-  RoundStatus,
   SignupPayload,
   SignupResponse,
   Studio,
+  StudioStatus,
   UploadedFile,
   UserProfile,
-  Verbatim,
+  VerbatimList,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -92,8 +93,9 @@ export async function getMe(): Promise<UserProfile> {
 
 /* ── Projects ── */
 
-export async function getProjects(): Promise<Paginated<ProjectListItem>> {
-  return request<Paginated<ProjectListItem>>("/projects");
+// Bare array, no pagination envelope — that's what the backend actually returns.
+export async function getProjects(): Promise<ProjectListItem[]> {
+  return request<ProjectListItem[]>("/projects");
 }
 
 export async function createProject(
@@ -108,7 +110,6 @@ export async function createProject(
   });
 }
 
-// TODO: backend has no GET /projects/{id} route yet — this 404s until one exists.
 export async function getProject(projectId: string): Promise<ProjectDetail> {
   return request<ProjectDetail>(`/projects/${projectId}`);
 }
@@ -144,28 +145,26 @@ export async function createStudio(roundId: string, input: CreateStudioInput): P
   });
 }
 
-// TODO: none of GET/POST /rounds/{id}/... below exist on the backend yet —
-// file upload/import lands on a studio in the schema, not a round. Wiring
-// these is the pipeline work called out separately, not a routing fix.
+/* ── Studios: files, import, process (Fase 1 + Fase 2) ── */
 
-export async function getRound(roundId: string): Promise<RoundStatus> {
-  return request<RoundStatus>(`/rounds/${roundId}`);
+export async function getStudio(studioId: string): Promise<StudioStatus> {
+  return request<StudioStatus>(`/studios/${studioId}`);
 }
 
-export async function uploadFile(roundId: string, file: File): Promise<UploadedFile> {
+export async function uploadFile(studioId: string, file: File): Promise<UploadedFile> {
   const form = new FormData();
   form.append("file", file);
-  return request<UploadedFile>(`/rounds/${roundId}/files`, { method: "POST", body: form });
+  return request<UploadedFile>(`/studios/${studioId}/files`, { method: "POST", body: form });
 }
 
 export async function importFile(
-  roundId: string,
+  studioId: string,
   fileId: string,
   verbatimsSheet: string,
   columnMap: ColumnMap,
   codebookSheet?: string
 ): Promise<ImportResult> {
-  return request<ImportResult>(`/rounds/${roundId}/files/${fileId}/import`, {
+  return request<ImportResult>(`/studios/${studioId}/files/${fileId}/import`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({
@@ -177,12 +176,20 @@ export async function importFile(
 }
 
 export async function getVerbatims(
-  roundId: string,
-  page = 1,
-  pageSize = 50,
+  studioId: string,
+  limit = 100,
+  offset = 0,
   status?: string
-): Promise<Paginated<Verbatim>> {
-  const qs = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+): Promise<VerbatimList> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (status) qs.set("status", status);
-  return request<Paginated<Verbatim>>(`/rounds/${roundId}/verbatims?${qs.toString()}`);
+  return request<VerbatimList>(`/studios/${studioId}/verbatims?${qs.toString()}`);
+}
+
+export async function processStudio(studioId: string): Promise<ProcessResult> {
+  return request<ProcessResult>(`/studios/${studioId}/process`, { method: "POST" });
+}
+
+export async function getPreliminary(studioId: string): Promise<PreliminarySummary> {
+  return request<PreliminarySummary>(`/studios/${studioId}/preliminary`);
 }

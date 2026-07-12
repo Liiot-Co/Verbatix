@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Search, Keyboard } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { getRound, getVerbatims } from "@/api/client";
-import type { CodingStatus, RoundStatus, Verbatim } from "@/api/types";
+import { getStudio, getVerbatims } from "@/api/client";
+import type { CodingStatus, StudioStatus, Verbatim } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -31,11 +31,11 @@ function isTypingTarget(el: EventTarget | null): boolean {
 }
 
 export default function VerbatimsTable() {
-  const { roundId } = useParams<{ roundId: string }>();
+  const { studioId } = useParams<{ studioId: string }>();
   const searchRef = useRef<HTMLInputElement>(null);
   const showToast = useVerbatixStore((s) => s.showToast);
 
-  const [round, setRound] = useState<RoundStatus | null>(null);
+  const [studio, setStudio] = useState<StudioStatus | null>(null);
   const [verbatims, setVerbatims] = useState<Verbatim[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -45,24 +45,24 @@ export default function VerbatimsTable() {
   const [showShortcuts, setShowShortcuts] = useState(false);
 
   useEffect(() => {
-    if (!roundId) return;
-    getRound(roundId).then(setRound);
-  }, [roundId]);
+    if (!studioId) return;
+    getStudio(studioId).then(setStudio);
+  }, [studioId]);
 
   useEffect(() => {
     setPage(1);
   }, [statusFilter]);
 
   useEffect(() => {
-    if (!roundId) return;
+    if (!studioId) return;
     setLoading(true);
-    getVerbatims(roundId, page, PAGE_SIZE, statusFilter || undefined)
+    getVerbatims(studioId, PAGE_SIZE, (page - 1) * PAGE_SIZE, statusFilter || undefined)
       .then((res) => {
         setVerbatims(res.items);
         setTotal(res.total);
       })
       .finally(() => setLoading(false));
-  }, [roundId, page, statusFilter]);
+  }, [studioId, page, statusFilter]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -155,20 +155,18 @@ export default function VerbatimsTable() {
       <Breadcrumb
         items={[
           { label: "Proyectos", to: "/" },
-          ...(round?.project_name ? [{ label: round.project_name }] : []),
-          ...(round?.study_name ? [{ label: round.study_name }] : []),
-          { label: round?.name ?? "Verbatims" },
+          { label: studio?.name ?? "Verbatims" },
         ]}
       />
 
       <div className="space-y-1"
       >
         <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">
-          {round?.name ?? "Verbatims"}
+          {studio?.name ?? "Verbatims"}
         </h1>
-        {round && (
+        {studio && (
           <p className="font-subtitle text-sm text-p-text-muted">
-            {round.counters.verbatims_total} verbatims · {round.counters.codes_total} códigos en el libro
+            {studio.counters.verbatims_total} verbatims · {studio.counters.codes_total} códigos en el libro
           </p>
         )}
       </div>

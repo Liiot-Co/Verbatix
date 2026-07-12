@@ -23,7 +23,7 @@ export default function ProjectDashboard() {
 
   useEffect(() => {
     getProjects()
-      .then((res) => setProjects(res.items))
+      .then(setProjects)
       .finally(() => setLoading(false));
   }, []);
 
@@ -109,7 +109,7 @@ export default function ProjectDashboard() {
           <div>
             <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">Proyectos</h1>
             <p className="font-subtitle text-sm text-p-text-muted mt-0.5">
-              Cada proyecto agrupa studies y rondas de codificación de verbatims.
+              Cada proyecto agrupa rondas y estudios de codificación de verbatims.
             </p>
           </div>
           <div className="relative w-full sm:w-64">
@@ -175,7 +175,6 @@ export default function ProjectDashboard() {
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {filteredProjects.map((project, idx) => {
-                const latestRound = project.last_study?.rounds?.[0];
                 return (
                   <motion.button
                     key={project.id}
@@ -221,14 +220,14 @@ export default function ProjectDashboard() {
                       </motion.div>
                     </div>
 
-                    {latestRound && (
+                    {project.rounds_count > 0 && (
                       <motion.div
                         layout
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: "auto" }}
                         className="relative inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border w-fit text-p-text-faint bg-p-bg-subtle border-p-border"
                       >
-                        <span className="font-semibold text-p-text-muted">{latestRound.progress.total}</span> verbatims · {latestRound.status}
+                        <span className="font-semibold text-p-text-muted">{project.rounds_count}</span> {project.rounds_count === 1 ? "ronda" : "rondas"}
                       </motion.div>
                     )}
 
@@ -242,7 +241,6 @@ export default function ProjectDashboard() {
                           {project.client_name}
                         </span>
                       )}
-                      <span>{project.studies_count} {project.studies_count === 1 ? "estudio" : "estudios"}</span>
                     </motion.div>
                   </motion.button>
                 );

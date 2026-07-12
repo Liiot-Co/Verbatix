@@ -7,6 +7,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-verbatix}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Applied once, in filename order, only on an empty data dir (first run
+      # or after `docker compose down -v`). 000_ before 001_ is deliberate.
+      - ./backend/db/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-verbatix}"]
       interval: 5s
@@ -20,7 +23,12 @@ services:
       - "${BACKEND_PORT:-8001}:8001"
     env_file: .env
     environment:
-      - KLASS_ENV=${APP_ENV:-dev}
+      - APP_MODE=${APP_MODE:-local}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://verbatix:verbatix@db:5432/verbatix}
+    volumes:
+      # WORKDIR is /app (== backend/); local storage defaults to ../data/uploads
+      # relative to that, i.e. /data/uploads here — mount it to the repo's ./data.
+      - ./data:/data
     depends_on:
       db:
         condition: service_healthy

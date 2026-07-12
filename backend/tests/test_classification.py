@@ -55,8 +55,8 @@ def test_classify_studio_matches_and_flags_anomaly():
     db = FakeSession(codes=codes, groups=[group_matched, group_unmatched])
 
     fake_results = [
-        {"group_id": str(group_matched["id"]), "code_numbers": [1]},
-        {"group_id": str(group_unmatched["id"]), "code_numbers": []},
+        {"verbatim_id": str(group_matched["id"]), "code_numbers": [1]},
+        {"verbatim_id": str(group_unmatched["id"]), "code_numbers": []},
     ]
 
     with patch("app.pipeline.classify_llm.classify_batch", return_value=fake_results):

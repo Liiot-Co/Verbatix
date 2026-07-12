@@ -59,7 +59,7 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
         results = classify_batch(codebook_payload, payload)
 
         for result in results:
-            group = groups_by_id.get(result["group_id"])
+            group = groups_by_id.get(result["verbatim_id"])
             if group is None:
                 continue
             group_id = group["id"]

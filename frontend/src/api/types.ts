@@ -2,11 +2,15 @@ export type CodingType = "brands" | "reasons";
 export type OriginMode = "from_scratch" | "homologated";
 export type CodingStatus = "pending" | "auto_coded" | "needs_review" | "manually_coded" | "unknown";
 
-export interface RoundProgress {
-  coded: number;
-  total: number;
-  audit_reviewed: number;
-  audit_total: number;
+// Matches GET /projects/{id}/rounds[].studios[] — a lightweight progress
+// summary, not the full Studio (that's a separate GET /studios/{id} call).
+export interface StudioSummary {
+  id: string;
+  name: string;
+  coding_type: CodingType;
+  status: string;
+  verbatims_total: number;
+  auto_coded: number;
 }
 
 export interface RoundSummary {
@@ -14,24 +18,17 @@ export interface RoundSummary {
   name: string;
   round_number: number;
   status: string;
-  progress: RoundProgress;
+  studios: StudioSummary[];
 }
 
-export interface StudySummary {
-  id: string;
-  name: string;
-  coding_type: CodingType;
-  rounds: RoundSummary[];
-}
-
+// GET /projects returns a bare array, no pagination envelope.
 export interface ProjectListItem {
   id: string;
   external_code: string;
   name: string;
   client_name: string | null;
-  studies_count: number;
-  last_study: StudySummary | null;
-  updated_at: string;
+  rounds_count: number;
+  created_at: string;
 }
 
 export interface ProjectDetail {
@@ -39,18 +36,8 @@ export interface ProjectDetail {
   external_code: string;
   name: string;
   client_name: string | null;
-  studies_count: number;
-  studies: StudySummary[];
-  created_at: string;
-}
-
-export interface Study {
-  id: string;
-  project_id: string;
-  name: string;
-  coding_type: CodingType;
-  survey_question: string | null;
   rounds: RoundSummary[];
+  created_at: string;
 }
 
 export interface Codebook {
@@ -85,21 +72,16 @@ export interface Studio {
   codebook: Codebook;
 }
 
-export interface RoundCounters {
+// GET /studios/{id} — the full studio row plus live counters.
+export interface StudioCounters {
   verbatims_total: number;
-  auto_coded: number;
-  pending_review: number;
+  mention_groups: number;
   codes_total: number;
-  codes_new_this_round: number;
+  aliases_total: number;
 }
 
-export interface RoundStatus {
-  id: string;
-  name: string;
-  status: string;
-  study_name: string;
-  project_name: string;
-  counters: RoundCounters;
+export interface StudioStatus extends Studio {
+  counters: StudioCounters;
 }
 
 export interface DetectedSheet {
@@ -132,21 +114,41 @@ export interface ImportResult {
     skipped_rows: number;
   };
   warnings: string[];
-  round_status: string;
+  studio_status: string;
 }
 
-export interface VerbatimCodeRef {
-  code_number: number;
-  label: string;
+// POST /studios/{id}/process
+export interface ProcessResult {
+  run_id: string;
+  groups_classified: number;
+  anomalies: number;
+  total: number;
 }
 
+// GET /studios/{id}/preliminary
+export interface PreliminarySummary {
+  summary: {
+    auto_coded: number;
+    pending_review: number;
+    anomalies: number;
+    resolved: number;
+  };
+}
+
+// GET /studios/{id}/verbatims — no codes[] yet, manual code assignment is Fase 3.
 export interface Verbatim {
   id: string;
   respondent_external_id: string | null;
   question_key: string | null;
   original_text: string;
+  normalized_text: string | null;
   coding_status: CodingStatus;
-  codes: VerbatimCodeRef[];
+  mention_group_id: string | null;
+}
+
+export interface VerbatimList {
+  total: number;
+  items: Verbatim[];
 }
 
 export interface Paginated<T> {

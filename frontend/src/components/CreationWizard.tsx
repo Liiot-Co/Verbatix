@@ -21,8 +21,8 @@ import type {
   OriginMode,
   ProjectDetail,
   Round,
-  RoundSummary,
   Studio,
+  StudioSummary,
   UploadedFile,
 } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
@@ -103,9 +103,8 @@ export default function CreationWizard() {
   const prevStepIndexRef = useRef(0);
   const [direction, setDirection] = useState(1);
 
-  // Step 1: proyecto. Only the fields POST /projects actually returns —
-  // ProjectDetail (studies_count/studies) needs GET /projects/{id}, which
-  // doesn't exist on the backend yet (see homologationCandidates below).
+  // Step 1: proyecto. Only the fields POST /projects actually returns — no
+  // need to fetch the full ProjectDetail right after creating an empty project.
   type WizardProject = Pick<ProjectDetail, "id" | "name" | "external_code" | "client_name">;
   const [project, setProject] = useState<WizardProject | null>(null);
   const [newExternalCode, setNewExternalCode] = useState("");
@@ -141,24 +140,42 @@ export default function CreationWizard() {
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Deep-link support: /wizard?projectId=... skips the project step (e.g.
-  // "Nueva ronda" from a project's detail page).
-  // TODO: getProject() 404s until GET /projects/{id} exists on the backend.
+  // "Nueva ronda" from a project's detail page). With &roundId=... too (e.g.
+  // "Nuevo estudio" on an existing round), it also skips the round step.
   useEffect(() => {
     const projectId = searchParams.get("projectId");
     if (!projectId) return;
     getProject(projectId).then((detail) => {
       setProject(detail);
       setActiveProjectId(detail.id);
-      goToStep("round");
+
+      const roundId = searchParams.get("roundId");
+      const preselected = roundId ? detail.rounds.find((r) => r.id === roundId) : undefined;
+      if (preselected) {
+        setRound({ id: preselected.id, project_id: detail.id, name: preselected.name, round_number: preselected.round_number, status: preselected.status });
+        goToStep("studio");
+      } else {
+        goToStep("round");
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Studios of the same coding_type elsewhere in the project, offered as a
-  // homologation source. TODO: needs GET /projects/{id} with nested
-  // round/studio data, which doesn't exist on the backend yet — always empty
-  // until that's built, so "homologated" only supports an external codebook.
-  const homologationCandidates: RoundSummary[] = [];
+  // homologation source. Refetched whenever the studio step is reached, since
+  // it needs the project's full round/studio tree (not just WizardProject).
+  const [homologationCandidates, setHomologationCandidates] = useState<StudioSummary[]>([]);
+
+  useEffect(() => {
+    if (step !== "studio" || !project) return;
+    getProject(project.id).then((detail) => {
+      const candidates = detail.rounds
+        .filter((r) => r.id !== round?.id)
+        .flatMap((r) => r.studios)
+        .filter((s) => s.coding_type === newStudioCodingType);
+      setHomologationCandidates(candidates);
+    });
+  }, [step, project, round, newStudioCodingType]);
 
   const goToStep = (next: WizardStep) => {
     const nextIndex = STEPS.findIndex((s) => s.key === next);
@@ -209,9 +226,9 @@ export default function CreationWizard() {
   const onDrop = useCallback(
     async (accepted: File[]) => {
       const file = accepted[0];
-      if (!file || !round) return;
+      if (!file || !studio) return;
       setSheetError(null);
-      const result = await uploadFile(round.id, file);
+      const result = await uploadFile(studio.id, file);
       setUploaded(result);
       const verbatimGuess = result.detected_sheets.find((s) => s.guessed_as === "verbatims");
       const codebookGuess = result.detected_sheets.find((s) => s.guessed_as === "codebook");
@@ -219,7 +236,7 @@ export default function CreationWizard() {
       setCodebookSheet(codebookGuess?.name ?? "");
       playTick();
     },
-    [round]
+    [studio]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -233,14 +250,14 @@ export default function CreationWizard() {
 
   const activeSheet: DetectedSheet | undefined = uploaded?.detected_sheets.find((s) => s.name === verbatimsSheet);
 
-  const canImport = !!(round && uploaded && verbatimsSheet && columnMap.verbatim);
+  const canImport = !!(studio && uploaded && verbatimsSheet && columnMap.verbatim);
 
   const handleImport = async () => {
-    if (!round || !uploaded || !verbatimsSheet || !columnMap.verbatim) return;
+    if (!studio || !uploaded || !verbatimsSheet || !columnMap.verbatim) return;
     setSubmitting(true);
     try {
       const result = await importFile(
-        round.id,
+        studio.id,
         uploaded.file_id,
         verbatimsSheet,
         columnMap as ColumnMap,
@@ -251,7 +268,7 @@ export default function CreationWizard() {
         "success"
       );
       playSuccess();
-      navigate(`/rounds/${round.id}/verbatims`);
+      navigate(`/studios/${studio.id}/preliminary`);
     } catch {
       showToast("No se pudo importar el archivo", "error");
     } finally {
@@ -628,15 +645,15 @@ export default function CreationWizard() {
           )}
 
           {/* Step 4: Upload */}
-          {step === "upload" && round && (
+          {step === "upload" && studio && (
             <div className="space-y-3">
               <motion.button
-                onClick={() => goToStep("round")}
+                onClick={() => goToStep("studio")}
                 whileHover={{ x: -2 }}
                 whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text"
               >
-                <ChevronLeft className="w-3.5 h-3.5" /> {round.name}
+                <ChevronLeft className="w-3.5 h-3.5" /> {studio.name}
               </motion.button>
 
               {!uploaded ? (
