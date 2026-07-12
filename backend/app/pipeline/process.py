@@ -53,42 +53,51 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
 
     auto_coded = 0
     anomalies = 0
+
+    update_groups_params = []
+    insert_verbatim_codes_params = []
+    update_verbatims_params = []
+
     for g in groups:
         gid = g["id"]
         match = matched_by_group.get(str(gid))
         if match:
-            db.execute(
-                text("""
-                    update mention_groups
-                    set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
-                    where id = :id
-                """),
-                {"code": match[Cols.CODE_ID], "run": run_id, "id": gid},
-            )
-            db.execute(
-                text("""
-                    insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias, processing_run_id)
-                    select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', :score, :alias, :run
-                    from verbatims v where v.mention_group_id = :gid
-                    on conflict (verbatim_id, code_id) do nothing
-                """),
-                {
-                    "code": match[Cols.CODE_ID],
-                    "score": match[Cols.SCORE] / 100,
-                    "alias": match[Cols.MATCHED_ALIAS],
-                    "run": run_id,
-                    "gid": gid,
-                },
-            )
-            db.execute(
-                text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :gid"),
-                {"gid": gid},
-            )
+            update_groups_params.append({"code": match[Cols.CODE_ID], "run": run_id, "id": gid})
+            insert_verbatim_codes_params.append({
+                "code": match[Cols.CODE_ID],
+                "score": match[Cols.SCORE] / 100,
+                "alias": match[Cols.MATCHED_ALIAS],
+                "run": run_id,
+                "gid": gid,
+            })
+            update_verbatims_params.append({"gid": gid})
             auto_coded += 1
         else:
-            # Leave status = 'pending_review' (its default) instead of marking 'anomaly' —
-            # process_studio runs the LLM pass on these next, before giving up on them.
             anomalies += 1
+
+    if update_groups_params:
+        db.execute(
+            text("""
+                update mention_groups
+                set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
+                where id = :id
+            """),
+            update_groups_params,
+        )
+        db.execute(
+            text("""
+                insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias, processing_run_id)
+                select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', :score, :alias, :run
+                from verbatims v where v.mention_group_id = :gid
+                on conflict (verbatim_id, code_id) do nothing
+            """),
+            insert_verbatim_codes_params,
+        )
+        db.execute(
+            text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :gid"),
+            update_verbatims_params,
+        )
+    
     db.commit()
 
     db.execute(

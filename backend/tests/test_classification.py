@@ -69,6 +69,18 @@ def test_classify_studio_matches_and_flags_anomaly():
     assert summary["anomalies"] == 2
     assert summary["total"] == 3
 
-    assert any(p.get("id") == group_unmatched["id"] for sql, p in db.executed if p and "anomaly" in sql)
-    assert any(p.get("id") == group_low_confidence["id"] for sql, p in db.executed if p and "anomaly" in sql)
-    assert any(p.get("code") == codes[0]["id"] for _, p in db.executed if p and "code" in p)
+    def has_param(key, value, stmt_filter=""):
+        for sql, p in db.executed:
+            if stmt_filter and stmt_filter not in sql:
+                continue
+            if isinstance(p, list):
+                if any(isinstance(item, dict) and item.get(key) == value for item in p):
+                    return True
+            elif isinstance(p, dict):
+                if p.get(key) == value:
+                    return True
+        return False
+
+    assert has_param("id", group_unmatched["id"], "anomaly")
+    assert has_param("id", group_low_confidence["id"], "anomaly")
+    assert has_param("code", codes[0]["id"])
