@@ -88,7 +88,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <div aria-hidden className="ambient-wash pointer-events-none fixed inset-0 -z-10" />
       <div className="flex h-screen bg-p-bg overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-[220px] shrink-0 h-screen sticky top-0 flex flex-col border-r border-p-border bg-gradient-to-b from-p-surface to-p-bg-subtle overflow-hidden"
+        <aside className="app-sidebar w-[220px] shrink-0 h-screen sticky top-0 flex flex-col"
         >
           {/* Logo */}
           <div className="p-3.5 border-b border-p-border flex-shrink-0"
@@ -149,7 +149,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             >
               <Wand2 className="w-3.5 h-3.5 shrink-0" />
               <span className="flex-1 text-left truncate">Nuevo proyecto</span>
-              <span className="kbd-hint shrink-0">{modLabel()}⇧N</span>
             </Link>
 
             {/* User section at bottom */}
