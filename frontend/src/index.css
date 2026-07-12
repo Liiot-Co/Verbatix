@@ -27,8 +27,8 @@
 /* ── Verbatix Light design tokens ── */
 @layer base {
   :root {
-    --p-bg: #FAFAFA;
-    --p-bg-subtle: #F3F3F7;
+    --p-bg: #fafafa;
+    --p-bg-subtle: #fff2e7;
     --p-surface: #FFFFFF;
     --p-surface-2: #F8F8FB;
     --p-text: #0E0E14;
@@ -170,10 +170,9 @@
     @apply scale-[0.99] shadow-sm;
   }
 
-  /* Primary button — lavanda gradient */
+  /* Primary button — flat accent */
   .btn-primary {
-    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm text-white
-           bg-gradient-to-br from-p-accent to-p-accent-mid
+    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm text-white bg-p-accent
            hover:opacity-90 active:scale-[0.98] transition-all duration-150 ease-out-expo
            disabled:opacity-40 disabled:cursor-not-allowed
            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-p-surface;
@@ -797,48 +796,29 @@
   }
 
   .gradient-text-morph-brand {
-    @apply bg-clip-text text-transparent;
-    background-image: linear-gradient(
-      135deg,
-      oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h)),
-      oklch(var(--p-accent-mid-l) var(--p-accent-mid-c) var(--p-accent-mid-h))
-    );
+    @apply text-p-text-faint;
   }
 
   /* Badge with morphing gradient */
   .badge-gradient {
-    @apply text-[10px] font-semibold px-2 py-0.5 rounded-full text-white;
-    background: linear-gradient(
-      135deg,
-      oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h)),
-      oklch(var(--p-accent-mid-l) var(--p-accent-mid-c) var(--p-accent-mid-h))
-    );
-    @apply bg-[length:200%_200%];
-    animation: gradientShift 7s ease-in-out infinite;
+    @apply text-[10px] font-semibold px-2 py-0.5 rounded-full text-white bg-p-accent;
   }
 
   .badge-gradient-success {
-    @apply badge-gradient;
-    background: linear-gradient(135deg, #16A34A, #22D65E);
+    @apply badge-gradient bg-p-success;
   }
 
   .badge-gradient-warning {
-    @apply badge-gradient;
-    background: linear-gradient(135deg, #D97706, #F59E0B);
+    @apply badge-gradient bg-p-warning;
   }
 
   .badge-gradient-error {
-    @apply badge-gradient;
-    background: linear-gradient(135deg, #DC2626, #EF4444);
+    @apply badge-gradient bg-p-error;
   }
 
   .badge-gradient-info {
     @apply badge-gradient;
-    background: linear-gradient(
-      135deg,
-      oklch(0.5 0.15 280),
-      oklch(0.6 0.12 240)
-    );
+    background: oklch(0.55 0.13 280);
   }
 
   /* Card with morphing pastel gradient */

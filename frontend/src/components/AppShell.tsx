@@ -82,7 +82,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <div aria-hidden className="ambient-wash pointer-events-none fixed inset-0 -z-10" />
       <div className="flex h-screen bg-p-bg overflow-hidden">
         {/* Sidebar */}
-        <aside className="w-[220px] shrink-0 h-screen sticky top-0 flex flex-col border-r border-p-border bg-p-surface overflow-hidden"
+        <aside className="w-[220px] shrink-0 h-screen sticky top-0 flex flex-col border-r border-p-border bg-gradient-to-b from-p-surface to-p-bg-subtle overflow-hidden"
         >
           {/* Logo */}
           <div className="p-3.5 border-b border-p-border flex-shrink-0"
@@ -91,7 +91,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <motion.div
                 whileHover={{ scale: 1.05, rotate: 3 }}
                 whileTap={{ scale: 0.95 }}
-                className="w-8 h-8 rounded-lg bg-gradient-to-br from-p-accent to-p-accent-mid flex items-center justify-center shrink-0"
+                className="w-8 h-8 rounded-lg bg-p-accent flex items-center justify-center shrink-0"
               >
                 <svg width="17" height="13" viewBox="0 0 17 13" fill="none">
                   <polyline points="1,1.5 4.5,11.5 8.5,3.5 12.5,11.5 16,1.5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />

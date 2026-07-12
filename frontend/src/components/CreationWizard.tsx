@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useDropzone } from "react-dropzone";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronLeft, FileSpreadsheet, Plus, UploadCloud, AlertCircle } from "lucide-react";
+import { Check, ChevronLeft, FileSpreadsheet, UploadCloud, AlertCircle } from "lucide-react";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb, { type Crumb } from "./Breadcrumb";
@@ -10,7 +10,6 @@ import {
   createProject,
   createRound,
   createStudy,
-  getProjects,
   getProject,
   importFile,
   uploadFile,
@@ -21,7 +20,6 @@ import type {
   DetectedSheet,
   OriginMode,
   ProjectDetail,
-  ProjectListItem,
   Round,
   RoundSummary,
   Study,
@@ -107,16 +105,13 @@ export default function CreationWizard() {
   const [direction, setDirection] = useState(1);
 
   // Step 1: proyecto
-  const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [project, setProject] = useState<ProjectDetail | null>(null);
-  const [creatingProject, setCreatingProject] = useState(false);
   const [newExternalCode, setNewExternalCode] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
   const [newClientName, setNewClientName] = useState("");
 
   // Step 2: study
   const [study, setStudy] = useState<StudySummary | Study | null>(null);
-  const [creatingStudy, setCreatingStudy] = useState(false);
   const [newStudyName, setNewStudyName] = useState("Marcas");
   const [newStudyCodingType, setNewStudyCodingType] = useState<CodingType>("brands");
   const [newStudyQuestion, setNewStudyQuestion] = useState("");
@@ -142,10 +137,6 @@ export default function CreationWizard() {
   const studyRef = useRef<HTMLInputElement>(null);
   const roundRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    getProjects().then((res) => setProjects(res.items));
-  }, []);
 
   // Deep-link support: /wizard?projectId=...&studyId=... skips the steps
   // already decided elsewhere (e.g. "Nueva ronda" from a study's detail card).
@@ -181,14 +172,6 @@ export default function CreationWizard() {
     setStep(next);
   };
 
-  const enterProject = async (item: ProjectListItem) => {
-    const detail = await getProject(item.id);
-    setProject(detail);
-    setActiveProjectId(detail.id);
-    playTick();
-    goToStep("study");
-  };
-
   const handleCreateProject = async () => {
     if (!newExternalCode.trim() || !newProjectName.trim()) return;
     const created = await createProject(newExternalCode.trim(), newProjectName.trim(), newClientName.trim() || undefined);
@@ -197,12 +180,6 @@ export default function CreationWizard() {
     setActiveProjectId(detail.id);
     playSuccess();
     goToStep("study");
-  };
-
-  const enterStudy = (s: StudySummary) => {
-    setStudy(s);
-    playTick();
-    goToStep("round");
   };
 
   const handleCreateStudy = async () => {
@@ -308,30 +285,17 @@ export default function CreationWizard() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (creatingProject) return setCreatingProject(false);
-      if (creatingStudy) return setCreatingStudy(false);
       if (step === "study") return goToStep("project");
       if (step === "round") return goToStep("study");
       if (step === "upload" && !uploaded) return goToStep("round");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [step, creatingProject, creatingStudy, uploaded]);
+  }, [step, uploaded]);
 
   // Register shortcuts for this context
   useEffect(() => {
     registerShortcuts("wizard", [
-      {
-        key: "Enter",
-        meta: false,
-        action: () => {
-          if (step === "project" && !creatingProject) setCreatingProject(true);
-          else if (step === "study" && !creatingStudy) setCreatingStudy(true);
-        },
-        description: "Crear / continuar",
-        category: "Acciones",
-        allowInInput: false,
-      },
       {
         key: "ArrowRight",
         meta: true,
@@ -362,19 +326,19 @@ export default function CreationWizard() {
         category: "Acciones",
       },
     ]);
-  }, [step, creatingProject, creatingStudy, uploaded, round, handleImport]);
+  }, [step, uploaded, round, handleImport]);
 
   useKeyboardShortcuts("wizard");
 
   // Focus refs when step changes
   useEffect(() => {
     setTimeout(() => {
-      if (step === "project" && creatingProject) projectRef.current?.focus();
-      if (step === "study" && creatingStudy) studyRef.current?.focus();
+      if (step === "project") projectRef.current?.focus();
+      if (step === "study") studyRef.current?.focus();
       if (step === "round") roundRef.current?.focus();
       if (step === "upload" && !uploaded) searchRef.current?.focus();
     }, 100);
-  }, [step, creatingProject, creatingStudy, uploaded]);
+  }, [step, uploaded]);
 
   return (
     <div className="relative max-w-2xl mx-auto py-4 space-y-6">
@@ -421,7 +385,7 @@ export default function CreationWizard() {
                 ].join(" ")}
               >
                 <motion.span
-                  layoutId="step-indicator"
+                  layoutId={`step-indicator-${i}`}
                   className={[
                     "w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0",
                     active ? "bg-white/25" : done ? "bg-p-accent text-white" : "border border-p-border-mid",
@@ -458,116 +422,49 @@ export default function CreationWizard() {
           exit="exit"
           transition={{ duration: 0.25, ease: [0.19, 1, 0.22, 1] as const }}
         >
-          {/* Step 1: Project */}
+          {/* Step 1: Project (creation form always visible) */}
           {step === "project" && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"
-              >
-                {projects.map((p) => (
-                  <motion.button
-                    key={p.id}
-                    onClick={() => enterProject(p)}
-                    whileHover={{ y: -2, boxShadow: "0 8px 16px -4px oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.1)" }}
-                    whileTap={{ scale: 0.99 }}
-                    className="card p-4 text-left hover:border-p-accent/40 hover:shadow-md active:scale-[0.99] transition-all duration-200"
-                  >
-                    <div className="text-sm font-bold text-p-text">{p.name}</div>
-                    <div className="text-xs text-p-text-faint mt-1">{p.external_code}</div>
-                  </motion.button>
-                ))}
-              </div>
-
-              {creatingProject ? (
-                <motion.div
-                  initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                  transition={{ duration: 0.2, ease: [0.19, 1, 0.22, 1] as const }}
-                  className="card p-4 space-y-2.5"
-                  onKeyDown={projectPanelKeyDown}
-                >
-                  <motion.div
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="text-xs font-semibold text-p-text-muted uppercase tracking-wide"
-                  >
-                    Código externo
-                  </motion.div>
-                  <motion.input
-                    ref={projectRef}
-                    autoFocus
-                    className="input w-full text-sm"
-                    placeholder="32406432"
-                    value={newExternalCode}
-                    onChange={(e) => setNewExternalCode(e.target.value)}
-                    whileFocus={{ scale: 1.002 }}
-                  />
-                  <motion.label
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="text-xs font-semibold text-p-text-muted uppercase tracking-wide"
-                  >
-                    Nombre del proyecto
-                  </motion.label>
-                  <motion.input
-                    className="input w-full text-sm"
-                    placeholder="TRACK MULTICATEGORY..."
-                    value={newProjectName}
-                    onChange={(e) => setNewProjectName(e.target.value)}
-                    whileFocus={{ scale: 1.002 }}
-                  />
-                  <motion.label
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="text-xs font-semibold text-p-text-muted uppercase tracking-wide"
-                  >
-                    Cliente
-                  </motion.label>
-                  <motion.input
-                    className="input w-full text-sm"
-                    placeholder="Gloria"
-                    value={newClientName}
-                    onChange={(e) => setNewClientName(e.target.value)}
-                    whileFocus={{ scale: 1.002 }}
-                  />
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="flex gap-1.5 pt-1"
-                  >
-                    <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      className="btn-primary text-xs py-1.5 flex-1 justify-center"
-                      onClick={handleCreateProject}
-                    >
-                      Crear y continuar
-                    </motion.button>
-                    <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      className="btn-ghost text-xs py-1.5 px-3"
-                      onClick={() => setCreatingProject(false)}
-                    >
-                      Cancelar (Esc)
-                    </motion.button>
-                  </motion.div>
-                </motion.div>
-              ) : (
+            <div className="card p-4 space-y-2.5" onKeyDown={projectPanelKeyDown}>
+              <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Código externo</div>
+              <motion.input
+                ref={projectRef}
+                autoFocus
+                className="input w-full text-sm"
+                placeholder="32406432"
+                value={newExternalCode}
+                onChange={(e) => setNewExternalCode(e.target.value)}
+                whileFocus={{ scale: 1.002 }}
+              />
+              <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre del proyecto</div>
+              <motion.input
+                className="input w-full text-sm"
+                placeholder="TRACK MULTICATEGORY..."
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                whileFocus={{ scale: 1.002 }}
+              />
+              <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Cliente</div>
+              <motion.input
+                className="input w-full text-sm"
+                placeholder="Gloria"
+                value={newClientName}
+                onChange={(e) => setNewClientName(e.target.value)}
+                whileFocus={{ scale: 1.002 }}
+              />
+              <div className="flex gap-1.5 pt-1">
                 <motion.button
-                  whileHover={{ scale: 1.01, borderColor: "oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.4)" }}
-                  whileTap={{ scale: 0.99 }}
-                  onClick={() => setCreatingProject(true)}
-                  className="card-subtle p-4 flex items-center justify-center gap-2 text-p-text-muted hover:text-p-text hover:border-p-accent/40 transition-colors w-full"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  className="btn-primary text-sm py-2 flex-1 justify-center"
+                  onClick={handleCreateProject}
                 >
-                  <Plus className="w-4 h-4" />
-                  <span className="text-sm font-medium">Nuevo proyecto</span>
+                  Crear y continuar
                 </motion.button>
-              )}
+              </div>
             </div>
           )}
 
-          {/* Step 2: Study */}
+          {/* Step 2: Study (creation form always visible) */}
           {step === "study" && project && (
             <div className="space-y-3">
               <motion.button
@@ -579,92 +476,47 @@ export default function CreationWizard() {
                 <ChevronLeft className="w-3.5 h-3.5" /> {project.name}
               </motion.button>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"
-              >
-                {project.studies.map((s) => (
+              <div className="card p-4 space-y-2.5" onKeyDown={studyPanelKeyDown}>
+                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre</div>
+                <motion.input
+                  ref={studyRef}
+                  autoFocus
+                  className="input w-full text-sm"
+                  value={newStudyName}
+                  onChange={(e) => setNewStudyName(e.target.value)}
+                  whileFocus={{ scale: 1.002 }}
+                />
+
+                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo de codificación</div>
+                <ToggleGroup
+                  options={[
+                    { value: "brands" as CodingType, label: "Marcas" },
+                    { value: "reasons" as CodingType, label: "Razones" },
+                  ]}
+                  value={newStudyCodingType}
+                  onChange={setNewStudyCodingType}
+                />
+
+                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Pregunta de la encuesta</div>
+                <motion.input
+                  className="input w-full text-sm"
+                  placeholder="Q030 - BE1: ¿Qué marcas...?"
+                  value={newStudyQuestion}
+                  onChange={(e) => setNewStudyQuestion(e.target.value)}
+                  whileFocus={{ scale: 1.002 }}
+                />
+
+                <div className="flex gap-1.5 pt-1">
                   <motion.button
-                    key={s.id}
-                    onClick={() => enterStudy(s)}
-                    whileHover={{ y: -2, boxShadow: "0 8px 16px -4px oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.1)" }}
-                    whileTap={{ scale: 0.99 }}
-                    className="card p-4 text-left hover:border-p-accent/40 hover:shadow-md active:scale-[0.99] transition-all duration-200"
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    className="btn-primary text-sm py-2 flex-1 justify-center"
+                    onClick={handleCreateStudy}
                   >
-                    <div className="text-sm font-bold text-p-text">{s.name}</div>
-                    <div className="text-xs text-p-text-faint mt-1">
-                      {s.coding_type === "brands" ? "Marcas" : "Razones"} · {s.rounds.length} rondas
-                    </div>
+                    Crear y continuar
                   </motion.button>
-                ))}
+                </div>
               </div>
-
-              {creatingStudy ? (
-                <motion.div
-                  initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                  transition={{ duration: 0.2, ease: [0.19, 1, 0.22, 1] as const }}
-                  className="card p-4 space-y-2.5"
-                  onKeyDown={studyPanelKeyDown}
-                >
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre</motion.label>
-                  <motion.input
-                    ref={studyRef}
-                    autoFocus
-                    className="input w-full text-sm"
-                    value={newStudyName}
-                    onChange={(e) => setNewStudyName(e.target.value)}
-                    whileFocus={{ scale: 1.002 }}
-                  />
-
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo de codificación</motion.label>
-                  <ToggleGroup
-                    options={[
-                      { value: "brands" as CodingType, label: "Marcas" },
-                      { value: "reasons" as CodingType, label: "Razones" },
-                    ]}
-                    value={newStudyCodingType}
-                    onChange={setNewStudyCodingType}
-                  />
-
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Pregunta de la encuesta</motion.label>
-                  <motion.input
-                    className="input w-full text-sm"
-                    placeholder="Q030 - BE1: ¿Qué marcas...?"
-                    value={newStudyQuestion}
-                    onChange={(e) => setNewStudyQuestion(e.target.value)}
-                    whileFocus={{ scale: 1.002 }}
-                  />
-
-                  <motion.div className="flex gap-1.5 pt-1">
-                    <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      className="btn-primary text-xs py-1.5 flex-1 justify-center"
-                      onClick={handleCreateStudy}
-                    >
-                      Crear y continuar
-                    </motion.button>
-                    <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      className="btn-ghost text-xs py-1.5 px-3"
-                      onClick={() => setCreatingStudy(false)}
-                    >
-                      Cancelar (Esc)
-                    </motion.button>
-                  </motion.div>
-                </motion.div>
-              ) : (
-                <motion.button
-                  whileHover={{ scale: 1.01, borderColor: "oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.4)" }}
-                  whileTap={{ scale: 0.99 }}
-                  onClick={() => setCreatingStudy(true)}
-                  className="card-subtle p-4 flex items-center justify-center gap-2 text-p-text-muted hover:text-p-text hover:border-p-accent/40 transition-colors w-full"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span className="text-sm font-medium">Nuevo study</span>
-                </motion.button>
-              )}
             </div>
           )}
 
