@@ -17,25 +17,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     registerShortcuts("global", [
       {
-        key: "/",
-        meta: false,
+        key: "f",
+        meta: true,
         action: () => {
           const searchInput = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement | null;
           searchInput?.focus();
         },
         description: "Buscar",
-        category: "Navegación",
-        allowInInput: false,
-      },
-      {
-        key: "f",
-        meta: true,
-        shift: true,
-        action: () => {
-          const searchInput = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement | null;
-          searchInput?.focus();
-        },
-        description: "Buscar (alternativo)",
         category: "Navegación",
         allowInInput: false,
       },

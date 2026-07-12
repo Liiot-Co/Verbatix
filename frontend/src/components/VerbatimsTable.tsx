@@ -76,25 +76,13 @@ export default function VerbatimsTable() {
   useEffect(() => {
     registerShortcuts("verbatims", [
       {
-        key: "/",
-        meta: false,
+        key: "f",
+        meta: true,
         action: () => {
           searchRef.current?.focus();
           searchRef.current?.select();
         },
         description: "Enfocar búsqueda",
-        category: "Navegación",
-        allowInInput: false,
-      },
-      {
-        key: "f",
-        meta: true,
-        shift: true,
-        action: () => {
-          searchRef.current?.focus();
-          searchRef.current?.select();
-        },
-        description: "Buscar (alternativo)",
         category: "Navegación",
         allowInInput: false,
       },
@@ -154,12 +142,6 @@ export default function VerbatimsTable() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "/" && !isTypingTarget(e.target)) {
-        e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
-        return;
-      }
       if (isTypingTarget(e.target)) return;
       if (e.key === "ArrowRight") setPage((p) => Math.min(totalPages, p + 1));
       if (e.key === "ArrowLeft") setPage((p) => Math.max(1, p - 1));
@@ -204,7 +186,7 @@ export default function VerbatimsTable() {
             onChange={(e) => setSearch(e.target.value)}
           />
           <kbd className="hidden sm:flex items-center absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-p-text-faint border border-p-border rounded px-1.5 py-0.5 pointer-events-none">
-            /
+            {modLabel()}F
           </kbd>
         </div>
         <motion.select
@@ -318,7 +300,7 @@ export default function VerbatimsTable() {
         className="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 text-xs text-p-text-faint bg-p-surface/90 backdrop-blur-glass border border-p-border rounded-xl px-4 py-2 shadow-lg hidden sm:flex hover:text-p-text hover:border-p-accent/40 transition-colors"
       >
         <span className="flex items-center gap-1">
-          <kbd className="kbd-hint">/</kbd> Buscar
+          <kbd className="kbd-hint">{modLabel()}F</kbd> Buscar
         </span>
         <span className="flex items-center gap-1">
           <kbd className="kbd-hint">← →</kbd> Páginas
@@ -363,8 +345,7 @@ export default function VerbatimsTable() {
               <div className="space-y-3 text-sm">
                 <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Navegación</div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="flex justify-between"><span>/</span><span className="text-p-text-muted">Buscar</span></div>
-                  <div className="flex justify-between"><span>{modLabel()}⇧F</span><span className="text-p-text-muted">Buscar</span></div>
+                  <div className="flex justify-between"><span>{modLabel()}F</span><span className="text-p-text-muted">Buscar</span></div>
                   <div className="flex justify-between"><span>← →</span><span className="text-p-text-muted">Páginas</span></div>
                   <div className="flex justify-between"><span>Esc</span><span className="text-p-text-muted">Limpiar filtros</span></div>
                   <div className="flex justify-between"><span>{modLabel()}K</span><span className="text-p-text-muted">Comandos</span></div>

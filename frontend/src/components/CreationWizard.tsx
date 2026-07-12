@@ -347,7 +347,7 @@ export default function CreationWizard() {
         aria-hidden
         className="pointer-events-none fixed inset-0 -z-10"
         animate={{
-          background: `radial-gradient(60vw 60vh circle at ${20 + stepIndex * 20}% -10%, oklch(0.64 0.11 292 / 0.05), transparent 60%), radial-gradient(50vw 50vh circle at ${80 - stepIndex * 15}% 100%, oklch(0.70 0.18 50 / 0.05), transparent 55%)`,
+          background: `radial-gradient(60vw 60vh circle at ${20 + stepIndex * 20}% -10%, oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.05), transparent 60%), radial-gradient(50vw 50vh circle at ${80 - stepIndex * 15}% 100%, oklch(var(--p-accent-mid-l) var(--p-accent-mid-c) var(--p-accent-mid-h) / 0.05), transparent 55%)`,
         }}
         transition={{ duration: 0.7, ease: "easeInOut" }}
       />

@@ -57,7 +57,7 @@ function getCommands(): CommandItem[] {
       label: "Buscar",
       description: "Enfocar campo de búsqueda",
       icon: "🔍",
-      shortcut: "/",
+      shortcut: `${modLabel()}F`,
       action: () => {
         const input = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement | null;
         input?.focus();
@@ -79,18 +79,6 @@ function getCommands(): CommandItem[] {
       icon: "📥",
       action: () => {},
       keywords: ["exportar", "export", "descargar", "excel"],
-      category: "Acciones",
-    },
-    {
-      label: "Buscar (alternativo)",
-      description: `Usar ${modLabel()}⇧F`,
-      icon: "🔍",
-      shortcut: `${m()}⇧F`,
-      action: () => {
-        const input = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement | null;
-        input?.focus();
-      },
-      keywords: ["buscar", "search", "filtrar", "find", "localizar", "busqueda"],
       category: "Acciones",
     },
   ];

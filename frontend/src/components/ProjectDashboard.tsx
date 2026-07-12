@@ -70,20 +70,8 @@ export default function ProjectDashboard() {
   useEffect(() => {
     registerShortcuts("dashboard", [
       {
-        key: "/",
-        meta: false,
-        action: () => {
-          const input = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement;
-          input?.focus();
-        },
-        description: "Buscar proyectos",
-        category: "Navegación",
-        allowInInput: false,
-      },
-      {
         key: "f",
         meta: true,
-        shift: true,
         action: () => {
           const input = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement;
           input?.focus();
@@ -136,7 +124,7 @@ export default function ProjectDashboard() {
               aria-label="Buscar proyectos"
             />
             <kbd className="hidden sm:flex items-center absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-p-text-faint border border-p-border rounded px-1.5 py-0.5 pointer-events-none">
-              /
+              {modLabel()}F
             </kbd>
           </div>
         </div>
@@ -297,10 +285,7 @@ export default function ProjectDashboard() {
       <div className="flex items-center justify-center gap-4 text-xs text-p-text-faint px-4 py-2 border-t border-p-border"
       >
         <span className="flex items-center gap-1">
-          <kbd className="kbd-hint">/</kbd> Buscar
-        </span>
-        <span className="flex items-center gap-1">
-          <kbd className="kbd-hint">{modLabel()}⇧F</kbd> Buscar
+          <kbd className="kbd-hint">{modLabel()}F</kbd> Buscar
         </span>
         <span className="flex items-center gap-1">
           <kbd className="kbd-hint">{modLabel()}K</kbd> Comandos
