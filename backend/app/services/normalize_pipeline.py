@@ -11,8 +11,9 @@ Cargar:
     from app.services.normalize_pipeline import load_normalized_df
     df = load_normalized_df(studio_id, file_id)
 
-Columnas del Parquet (solo 3):
+Columnas del Parquet:
     respondent_external_id  — ID del encuestado
+    question_key            — pregunta (para reexportar / join a verbatims)
     normalized_text         — verbatim limpio (input del fuzzy)
     coding_type             — "brands" | "reasons" (del studio, constante en el archivo)
 
@@ -21,17 +22,14 @@ Marcas vs razones
 Cada studio tiene UN coding_type. El Parquet de Marcas y el de Razones son archivos
 distintos bajo distinto studio_id. El paso 2 lee coding_type del DataFrame y decide:
 
-  brands  → fuzzy devuelve como máximo 1 código por fila
-  reasons → fuzzy puede devolver N códigos por fila (varias palabras/alias en el texto)
+  brands  → fuzzy (pipelineProcess) asigna como máximo 1 código por fila
+  reasons → se derivan enteras a unmatched para el módulo LLM
 
 Normalización de razones con varias palabras
 --------------------------------------------
 NO se parte el verbatim en normalización. Una fila = un encuestado = un texto completo:
 
     "Es rico y barato"  →  "es rico y barato"
-
-El paso 2 busca cada alias del codebook DENTRO del normalized_text (substring/fuzzy)
-y puede asignar varios códigos a la misma fila. Eso no es trabajo del paso 1.
 """
 from __future__ import annotations
 
@@ -46,7 +44,12 @@ from app.services.normalize import normalize
 
 CodingType = Literal["brands", "reasons"]
 BUCKET = "uploads"
-OUTPUT_COLUMNS = ("respondent_external_id", "normalized_text", "coding_type")
+OUTPUT_COLUMNS = (
+    "respondent_external_id",
+    "question_key",
+    "normalized_text",
+    "coding_type",
+)
 
 
 def normalized_parquet_path(studio_id: uuid.UUID, file_id: uuid.UUID) -> str:
@@ -54,7 +57,7 @@ def normalized_parquet_path(studio_id: uuid.UUID, file_id: uuid.UUID) -> str:
 
 
 def rows_to_normalized_df(rows: list[dict], coding_type: str) -> pl.DataFrame:
-    """Excel parseado → DataFrame slim listo para Parquet y paso 2."""
+    """Excel parseado → DataFrame listo para Parquet y paso 2 (fuzzy)."""
     if coding_type not in ("brands", "reasons"):
         raise ValueError(f"coding_type debe ser 'brands' o 'reasons', recibido: {coding_type}")
 
@@ -65,9 +68,13 @@ def rows_to_normalized_df(rows: list[dict], coding_type: str) -> pl.DataFrame:
     if "original_text" not in df.columns:
         raise ValueError("Faltan filas con columna original_text")
 
+    if "question_key" not in df.columns:
+        df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("question_key"))
+
     df = (
         df.with_columns(
             pl.col("respondent_external_id").cast(pl.Utf8),
+            pl.col("question_key").cast(pl.Utf8),
             pl.col("original_text").cast(pl.Utf8),
         )
         .filter(
@@ -82,6 +89,7 @@ def rows_to_normalized_df(rows: list[dict], coding_type: str) -> pl.DataFrame:
         .filter(pl.col("normalized_text").str.len_chars() > 0)
         .select(
             pl.col("respondent_external_id"),
+            pl.col("question_key"),
             pl.col("normalized_text"),
             pl.lit(coding_type).alias("coding_type"),
         )
@@ -103,10 +111,7 @@ def normalization_stats(df: pl.DataFrame, source_rows: int, coding_type: str) ->
 def preview_rows(df: pl.DataFrame, limit: int = 5) -> list[dict]:
     if df.is_empty():
         return []
-    return [
-        dict(r)
-        for r in df.head(limit).iter_rows(named=True)
-    ]
+    return [dict(r) for r in df.head(limit).iter_rows(named=True)]
 
 
 def save_normalized_df(studio_id: uuid.UUID, file_id: uuid.UUID, df: pl.DataFrame) -> str:
@@ -119,4 +124,7 @@ def save_normalized_df(studio_id: uuid.UUID, file_id: uuid.UUID, df: pl.DataFram
 def load_normalized_df(studio_id: uuid.UUID, file_id: uuid.UUID) -> pl.DataFrame:
     path = normalized_parquet_path(studio_id, file_id)
     content = storage.download(BUCKET, path)
-    return pl.read_parquet(io.BytesIO(content))
+    df = pl.read_parquet(io.BytesIO(content))
+    if "question_key" not in df.columns:
+        df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias("question_key"))
+    return df

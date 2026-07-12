@@ -12,3 +12,5 @@ frontend/node_modules/.tmp/
 node_modules/
 .pytest_cache/
 .history/
+backend/outputs/
+backend/env/

@@ -168,13 +168,65 @@ def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict
     return {"codes": len(parsed["codes"]), "aliases": n_alias, "nets": len(parsed["nets"])}
 
 
+def insert_verbatims_from_rows(
+    db: Session,
+    studio_id: uuid.UUID,
+    file_id: uuid.UUID,
+    rows: list[dict],
+    coding_type: str,
+) -> tuple[int, pl.DataFrame]:
+    """Normaliza, inserta verbatims (con original_text) y devuelve DF slim para fuzzy."""
+    df = rows_to_normalized_df(rows, coding_type)
+    n = 0
+    # Index original texts by (respondent, question_key) for DB insert
+    originals: dict[tuple[str, str | None], dict] = {}
+    for r in rows:
+        resp = str(r.get("respondent_external_id") or "").strip()
+        if not resp:
+            continue
+        qk = r.get("question_key")
+        originals[(resp, qk)] = r
+
+    for row in df.iter_rows(named=True):
+        key = (row["respondent_external_id"], row.get("question_key"))
+        src = originals.get(key) or originals.get((row["respondent_external_id"], None))
+        original = (src or {}).get("original_text") or row["normalized_text"]
+        input_code = (src or {}).get("input_code_number")
+        result = db.execute(
+            text("""
+                insert into verbatims (id, studio_id, imported_file_id, respondent_external_id,
+                                       question_key, original_text, normalized_text, input_code_number,
+                                       coding_status)
+                values (:id, :studio, :f, :resp, :q, :txt, :norm, :inp, 'pending')
+                on conflict (studio_id, respondent_external_id, question_key) do update set
+                  normalized_text = excluded.normalized_text,
+                  original_text = excluded.original_text,
+                  imported_file_id = excluded.imported_file_id
+                where verbatims.coding_status = 'pending'
+            """),
+            {
+                "id": uuid.uuid4(),
+                "studio": studio_id,
+                "f": file_id,
+                "resp": row["respondent_external_id"],
+                "q": row.get("question_key"),
+                "txt": original,
+                "norm": row["normalized_text"],
+                "inp": input_code,
+            },
+        )
+        if result.rowcount:
+            n += 1
+    return n, df
+
+
 def insert_verbatims_from_df(
     db: Session,
     studio_id: uuid.UUID,
     file_id: uuid.UUID,
     df: pl.DataFrame,
 ) -> int:
-    """Persiste verbatims desde el DataFrame normalizado. Sin agrupación."""
+    """Persiste verbatims desde un DataFrame que ya trae original_text + normalized_text."""
     n = 0
     for row in df.iter_rows(named=True):
         result = db.execute(
@@ -205,12 +257,10 @@ def insert_verbatims(
     studio_id: uuid.UUID,
     file_id: uuid.UUID,
     rows: list[dict],
+    coding_type: str = "brands",
 ) -> tuple[int, pl.DataFrame]:
     """Normaliza con Polars, guarda en BD y devuelve el DataFrame para el siguiente paso."""
-    df = rows_to_normalized_df(rows)
-    n = insert_verbatims_from_df(db, studio_id, file_id, df)
-    return n, df
-
+    return insert_verbatims_from_rows(db, studio_id, file_id, rows, coding_type)
 
 def build_mention_groups(db: Session, studio_id: uuid.UUID) -> int:
     """Paso 2 (futuro): agrupa verbatims ya normalizados. No se llama en el import."""

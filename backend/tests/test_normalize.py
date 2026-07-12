@@ -36,7 +36,12 @@ def test_pipeline_brands_slim_schema():
         {"respondent_external_id": "3", "question_key": "q1", "original_text": "   "},
     ]
     df = rows_to_normalized_df(rows, "brands")
-    assert df.columns == ["respondent_external_id", "normalized_text", "coding_type"]
+    assert df.columns == [
+        "respondent_external_id",
+        "question_key",
+        "normalized_text",
+        "coding_type",
+    ]
     assert df.height == 2
     assert df["coding_type"].unique().to_list() == ["brands"]
     assert df.filter(pl.col("normalized_text") == "gloria").height == 2

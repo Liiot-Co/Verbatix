@@ -1,128 +1,57 @@
-from typing import Optional
+"""Un solo endpoint: archivo ya en Supabase → normalize → fuzzy → CSV."""
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
+from app.auth import CurrentUser, current_user
 from app.database import get_db
-from app.models import OfficialBrand, BrandVariation, ResponseCode, SurveyResponse
-from app.services.pipeline import classify_codes, classify_text
+from app.services.classify_pipeline import classify_file_to_csv
+from app.services.pipelineProcess.models import SCORE_THRESHOLD
 
-router = APIRouter(prefix="/api", tags=["classify"])
-
-
-class Decision(BaseModel):
-    item_id: int
-    action: str
-    resolved_brand: Optional[str] = None
+router = APIRouter(prefix="/api/v1", tags=["classify"])
 
 
-class ClassifyRequest(BaseModel):
-    decisions: list[Decision]
+@router.post("/files/{file_id}/classify")
+def classify_file(
+    file_id: uuid.UUID,
+    verbatims_sheet: str | None = Query(
+        default=None,
+        description="Hoja de verbatims. Si se omite, se auto-detecta.",
+    ),
+    threshold: float = Query(default=SCORE_THRESHOLD, ge=0, le=100),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """
+    Trae el Excel de Supabase por `file_id` (imported_files),
+    normaliza, clasifica con fuzzy y devuelve CSV.
+    No persiste clasificaciones.
+    """
+    try:
+        csv_bytes, metrics = classify_file_to_csv(
+            db,
+            file_id,
+            verbatims_sheet=verbatims_sheet,
+            threshold=threshold,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Error al procesar archivo: {exc}") from exc
 
-
-@router.post("/classify")
-def classify_decisions(payload: ClassifyRequest, db: Session = Depends(get_db)):
-    for dec in payload.decisions:
-        resp = db.query(SurveyResponse).get(dec.item_id)
-        if not resp:
-            continue
-
-        if dec.action in ("approve", "edit") and dec.resolved_brand:
-            brand = db.query(OfficialBrand).filter_by(name=dec.resolved_brand).first()
-            if not brand:
-                brand = OfficialBrand(name=dec.resolved_brand)
-                db.add(brand)
-                db.flush()
-
-            if resp.extracted_term:
-                existing_var = (
-                    db.query(BrandVariation)
-                    .filter_by(variation_text=resp.extracted_term.lower())
-                    .first()
-                )
-                if not existing_var:
-                    db.add(BrandVariation(
-                        variation_text=resp.extracted_term.lower(),
-                        official_brand_id=brand.id,
-                    ))
-
-            resp.status = "auto_approved"
-            resp.official_brand_id = brand.id
-
-        elif dec.action == "reject":
-            resp.status = "rejected"
-
-    db.commit()
-
-    requires_human = (
-        db.query(SurveyResponse)
-        .filter_by(status="requires_human")
-        .all()
-    )
-
-    for resp in requires_human:
-        result = classify_text(resp.original_text, db)
-        if result["status"] == "auto_approved" and result["confidence"] >= 0.85:
-            resp.status = "auto_approved"
-            resp.official_brand_id = result["official_brand_id"]
-            resp.confidence = result["confidence"]
-
-        if not resp.codes:
-            study_id = resp.round.study_id if resp.round else None
-            for m in classify_codes(resp.original_text, study_id, db):
-                db.add(ResponseCode(
-                    response_id=resp.id,
-                    code_id=m["code_id"],
-                    confidence=m["confidence"],
-                    origin="auto",
-                ))
-
-    db.commit()
-
-    all_items = db.query(SurveyResponse).order_by(SurveyResponse.id).all()
-
-    items = []
-    for r in all_items:
-        brand_name = None
-        if r.official_brand_id:
-            brand = db.query(OfficialBrand).get(r.official_brand_id)
-            brand_name = brand.name if brand else None
-        items.append({
-            "id": r.id,
-            "original_text": r.original_text,
-            "extracted_term": r.extracted_term,
-            "suggested_brand": brand_name,
-            "official_brand_id": r.official_brand_id,
-            "confidence": r.confidence,
-            "status": r.status,
-            "codes": [
-                {"code_id": rc.code_id, "name": rc.code.name, "confidence": rc.confidence}
-                for rc in r.codes
-            ],
-        })
-
-    auto = sum(1 for i in items if i["status"] == "auto_approved")
-    human = sum(1 for i in items if i["status"] == "requires_human")
-    generic = sum(1 for i in items if i["status"] == "generic")
-    manual = sum(1 for i in items if i["status"] == "manual_resolved")
-
-    brand_counts: dict[str, int] = {}
-    for i in items:
-        if i["suggested_brand"]:
-            brand_counts[i["suggested_brand"]] = brand_counts.get(i["suggested_brand"], 0) + 1
-    top_brands = sorted(brand_counts.items(), key=lambda x: -x[1])
-
-    return {
-        "status": "ok",
-        "items": items,
-        "metrics": {
-            "total": len(items),
-            "auto_approved": auto,
-            "requires_human": human,
-            "generic": generic,
-            "manual_resolved": manual,
-            "top_brands": [{"brand": b, "count": c} for b, c in top_brands],
+    filename = f"classifications_{file_id}.csv"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Classified-Count": str(metrics["classified"]),
+            "X-Unmatched-Count": str(metrics["unmatched"]),
+            "X-Input-Rows": str(metrics["input_rows"]),
+            "X-Coding-Type": str(metrics["coding_type"]),
         },
-    }
+    )
