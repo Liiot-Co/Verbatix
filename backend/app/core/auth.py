@@ -4,7 +4,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 
-from app.config import settings
+from app.core.config import settings
 
 _jwks_client = PyJWKClient(settings.supabase_jwks_url, cache_keys=True)
 _bearer = HTTPBearer(auto_error=True)

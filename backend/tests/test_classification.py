@@ -8,7 +8,7 @@ SQL params sent, not real persistence.
 import uuid
 from unittest.mock import patch
 
-from app.classification import classify_studio
+from app.pipeline import classify_studio
 
 
 class FakeResult:
@@ -59,7 +59,7 @@ def test_classify_studio_matches_and_flags_anomaly():
         {"group_id": str(group_unmatched["id"]), "code_numbers": []},
     ]
 
-    with patch("app.classification.engine.classify_batch", return_value=fake_results):
+    with patch("app.pipeline.classify_llm.classify_batch", return_value=fake_results):
         summary = classify_studio(db, uuid.uuid4())
 
     assert summary["groups_classified"] == 1

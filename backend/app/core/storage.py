@@ -1,7 +1,7 @@
 """Supabase Storage vía REST (secret key, bypass RLS)."""
 import httpx
 
-from app.config import settings
+from app.core.config import settings
 
 _BASE = f"{settings.supabase_url.rstrip('/')}/storage/v1"
 _HEADERS = {

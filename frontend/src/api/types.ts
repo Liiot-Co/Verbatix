@@ -55,18 +55,30 @@ export interface Study {
 
 export interface Codebook {
   id: string;
-  version: number;
   inherited_codes: number;
   inherited_aliases: number;
 }
 
+// Rounds belong directly to a project. Each round can hold multiple studios
+// (typically one "brands" + one "reasons"), created separately below.
 export interface Round {
   id: string;
-  study_id: string;
+  project_id: string;
   name: string;
   round_number: number;
+  status: string;
+}
+
+// A studio is one coding stream (brands or reasons) within a round — it owns
+// the codebook, imported files, and verbatims for that stream.
+export interface Studio {
+  id: string;
+  round_id: string;
+  name: string;
+  coding_type: CodingType;
+  survey_question: string | null;
   origin_mode: OriginMode;
-  source_round_id: string | null;
+  source_studio_id: string | null;
   min_mentions_threshold: number;
   audit_percentage: number;
   status: string;
@@ -146,4 +158,40 @@ export interface Paginated<T> {
 
 export interface ApiErrorBody {
   error: { code: string; message: string; details: Record<string, unknown> };
+}
+
+/* ── Auth ── */
+
+export interface LoginPayload {
+  email: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  refresh_token?: string;
+  token_type: string;
+  expires_in?: number;
+  user: { id: string; email: string };
+}
+
+export interface SignupPayload {
+  email: string;
+  password: string;
+}
+
+export interface SignupResponse {
+  id?: string;
+  email?: string;
+  access_token?: string;
+  token_type?: string;
+}
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  name: string | null;
+  role: string;
+  is_active: boolean;
+  created_at: string;
 }

@@ -3,8 +3,8 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.classification.ollama_client import classify_batch
-from app.config import settings
+from app.pipeline.ollama_client import classify_batch
+from app.core.config import settings
 
 
 def _chunks(items: list, size: int):

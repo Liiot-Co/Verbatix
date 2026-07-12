@@ -5,8 +5,8 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, current_user
-from app.database import get_db
+from app.core.auth import CurrentUser, current_user
+from app.core.database import get_db
 from app.repositories import clone_codebook, create_codebook, seed_system_codes
 
 router = APIRouter(prefix="/api/v1", tags=["rounds & studios"])

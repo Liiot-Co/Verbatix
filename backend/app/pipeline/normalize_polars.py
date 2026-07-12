@@ -8,7 +8,7 @@ Parquet en Storage (un archivo por estudio, nunca mezcla marcas y razones):
 
 Cargar:
 
-    from app.services.normalize_pipeline import load_normalized_df
+    from app.pipeline.normalize_polars import load_normalized_df
     df = load_normalized_df(studio_id, file_id)
 
 Columnas del Parquet:
@@ -22,7 +22,7 @@ Marcas vs razones
 Cada studio tiene UN coding_type. El Parquet de Marcas y el de Razones son archivos
 distintos bajo distinto studio_id. El paso 2 lee coding_type del DataFrame y decide:
 
-  brands  → fuzzy (pipelineProcess) asigna como máximo 1 código por fila
+  brands  → fuzzy (pipeline.fuzzy) asigna como máximo 1 código por fila
   reasons → se derivan enteras a unmatched para el módulo LLM
 
 Normalización de razones con varias palabras
@@ -39,8 +39,8 @@ from typing import Literal
 
 import polars as pl
 
-from app.services import storage
-from app.services.normalize import normalize
+from app.core import storage
+from app.pipeline.normalize import normalize
 
 CodingType = Literal["brands", "reasons"]
 BUCKET = "uploads"

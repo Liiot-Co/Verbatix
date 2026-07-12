@@ -8,11 +8,12 @@ import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.services import excel, storage
-from app.services.normalize import normalize
-from app.services.normalize_pipeline import rows_to_normalized_df
-from app.services.pipelineProcess import CodeAlias, run_fuzzy_matching
-from app.services.pipelineProcess.models import Cols, SCORE_THRESHOLD
+from app.core import storage
+from app.pipeline import excel
+from app.pipeline.normalize import normalize
+from app.pipeline.normalize_polars import rows_to_normalized_df
+from app.pipeline.fuzzy import CodeAlias, run_fuzzy_matching
+from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD
 
 
 def _split_storage_path(storage_path: str) -> tuple[str, str]:

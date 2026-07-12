@@ -5,8 +5,8 @@ import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.services.normalize import normalize
-from app.services.normalize_pipeline import rows_to_normalized_df
+from app.pipeline.normalize import normalize
+from app.pipeline.normalize_polars import rows_to_normalized_df
 
 SYSTEM_CODES = [
     (95, "Menciones confusas/Incorrectas", "anomaly"),

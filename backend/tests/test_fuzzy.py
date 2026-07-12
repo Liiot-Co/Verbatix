@@ -1,8 +1,8 @@
-"""Tests unitarios del fuzzy matching (pipelineProcess)."""
+"""Tests unitarios del fuzzy matching (pipeline.fuzzy)."""
 import polars as pl
 
-from app.services.pipelineProcess import CodeAlias, run_fuzzy_matching
-from app.services.pipelineProcess.models import Cols
+from app.pipeline.fuzzy import CodeAlias, run_fuzzy_matching
+from app.pipeline.fuzzy.models import Cols
 
 
 CATALOG = [

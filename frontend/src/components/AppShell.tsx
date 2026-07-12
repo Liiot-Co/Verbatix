@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Wand2, Keyboard, Command } from "lucide-react";
-import { motion } from "framer-motion";
+import { LayoutDashboard, Wand2, Keyboard, Command, LogOut, ChevronDown } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
+import { useVerbatixStore } from "@/store/useVerbatixStore";
 
 const NAV_ITEMS: { path: string; label: string; icon: typeof LayoutDashboard }[] = [
   { path: "/", label: "Inicio", icon: LayoutDashboard },
@@ -11,6 +12,10 @@ const NAV_ITEMS: { path: string; label: string; icon: typeof LayoutDashboard }[]
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const user = useVerbatixStore((s) => s.user);
+  const logout = useVerbatixStore((s) => s.logout);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useKeyboardShortcuts("global");
 
@@ -60,9 +65,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     ]);
   }, [navigate]);
 
+  // Close menu on click outside
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
   const openCommandPalette = () => {
     window.dispatchEvent(new CustomEvent("toggle-command-palette"));
   };
+
+  const userInitial = user?.email?.charAt(0).toUpperCase() ?? "?";
 
   return (
     <>
@@ -139,19 +157,61 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <span className="kbd-hint shrink-0">{modLabel()}⇧N</span>
             </motion.button>
 
-            {/* Keyboard shortcuts hint */}
-            <div className="mt-auto p-2 border-t border-p-border"
-            >
-              <button
-                onClick={openCommandPalette}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-p-text-muted hover:text-p-text hover:bg-p-bg-subtle transition-colors"
-                title={`Abrir paleta de comandos (${modLabel()}K)`}
+            {/* User section at bottom */}
+            <div className="mt-auto border-t border-p-border pt-2">
+              <div className="relative" ref={menuRef}>
+                <motion.button
+                  onClick={() => setMenuOpen(!menuOpen)}
+                  whileHover={{ x: 2 }}
+                  whileTap={{ scale: 0.98 }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-p-text-muted hover:text-p-text hover:bg-p-bg-subtle/60 transition-colors duration-150"
+                >
+                  <div className="avatar w-6 h-6 text-[11px] shrink-0">{userInitial}</div>
+                  <span className="flex-1 text-left truncate text-xs">{user?.email ?? "Usuario"}</span>
+                  <ChevronDown className={`w-3 h-3 shrink-0 transition-transform duration-150 ${menuOpen ? "rotate-180" : ""}`} />
+                </motion.button>
+
+                <AnimatePresence>
+                  {menuOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4, scale: 0.96 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -4, scale: 0.96 }}
+                      transition={{ duration: 0.12, ease: [0.19, 1, 0.22, 1] }}
+                      className="absolute bottom-full left-0 right-0 mb-1 bg-p-surface border border-p-border rounded-xl shadow-lg overflow-hidden"
+                    >
+                      <div className="p-2 space-y-0.5">
+                        <div className="px-3 py-2 text-xs text-p-text-muted border-b border-p-border mb-1">
+                          <div className="font-medium text-p-text truncate">{user?.email}</div>
+                          <div className="capitalize">{user?.role ?? "analyst"}</div>
+                        </div>
+                        <button
+                          onClick={() => { logout(); navigate("/login"); }}
+                          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-p-text-muted hover:text-p-error hover:bg-red-50 transition-colors"
+                        >
+                          <LogOut className="w-3.5 h-3.5" />
+                          Cerrar sesión
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Keyboard shortcuts hint */}
+              <div className="p-2"
               >
-                <Keyboard className="w-3.5 h-3.5 shrink-0" />
-                <span className="flex-1 text-left">Atajos de teclado</span>
-                <Command className="w-3.5 h-3.5 shrink-0 opacity-50" />
-                <span className="kbd-hint">{modLabel()}K</span>
-              </button>
+                <button
+                  onClick={openCommandPalette}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-p-text-muted hover:text-p-text hover:bg-p-bg-subtle transition-colors"
+                  title={`Abrir paleta de comandos (${modLabel()}K)`}
+                >
+                  <Keyboard className="w-3.5 h-3.5 shrink-0" />
+                  <span className="flex-1 text-left">Atajos de teclado</span>
+                  <Command className="w-3.5 h-3.5 shrink-0 opacity-50" />
+                  <span className="kbd-hint">{modLabel()}K</span>
+                </button>
+              </div>
             </div>
           </nav>
         </aside>

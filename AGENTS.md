@@ -1,27 +1,111 @@
-<!-- generated-by: knogg -->
-# Handoff → OpenCode
+# classification-app
 
-Project: classification-app
-Stage: Stage 1 — MVP Discovery & Classification
-Task: Cursor lane (catalog+classifier+UI) done; awaiting opencode discovery
-Status: in_progress
+Stack:
+- Backend: FastAPI + PostgreSQL (Supabase) + SQLAlchemy + Polars + rapidfuzz
+- Frontend: React 19 + TypeScript + Vite + Tailwind CSS + Zustand + Framer Motion
+- Auth: Supabase Auth (JWT, ES256/RS256)
+- LLM: Ollama (local) for verbatim classification
 
-## Constraints
-- Stack: Streamlit + SQLite + pandas + rapidfuzz (recommended demo stack, §27)
-- No prior brand dictionary — products are discovered from the survey data itself
-- Always keep both respuesta_original and respuesta_limpia for every answer
-- Discovery candidates require human review before entering the living catalog
-- Out of scope for MVP: custom NLP models, multi-user/roles, cloud deploy, CRM, auto-translation
-- Parallel lanes must not share files: opencode owns src/discovery/*, cursor owns src/catalog/*, src/classification/*, src/ui/*
+## Directory Structure
 
-## Next Actions
-- opencode: D1 — Excel ingest + manual open-answer column selection (src/discovery/ingest.py)
-- opencode: D2 — text cleaning + uni/bi/tri-gram extraction + frequency counting (src/discovery/pipeline.py)
-- cursor: C1 — SQLite living-catalog store for products + aliases + candidates (src/catalog/store.py)
-- cursor: C2 — alias-exact + rapidfuzz classifier (src/classification/classifier.py)
-- opencode: D1 — implement src/discovery/ingest.py
-- opencode: D2 — implement src/discovery/pipeline.py
-- opencode: D3 — implement src/discovery/clustering.py
+```
+backend/
+├── app/
+│   ├── core/              # Infrastructure
+│   │   ├── config.py      # Settings (pydantic-settings)
+│   │   ├── database.py    # SQLAlchemy engine + session
+│   │   ├── auth.py        # JWT verification (Supabase JWKS)
+│   │   └── storage.py     # Supabase Storage REST client
+│   ├── pipeline/          # Data processing pipeline
+│   │   ├── normalize.py   # Text normalization (canonical)
+│   │   ├── normalize_polars.py  # Polars normalization pipeline
+│   │   ├── excel.py       # Excel parser
+│   │   ├── fuzzy/         # Fuzzy matching (rapidfuzz WRatio)
+│   │   ├── ollama_client.py # Ollama API client
+│   │   ├── classify_llm.py  # LLM classification engine
+│   │   └── orchestrator.py  # classify_file_to_csv flow
+│   ├── routers/           # API endpoints
+│   │   ├── auth.py        # /api/auth (login, signup, me)
+│   │   ├── projects.py    # /api/v1/projects
+│   │   └── studios.py     # /api/v1 (rounds, studios)
+│   ├── models.py          # SQLAlchemy models
+│   ├── repositories.py    # Data access layer (explicit SQL)
+│   └── main.py            # FastAPI app
+├── tests/
+│   ├── test_normalize.py
+│   ├── test_fuzzy.py
+│   ├── test_import_flow.py
+│   └── test_classification.py
+├── db/migrations/
+├── requirements.txt
+├── Dockerfile
+└── run.py
 
-## Summary
-classification-app discovers products from open-ended survey answers and classifies responses against a living catalog. Work is split into two parallel lanes coordinated by knogg: opencode builds the discovery pipeline (ingest -> clean -> n-grams -> count -> threshold -> fuzzy cluster) and cursor builds the catalog store, classifier, and Streamlit dashboard. Claim a task with `knogg task claim <id> --agent <you>` before editing its files.
+frontend/
+├── src/
+│   ├── api/
+│   │   ├── client.ts      # API client (includes auth token)
+│   │   └── types.ts       # TypeScript interfaces
+│   ├── components/
+│   │   ├── AuthGuard.tsx          # Protected route wrapper
+│   │   ├── SignInPage.tsx         # Login page
+│   │   ├── SignUpPage.tsx         # Sign up page
+│   │   ├── AppShell.tsx           # Layout + sidebar + user menu
+│   │   ├── ProjectDashboard.tsx   # Project grid
+│   │   ├── ProjectDetail.tsx      # Project detail view
+│   │   ├── CreationWizard.tsx     # Multi-step project creator
+│   │   ├── VerbatimsTable.tsx     # Verbatim viewer
+│   │   ├── CommandPalette.tsx     # Cmd+K palette
+│   │   ├── ToastStack.tsx         # Toast notifications
+│   │   ├── Breadcrumb.tsx         # Breadcrumb nav
+│   │   └── Loader.tsx             # Loading spinner
+│   ├── store/
+│   │   └── useVerbatixStore.ts    # Zustand (auth + toasts + nav)
+│   ├── hooks/
+│   │   └── useKeyboardShortcuts.ts
+│   ├── lib/
+│   │   ├── cn.ts
+│   │   └── sound.ts
+│   ├── index.css          # Design system (Verbatix Light)
+│   ├── App.tsx            # Auth routes + protected shell
+│   └── main.tsx
+├── tailwind.config.js     # Custom theme tokens
+├── package.json
+├── Dockerfile
+├── Dockerfile.dev
+└── nginx.conf
+```
+
+## API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | /api/auth/signup | No | Create account (Supabase Auth) |
+| POST | /api/auth/login | No | Login, returns JWT |
+| GET | /api/auth/me | Yes | Get/sync user profile |
+| POST | /api/v1/projects | Yes | Create project |
+| GET | /api/v1/projects | Yes | List projects |
+| POST | /api/v1/projects/{id}/rounds | Yes | Create round |
+| POST | /api/v1/rounds/{id}/studios | Yes | Create studio with codebook |
+| GET | /api/v1/studios/{id} | Yes | Get studio with counters |
+| GET | /api/v1/studios/{id}/mention-groups | Yes | List mention groups |
+| GET | /api/v1/studios/{id}/verbatims | Yes | List verbatims (paginated) |
+| GET | /health | No | Health check |
+| GET | /health/db | No | Database health check |
+
+## Auth Flow
+
+1. User signup/login → Supabase Auth
+2. Backend proxies to Supabase Auth REST API
+3. Returned JWT stored in localStorage (`verbatix:token`)
+4. All API calls include `Authorization: Bearer <token>`
+5. Backend validates JWT via Supabase JWKS endpoint
+6. 401 response clears token → redirect to /login
+
+## Conventions
+
+- Python: snake_case, type hints, explicit SQL (text()) in repositories
+- TypeScript: PascalCase components, camelCase functions, strict types
+- CSS: Tailwind utility classes + `@layer components` custom styles
+- State: Zustand store for global state
+- Token storage: localStorage (keys prefixed `verbatix:`)

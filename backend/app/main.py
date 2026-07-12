@@ -3,10 +3,10 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth import CurrentUser, current_user
-from app.config import settings
-from app.database import check_db, get_db
-from app.routers import auth, classify, projects, studios
+from app.core.auth import CurrentUser, current_user
+from app.core.config import settings
+from app.core.database import check_db, get_db
+from app.routers import auth, projects, studios
 from app.routers.auth import get_me
 
 
@@ -33,7 +33,6 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(studios.router)
-app.include_router(classify.router)
 
 
 @app.get("/health")

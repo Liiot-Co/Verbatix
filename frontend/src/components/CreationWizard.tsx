@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useDropzone } from "react-dropzone";
 import { AnimatePresence, motion } from "framer-motion";
@@ -9,7 +9,7 @@ import Breadcrumb, { type Crumb } from "./Breadcrumb";
 import {
   createProject,
   createRound,
-  createStudy,
+  createStudio,
   getProject,
   importFile,
   uploadFile,
@@ -22,18 +22,17 @@ import type {
   ProjectDetail,
   Round,
   RoundSummary,
-  Study,
-  StudySummary,
+  Studio,
   UploadedFile,
 } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 
-type WizardStep = "project" | "study" | "round" | "upload";
+type WizardStep = "project" | "round" | "studio" | "upload";
 
 const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: "project", label: "Proyecto", icon: "📁" },
-  { key: "study", label: "Estudio", icon: "🏷️" },
   { key: "round", label: "Ronda", icon: "🔄" },
+  { key: "studio", label: "Estudio", icon: "🏷️" },
   { key: "upload", label: "Excel", icon: "📊" },
 ];
 
@@ -104,26 +103,29 @@ export default function CreationWizard() {
   const prevStepIndexRef = useRef(0);
   const [direction, setDirection] = useState(1);
 
-  // Step 1: proyecto
-  const [project, setProject] = useState<ProjectDetail | null>(null);
+  // Step 1: proyecto. Only the fields POST /projects actually returns —
+  // ProjectDetail (studies_count/studies) needs GET /projects/{id}, which
+  // doesn't exist on the backend yet (see homologationCandidates below).
+  type WizardProject = Pick<ProjectDetail, "id" | "name" | "external_code" | "client_name">;
+  const [project, setProject] = useState<WizardProject | null>(null);
   const [newExternalCode, setNewExternalCode] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
   const [newClientName, setNewClientName] = useState("");
 
-  // Step 2: study
-  const [study, setStudy] = useState<StudySummary | Study | null>(null);
-  const [newStudyName, setNewStudyName] = useState("Marcas");
-  const [newStudyCodingType, setNewStudyCodingType] = useState<CodingType>("brands");
-  const [newStudyQuestion, setNewStudyQuestion] = useState("");
-
-  // Step 3: ronda
+  // Step 2: ronda (belongs directly to the project)
   const [rName, setRName] = useState("Ronda 1 - 2026");
   const [rRoundNumber, setRRoundNumber] = useState(1);
-  const [rOriginMode, setROriginMode] = useState<OriginMode>("from_scratch");
-  const [rSourceId, setRSourceId] = useState<string>("");
-  const [rThreshold, setRThreshold] = useState(3);
-  const [rAudit, setRAudit] = useState(10);
   const [round, setRound] = useState<Round | null>(null);
+
+  // Step 3: estudio (marcas/razones, belongs to the round)
+  const [studio, setStudio] = useState<Studio | null>(null);
+  const [newStudioName, setNewStudioName] = useState("Marcas");
+  const [newStudioCodingType, setNewStudioCodingType] = useState<CodingType>("brands");
+  const [newStudioQuestion, setNewStudioQuestion] = useState("");
+  const [sOriginMode, setSOriginMode] = useState<OriginMode>("from_scratch");
+  const [sSourceId, setSSourceId] = useState<string>("");
+  const [sThreshold, setSThreshold] = useState(3);
+  const [sAudit, setSAudit] = useState(10);
 
   // Step 4: excel
   const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
@@ -134,36 +136,29 @@ export default function CreationWizard() {
   const [sheetError, setSheetError] = useState<string | null>(null);
 
   const projectRef = useRef<HTMLInputElement>(null);
-  const studyRef = useRef<HTMLInputElement>(null);
   const roundRef = useRef<HTMLInputElement>(null);
+  const studioRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Deep-link support: /wizard?projectId=...&studyId=... skips the steps
-  // already decided elsewhere (e.g. "Nueva ronda" from a study's detail card).
+  // Deep-link support: /wizard?projectId=... skips the project step (e.g.
+  // "Nueva ronda" from a project's detail page).
+  // TODO: getProject() 404s until GET /projects/{id} exists on the backend.
   useEffect(() => {
     const projectId = searchParams.get("projectId");
     if (!projectId) return;
     getProject(projectId).then((detail) => {
       setProject(detail);
       setActiveProjectId(detail.id);
-      const studyId = searchParams.get("studyId");
-      const preselectedStudy = studyId ? detail.studies.find((s) => s.id === studyId) : undefined;
-      if (preselectedStudy) {
-        setStudy(preselectedStudy);
-        goToStep("round");
-      } else {
-        goToStep("study");
-      }
+      goToStep("round");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const homologationCandidates: RoundSummary[] = useMemo(() => {
-    if (!project || !study) return [];
-    return project.studies
-      .filter((s) => s.coding_type === study.coding_type)
-      .flatMap((s) => s.rounds);
-  }, [project, study]);
+  // Studios of the same coding_type elsewhere in the project, offered as a
+  // homologation source. TODO: needs GET /projects/{id} with nested
+  // round/studio data, which doesn't exist on the backend yet — always empty
+  // until that's built, so "homologated" only supports an external codebook.
+  const homologationCandidates: RoundSummary[] = [];
 
   const goToStep = (next: WizardStep) => {
     const nextIndex = STEPS.findIndex((s) => s.key === next);
@@ -175,36 +170,35 @@ export default function CreationWizard() {
   const handleCreateProject = async () => {
     if (!newExternalCode.trim() || !newProjectName.trim()) return;
     const created = await createProject(newExternalCode.trim(), newProjectName.trim(), newClientName.trim() || undefined);
-    const detail = await getProject(created.id);
-    setProject(detail);
-    setActiveProjectId(detail.id);
-    playSuccess();
-    goToStep("study");
-  };
-
-  const handleCreateStudy = async () => {
-    if (!project || !newStudyName.trim()) return;
-    const created = await createStudy(project.id, {
-      name: newStudyName.trim(),
-      coding_type: newStudyCodingType,
-      survey_question: newStudyQuestion.trim() || undefined,
-    });
-    setStudy(created);
+    setProject(created);
+    setActiveProjectId(created.id);
     playSuccess();
     goToStep("round");
   };
 
   const handleCreateRound = async () => {
-    if (!study || !rName.trim()) return;
-    const created = await createRound(study.id, {
+    if (!project || !rName.trim()) return;
+    const created = await createRound(project.id, {
       name: rName.trim(),
       round_number: rRoundNumber,
-      origin_mode: rOriginMode,
-      source_round_id: rOriginMode === "homologated" && rSourceId ? rSourceId : null,
-      min_mentions_threshold: rThreshold,
-      audit_percentage: rAudit,
     });
     setRound(created);
+    playSuccess();
+    goToStep("studio");
+  };
+
+  const handleCreateStudio = async () => {
+    if (!round || !newStudioName.trim()) return;
+    const created = await createStudio(round.id, {
+      name: newStudioName.trim(),
+      coding_type: newStudioCodingType,
+      survey_question: newStudioQuestion.trim() || undefined,
+      origin_mode: sOriginMode,
+      source_studio_id: sOriginMode === "homologated" && sSourceId ? sSourceId : null,
+      min_mentions_threshold: sThreshold,
+      audit_percentage: sAudit,
+    });
+    setStudio(created);
     if (created.codebook.inherited_codes > 0) {
       showToast(`Se heredaron ${created.codebook.inherited_codes} códigos y ${created.codebook.inherited_aliases} alias`, "success");
     }
@@ -274,20 +268,20 @@ export default function CreationWizard() {
       ...(project && step !== "project" ? { onClick: () => goToStep("project") } : {}),
     },
   ];
-  if (study) crumbs.push({ label: study.name, ...(step !== "study" ? { onClick: () => goToStep("study") } : {}) });
-  if (round) crumbs.push({ label: round.name });
+  if (round) crumbs.push({ label: round.name, ...(step !== "round" ? { onClick: () => goToStep("round") } : {}) });
+  if (studio) crumbs.push({ label: studio.name });
 
   const projectPanelKeyDown = useEnterToSubmit(handleCreateProject);
-  const studyPanelKeyDown = useEnterToSubmit(handleCreateStudy);
   const roundPanelKeyDown = useEnterToSubmit(handleCreateRound);
+  const studioPanelKeyDown = useEnterToSubmit(handleCreateStudio);
 
   // Global Escape handling
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (step === "study") return goToStep("project");
-      if (step === "round") return goToStep("study");
-      if (step === "upload" && !uploaded) return goToStep("round");
+      if (step === "round") return goToStep("project");
+      if (step === "studio") return goToStep("round");
+      if (step === "upload" && !uploaded) return goToStep("studio");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -300,9 +294,9 @@ export default function CreationWizard() {
         key: "ArrowRight",
         meta: true,
         action: () => {
-          if (step === "project") goToStep("study");
-          else if (step === "study") goToStep("round");
-          else if (step === "round") goToStep("upload");
+          if (step === "project") goToStep("round");
+          else if (step === "round") goToStep("studio");
+          else if (step === "studio") goToStep("upload");
         },
         description: "Siguiente paso",
         category: "Navegación",
@@ -311,9 +305,9 @@ export default function CreationWizard() {
         key: "ArrowLeft",
         meta: true,
         action: () => {
-          if (step === "upload") goToStep("round");
-          else if (step === "round") goToStep("study");
-          else if (step === "study") goToStep("project");
+          if (step === "upload") goToStep("studio");
+          else if (step === "studio") goToStep("round");
+          else if (step === "round") goToStep("project");
         },
         description: "Paso anterior",
         category: "Navegación",
@@ -334,8 +328,8 @@ export default function CreationWizard() {
   useEffect(() => {
     setTimeout(() => {
       if (step === "project") projectRef.current?.focus();
-      if (step === "study") studyRef.current?.focus();
       if (step === "round") roundRef.current?.focus();
+      if (step === "studio") studioRef.current?.focus();
       if (step === "upload" && !uploaded) searchRef.current?.focus();
     }, 100);
   }, [step, uploaded]);
@@ -464,8 +458,8 @@ export default function CreationWizard() {
             </div>
           )}
 
-          {/* Step 2: Study (creation form always visible) */}
-          {step === "study" && project && (
+          {/* Step 2: Round (belongs directly to the project) */}
+          {step === "round" && project && (
             <div className="space-y-3">
               <motion.button
                 onClick={() => goToStep("project")}
@@ -476,33 +470,24 @@ export default function CreationWizard() {
                 <ChevronLeft className="w-3.5 h-3.5" /> {project.name}
               </motion.button>
 
-              <div className="card p-4 space-y-2.5" onKeyDown={studyPanelKeyDown}>
+              <div className="card p-4 space-y-2.5" onKeyDown={roundPanelKeyDown}>
                 <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre</div>
                 <motion.input
-                  ref={studyRef}
+                  ref={roundRef}
                   autoFocus
                   className="input w-full text-sm"
-                  value={newStudyName}
-                  onChange={(e) => setNewStudyName(e.target.value)}
+                  value={rName}
+                  onChange={(e) => setRName(e.target.value)}
                   whileFocus={{ scale: 1.002 }}
                 />
 
-                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo de codificación</div>
-                <ToggleGroup
-                  options={[
-                    { value: "brands" as CodingType, label: "Marcas" },
-                    { value: "reasons" as CodingType, label: "Razones" },
-                  ]}
-                  value={newStudyCodingType}
-                  onChange={setNewStudyCodingType}
-                />
-
-                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Pregunta de la encuesta</div>
+                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Número de ronda</div>
                 <motion.input
+                  type="number"
+                  min={1}
                   className="input w-full text-sm"
-                  placeholder="Q030 - BE1: ¿Qué marcas...?"
-                  value={newStudyQuestion}
-                  onChange={(e) => setNewStudyQuestion(e.target.value)}
+                  value={rRoundNumber}
+                  onChange={(e) => setRRoundNumber(Number(e.target.value))}
                   whileFocus={{ scale: 1.002 }}
                 />
 
@@ -511,7 +496,7 @@ export default function CreationWizard() {
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     className="btn-primary text-sm py-2 flex-1 justify-center"
-                    onClick={handleCreateStudy}
+                    onClick={handleCreateRound}
                   >
                     Crear y continuar
                   </motion.button>
@@ -520,42 +505,53 @@ export default function CreationWizard() {
             </div>
           )}
 
-          {/* Step 3: Round */}
-          {step === "round" && study && (
+          {/* Step 3: Studio (marcas/razones, belongs to the round) */}
+          {step === "studio" && round && (
             <div
               className="card p-4 space-y-2.5"
-              onKeyDown={roundPanelKeyDown}
+              onKeyDown={studioPanelKeyDown}
             >
               <motion.button
-                onClick={() => goToStep("study")}
+                onClick={() => goToStep("round")}
                 whileHover={{ x: -2 }}
                 whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
               >
-                <ChevronLeft className="w-3.5 h-3.5" /> {study.name}
+                <ChevronLeft className="w-3.5 h-3.5" /> {round.name}
               </motion.button>
 
               <motion.div className="space-y-4">
                 <div>
                   <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre</motion.label>
                   <motion.input
-                    ref={roundRef}
+                    ref={studioRef}
                     autoFocus
                     className="input w-full text-sm mt-1"
-                    value={rName}
-                    onChange={(e) => setRName(e.target.value)}
+                    value={newStudioName}
+                    onChange={(e) => setNewStudioName(e.target.value)}
                     whileFocus={{ scale: 1.002 }}
                   />
                 </div>
 
                 <div>
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Número de ronda</motion.label>
+                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo de codificación</motion.label>
+                  <ToggleGroup
+                    options={[
+                      { value: "brands" as CodingType, label: "Marcas" },
+                      { value: "reasons" as CodingType, label: "Razones" },
+                    ]}
+                    value={newStudioCodingType}
+                    onChange={setNewStudioCodingType}
+                  />
+                </div>
+
+                <div>
+                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Pregunta de la encuesta</motion.label>
                   <motion.input
-                    type="number"
-                    min={1}
                     className="input w-full text-sm mt-1"
-                    value={rRoundNumber}
-                    onChange={(e) => setRRoundNumber(Number(e.target.value))}
+                    placeholder="Q030 - BE1: ¿Qué marcas...?"
+                    value={newStudioQuestion}
+                    onChange={(e) => setNewStudioQuestion(e.target.value)}
                     whileFocus={{ scale: 1.002 }}
                   />
                 </div>
@@ -567,22 +563,22 @@ export default function CreationWizard() {
                       { value: "from_scratch" as OriginMode, label: "Desde cero" },
                       { value: "homologated" as OriginMode, label: "Homologar" },
                     ]}
-                    value={rOriginMode}
-                    onChange={setROriginMode}
+                    value={sOriginMode}
+                    onChange={setSOriginMode}
                   />
                 </div>
 
-                {rOriginMode === "homologated" && (
+                {sOriginMode === "homologated" && (
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: "auto" }}
                     exit={{ opacity: 0, height: 0 }}
                   >
-                    <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Ronda origen</motion.label>
+                    <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Estudio origen</motion.label>
                     <motion.select
                       className="input w-full text-sm mt-1"
-                      value={rSourceId}
-                      onChange={(e) => setRSourceId(e.target.value)}
+                      value={sSourceId}
+                      onChange={(e) => setSSourceId(e.target.value)}
                       whileFocus={{ scale: 1.002 }}
                     >
                       <option value="">Sin origen (libro de códigos externo)</option>
@@ -600,8 +596,8 @@ export default function CreationWizard() {
                       type="number"
                       min={1}
                       className="input w-full text-sm mt-1"
-                      value={rThreshold}
-                      onChange={(e) => setRThreshold(Number(e.target.value))}
+                      value={sThreshold}
+                      onChange={(e) => setSThreshold(Number(e.target.value))}
                       whileFocus={{ scale: 1.002 }}
                     />
                   </div>
@@ -612,8 +608,8 @@ export default function CreationWizard() {
                       min={0}
                       max={100}
                       className="input w-full text-sm mt-1"
-                      value={rAudit}
-                      onChange={(e) => setRAudit(Number(e.target.value))}
+                      value={sAudit}
+                      onChange={(e) => setSAudit(Number(e.target.value))}
                       whileFocus={{ scale: 1.002 }}
                     />
                   </div>
@@ -623,9 +619,9 @@ export default function CreationWizard() {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   className="btn-primary text-sm py-2 w-full justify-center mt-1"
-                  onClick={handleCreateRound}
+                  onClick={handleCreateStudio}
                 >
-                  Crear ronda <span className="opacity-60 font-normal">(Enter)</span>
+                  Crear estudio <span className="opacity-60 font-normal">(Enter)</span>
                 </motion.button>
               </motion.div>
             </div>

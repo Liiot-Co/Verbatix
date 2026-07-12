@@ -4,9 +4,9 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, current_user
-from app.config import settings
-from app.database import get_db
+from app.core.auth import CurrentUser, current_user
+from app.core.config import settings
+from app.core.database import get_db
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -16,9 +16,43 @@ class LoginIn(BaseModel):
     password: str
 
 
+class SignUpIn(BaseModel):
+    email: str
+    password: str
+
+
+@router.post("/signup")
+def signup(payload: SignUpIn):
+    """Crea cuenta via Supabase Auth. Devuelve JWT si auto-confirm está activo."""
+    r = httpx.post(
+        f"{settings.supabase_url.rstrip('/')}/auth/v1/signup",
+        headers={
+            "apikey": settings.supabase_secret_key,
+            "Content-Type": "application/json",
+        },
+        json={"email": payload.email, "password": payload.password},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        detail = r.json().get("msg") or r.json().get("error_description") or r.text
+        raise HTTPException(r.status_code, f"Registro falló: {detail}")
+    data = r.json()
+    return {
+        "id": data.get("id"),
+        "email": data.get("email"),
+        "access_token": data.get("access_token"),
+        "token_type": data.get("token_type", "bearer"),
+    }
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
 @router.post("/login")
 def login(payload: LoginIn):
-    """Obtiene un JWT de Supabase Auth (para pegarlo en Authorize de /docs)."""
+    """Obtiene un JWT de Supabase Auth."""
     r = httpx.post(
         f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=password",
         headers={
@@ -33,8 +67,10 @@ def login(payload: LoginIn):
     data = r.json()
     return {
         "access_token": data["access_token"],
+        "refresh_token": data.get("refresh_token"),
         "token_type": data.get("token_type", "bearer"),
         "expires_in": data.get("expires_in"),
+        "user": {"id": data.get("user", {}).get("id"), "email": data.get("user", {}).get("email")},
     }
 
 

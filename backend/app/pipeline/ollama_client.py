@@ -2,7 +2,7 @@ import json
 
 import requests
 
-from app.config import settings
+from app.core.config import settings
 
 RESULT_SCHEMA = {
     "type": "object",

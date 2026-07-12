@@ -21,7 +21,7 @@ for line in (BACKEND / ".env").read_text().splitlines():
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
-from app.services.classify_pipeline import classify_file_to_csv  # noqa: E402
+from app.pipeline import classify_file_to_csv  # noqa: E402
 
 
 def main() -> None:
