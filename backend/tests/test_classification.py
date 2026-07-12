@@ -48,23 +48,27 @@ class FakeSession:
 def test_classify_studio_matches_and_flags_anomaly():
     group_matched = {"id": uuid.uuid4(), "sample_text": "muy caro"}
     group_unmatched = {"id": uuid.uuid4(), "sample_text": "asdf"}
+    group_low_confidence = {"id": uuid.uuid4(), "sample_text": "algo raro"}
     codes = [
         {"id": uuid.uuid4(), "code_number": 1, "label": "Precio", "net_name": None},
         {"id": uuid.uuid4(), "code_number": 97, "label": "Otras menciones", "net_name": None},
     ]
-    db = FakeSession(codes=codes, groups=[group_matched, group_unmatched])
+    db = FakeSession(codes=codes, groups=[group_matched, group_unmatched, group_low_confidence])
 
     fake_results = [
-        {"verbatim_id": str(group_matched["id"]), "code_numbers": [1]},
-        {"verbatim_id": str(group_unmatched["id"]), "code_numbers": []},
+        {"verbatim_id": str(group_matched["id"]), "code_numbers": [1], "confidence": 0.95},
+        {"verbatim_id": str(group_unmatched["id"]), "code_numbers": [], "confidence": 0.1},
+        # Matched a code, but below llm_confidence_threshold — should still go to human review.
+        {"verbatim_id": str(group_low_confidence["id"]), "code_numbers": [1], "confidence": 0.3},
     ]
 
     with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results):
         summary = classify_studio(db, uuid.uuid4())
 
     assert summary["groups_classified"] == 1
-    assert summary["anomalies"] == 1
-    assert summary["total"] == 2
+    assert summary["anomalies"] == 2
+    assert summary["total"] == 3
 
     assert any(p.get("id") == group_unmatched["id"] for sql, p in db.executed if p and "anomaly" in sql)
+    assert any(p.get("id") == group_low_confidence["id"] for sql, p in db.executed if p and "anomaly" in sql)
     assert any(p.get("code") == codes[0]["id"] for _, p in db.executed if p and "code" in p)

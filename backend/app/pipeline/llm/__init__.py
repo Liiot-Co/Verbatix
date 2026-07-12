@@ -1,4 +1,4 @@
-"""Stage 3b — clasifica mention_groups vía LLM local (Ollama): razones y el
+"""Stage 3b — clasifica mention_groups vía LLM (DeepSeek API): razones y el
 leftover de marcas que el fuzzy no resuelve.
 """
 

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowRight, FolderOpen, Plus, Search } from "lucide-react";
-import { getProjects } from "@/api/client";
+import { ArrowRight, FolderOpen, Plus, Search, Trash2 } from "lucide-react";
+import { deleteProject, getProjects } from "@/api/client";
 import type { ProjectListItem } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 
@@ -29,6 +29,14 @@ export default function ProjectDashboard() {
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     p.external_code.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const handleDelete = async (e: React.MouseEvent, project: ProjectListItem) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirm(`¿Eliminar el proyecto "${project.name}"? Esto borra todas sus rondas y estudios.`)) return;
+    await deleteProject(project.id);
+    setProjects((prev) => prev.filter((p) => p.id !== project.id));
+  };
 
   const totalTiles = filteredProjects.length + 1;
 
@@ -199,12 +207,23 @@ export default function ProjectDashboard() {
                       >
                         {project.name}
                       </motion.div>
-                      <motion.div
-                        layout
-                        className="w-4 h-4 text-p-text-faint shrink-0 mt-1 group-hover:translate-x-0.5 transition-transform duration-200"
-                      >
-                        <ArrowRight />
-                      </motion.div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => handleDelete(e, project)}
+                          className="w-6 h-6 flex items-center justify-center rounded-md text-p-text-faint opacity-0 group-hover:opacity-100 hover:text-p-error hover:bg-p-error/10 transition-all"
+                          title="Eliminar proyecto"
+                          aria-label={`Eliminar proyecto ${project.name}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                        <motion.div
+                          layout
+                          className="w-4 h-4 text-p-text-faint mt-1 group-hover:translate-x-0.5 transition-transform duration-200"
+                        >
+                          <ArrowRight />
+                        </motion.div>
+                      </div>
                     </div>
 
                     {project.rounds_count > 0 && (

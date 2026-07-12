@@ -133,22 +133,22 @@ export default function CreationWizard() {
   const studioRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Deep-link support: /wizard?projectId=... skips the project step (e.g.
-  // "Nueva ronda" from a project's detail page). With &roundId=... too (e.g.
-  // "Nuevo estudio" on an existing round), it also skips the round step.
+  // Deep-link support: /wizard?projectId=... pre-fills project info and goes
+  // to studio step if &roundId=... is also given; otherwise stays on project
+  // step so the user can create a new round for the existing project.
   useEffect(() => {
     const projectId = searchParams.get("projectId");
     if (!projectId) return;
     getProject(projectId).then((detail) => {
       setProject(detail);
       setActiveProjectId(detail.id);
+      setNewExternalCode(detail.external_code);
+      setNewProjectName(detail.name);
 
       const roundId = searchParams.get("roundId");
       const preselected = roundId ? detail.rounds.find((r) => r.id === roundId) : undefined;
       if (preselected) {
         setRound({ id: preselected.id, project_id: detail.id, name: preselected.name, round_number: preselected.round_number, status: preselected.status });
-        goToStep("studio");
-      } else {
         goToStep("studio");
       }
     });
@@ -180,35 +180,45 @@ export default function CreationWizard() {
 
   const handleCreateProject = async () => {
     if (!newExternalCode.trim() || !newProjectName.trim() || !rName.trim()) return;
-    const created = await createProject(newExternalCode.trim(), newProjectName.trim());
-    setProject(created);
-    setActiveProjectId(created.id);
-    const createdRound = await createRound(created.id, {
-      name: rName.trim(),
-      round_number: rRoundNumber,
-    });
-    setRound(createdRound);
-    playSuccess();
-    goToStep("studio");
+    try {
+      if (!project) {
+        const created = await createProject(newExternalCode.trim(), newProjectName.trim());
+        setProject(created);
+        setActiveProjectId(created.id);
+      }
+      const createdRound = await createRound(project!.id, {
+        name: rName.trim(),
+        round_number: rRoundNumber,
+      });
+      setRound(createdRound);
+      playSuccess();
+      goToStep("studio");
+    } catch {
+      showToast("Error al crear el proyecto o la ronda", "error");
+    }
   };
 
   const handleCreateStudio = async () => {
     if (!round || !newStudioName.trim()) return;
-    const created = await createStudio(round.id, {
-      name: newStudioName.trim(),
-      coding_type: newStudioCodingType,
-      survey_question: newStudioQuestion.trim() || undefined,
-      origin_mode: sOriginMode,
-      source_studio_id: sOriginMode === "homologated" && sSourceId ? sSourceId : null,
-      min_mentions_threshold: sThreshold,
-      audit_percentage: sAudit,
-    });
-    setStudio(created);
-    if (created.codebook.inherited_codes > 0) {
-      showToast(`Se heredaron ${created.codebook.inherited_codes} códigos y ${created.codebook.inherited_aliases} alias`, "success");
+    try {
+      const created = await createStudio(round.id, {
+        name: newStudioName.trim(),
+        coding_type: newStudioCodingType,
+        survey_question: newStudioQuestion.trim() || undefined,
+        origin_mode: sOriginMode,
+        source_studio_id: sOriginMode === "homologated" && sSourceId ? sSourceId : null,
+        min_mentions_threshold: sThreshold,
+        audit_percentage: sAudit,
+      });
+      setStudio(created);
+      if (created.codebook.inherited_codes > 0) {
+        showToast(`Se heredaron ${created.codebook.inherited_codes} códigos y ${created.codebook.inherited_aliases} alias`, "success");
+      }
+      playSuccess();
+      goToStep("upload");
+    } catch {
+      showToast("Ya existe un estudio con ese nombre en esta ronda", "error");
     }
-    playSuccess();
-    goToStep("upload");
   };
 
   const onDrop = useCallback(
@@ -251,13 +261,8 @@ export default function CreationWizard() {
         columnMap as ColumnMap,
         codebookSheet || undefined
       );
-      const processing = result.processing;
-      const processingCopy =
-        processing && "groups_classified" in processing
-          ? ` · ${processing.groups_classified} codificados solos, ${processing.anomalies} necesitan revisión`
-          : "";
       showToast(
-        `Importados ${result.imported.verbatims} verbatims${result.imported.codes ? ` y ${result.imported.codes} códigos` : ""}${processingCopy}`,
+        `Importados ${result.imported.verbatims} verbatims${result.imported.codes ? ` y ${result.imported.codes} códigos` : ""} · codificando en el motor...`,
         "success"
       );
       playSuccess();

@@ -70,6 +70,21 @@ def list_projects(
     ]
 
 
+@router.delete("/projects/{project_id}", status_code=204)
+def delete_project(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    deleted = db.execute(
+        text("delete from projects where id = :id returning id"),
+        {"id": project_id},
+    ).scalar()
+    if not deleted:
+        raise HTTPException(404, "Proyecto no encontrado")
+    db.commit()
+
+
 @router.get("/projects/{project_id}")
 def get_project(
     project_id: uuid.UUID,

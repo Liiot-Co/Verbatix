@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowRight, FastForward, Plus, Tag } from "lucide-react";
-import { getProject } from "@/api/client";
+import { ArrowRight, FastForward, Plus, Tag, Trash2 } from "lucide-react";
+import { deleteRound, deleteStudio, getProject } from "@/api/client";
 import type { ProjectDetail as ProjectDetailType, RoundSummary, StudioSummary } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -62,6 +62,31 @@ export default function ProjectDetail() {
   }, [navigate, projectId]);
   useKeyboardShortcuts("project-detail");
 
+  const handleDeleteRound = async (e: React.MouseEvent, round: RoundSummary) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirm(`¿Eliminar la ronda "${round.name}"? Esto borra todos sus estudios.`)) return;
+    await deleteRound(round.id);
+    setProject((p) => (p ? { ...p, rounds: p.rounds.filter((r) => r.id !== round.id) } : p));
+  };
+
+  const handleDeleteStudio = async (e: React.MouseEvent, roundId: string, studio: StudioSummary) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirm(`¿Eliminar el estudio "${studio.name}"?`)) return;
+    await deleteStudio(studio.id);
+    setProject((p) =>
+      p
+        ? {
+            ...p,
+            rounds: p.rounds.map((r) =>
+              r.id === roundId ? { ...r, studios: r.studios.filter((s) => s.id !== studio.id) } : r
+            ),
+          }
+        : p
+    );
+  };
+
   if (loading) {
     return (
       <div className="max-w-4xl mx-auto py-4 space-y-4">
@@ -99,7 +124,7 @@ export default function ProjectDetail() {
         <div className="flex items-center gap-2">
           {latestStudio && (
             <Link
-              to={`/studios/${latestStudio.id}/preliminary`}
+              to={`/studios/${latestStudio.id}`}
               className="btn-ghost text-sm py-2 inline-flex items-center gap-1.5"
               title="Atajo directo al último estudio"
             >
@@ -135,12 +160,23 @@ export default function ProjectDetail() {
                   <span className="text-xs font-semibold text-p-text-faint">R{round.round_number}</span>
                   <span className="text-sm font-bold text-p-text">{round.name}</span>
                 </div>
-                <Link
-                  to={`/wizard?projectId=${project.id}&roundId=${round.id}`}
-                  className="btn-ghost text-xs py-1 px-2 inline-flex items-center gap-1"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Nuevo estudio
-                </Link>
+                <div className="flex items-center gap-1">
+                  <Link
+                    to={`/wizard?projectId=${project.id}&roundId=${round.id}`}
+                    className="btn-ghost text-xs py-1 px-2 inline-flex items-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Nuevo estudio
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteRound(e, round)}
+                    className="w-6 h-6 flex items-center justify-center rounded-md text-p-text-faint hover:text-p-error hover:bg-p-error/10 transition-colors"
+                    title="Eliminar ronda"
+                    aria-label={`Eliminar ronda ${round.name}`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
 
               {round.studios.length === 0 ? (
@@ -150,7 +186,7 @@ export default function ProjectDetail() {
                   {round.studios.map((studio) => (
                     <Link
                       key={studio.id}
-                      to={`/studios/${studio.id}/preliminary`}
+                      to={`/studios/${studio.id}`}
                       className="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-p-border hover:border-p-accent/40 hover:bg-p-bg-subtle/60 transition-colors text-left group"
                     >
                       <div className="flex items-center gap-2 min-w-0">
@@ -172,6 +208,15 @@ export default function ProjectDetail() {
                           {studio.status}
                         </span>
                         <ArrowRight className="w-3.5 h-3.5 text-p-text-faint group-hover:translate-x-0.5 transition-transform" />
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteStudio(e, round.id, studio)}
+                          className="w-6 h-6 flex items-center justify-center rounded-md text-p-text-faint opacity-0 group-hover:opacity-100 hover:text-p-error hover:bg-p-error/10 transition-all"
+                          title="Eliminar estudio"
+                          aria-label={`Eliminar estudio ${studio.name}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </Link>
                   ))}

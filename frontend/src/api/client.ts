@@ -51,6 +51,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     }
     throw new Error(`API ${res.status}: ${text}`);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -111,6 +112,18 @@ export async function createProject(
 
 export async function getProject(projectId: string): Promise<ProjectDetail> {
   return request<ProjectDetail>(`/projects/${projectId}`);
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await request<void>(`/projects/${projectId}`, { method: "DELETE" });
+}
+
+export async function deleteRound(roundId: string): Promise<void> {
+  await request<void>(`/rounds/${roundId}`, { method: "DELETE" });
+}
+
+export async function deleteStudio(studioId: string): Promise<void> {
+  await request<void>(`/studios/${studioId}`, { method: "DELETE" });
 }
 
 export interface CreateRoundInput {

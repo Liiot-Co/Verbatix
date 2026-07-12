@@ -1,13 +1,13 @@
 import hashlib
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, current_user
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.core import storage
 from app.pipeline import process_studio
 from app.pipeline.ingest import excel
@@ -63,6 +63,21 @@ def create_round(
         **payload.model_dump(),
         "status": "draft",
     }
+
+
+@router.delete("/rounds/{round_id}", status_code=204)
+def delete_round(
+    round_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    deleted = db.execute(
+        text("delete from rounds where id = :id returning id"),
+        {"id": round_id},
+    ).scalar()
+    if not deleted:
+        raise HTTPException(404, "Ronda no encontrada")
+    db.commit()
 
 
 class StudioIn(BaseModel):
@@ -133,6 +148,21 @@ def create_studio(
             "inherited_aliases": inherited["aliases"],
         },
     }
+
+
+@router.delete("/studios/{studio_id}", status_code=204)
+def delete_studio(
+    studio_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    deleted = db.execute(
+        text("delete from studio where id = :id returning id"),
+        {"id": studio_id},
+    ).scalar()
+    if not deleted:
+        raise HTTPException(404, "Estudio no encontrado")
+    db.commit()
 
 
 @router.get("/studios/{studio_id}")
@@ -210,6 +240,7 @@ def list_verbatims(
                        jsonb_build_object(
                          'code_number', c.code_number,
                          'label', c.label,
+                         'net', n.name,
                          'source', vc.source,
                          'confidence_score', vc.confidence_score,
                          'matched_alias', vc.matched_alias
@@ -220,6 +251,8 @@ def list_verbatims(
             from verbatims v
             left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             left join codes c on c.id = vc.code_id
+            left join net_codes nc on nc.code_id = c.id
+            left join nets n on n.id = nc.net_id
             where v.studio_id = :id and (:status is null or v.coding_status = :status)
             group by v.id
             order by v.created_at
@@ -307,11 +340,22 @@ class ImportIn(BaseModel):
     column_map: dict[str, str] | None = None
 
 
+def _process_studio_task(studio_id: uuid.UUID) -> None:
+    db = SessionLocal()
+    try:
+        process_studio(db, studio_id)
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 @router.post("/studios/{studio_id}/files/{file_id}/import")
 def import_file(
     studio_id: uuid.UUID,
     file_id: uuid.UUID,
     payload: ImportIn,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
@@ -352,16 +396,11 @@ def import_file(
     db.commit()
 
     # Auto-process right after import so the user never has to notice/click a
-    # separate "Procesar" step. ponytail: synchronous, no job queue — fine for
-    # local/demo volumes; move to a background task if the LLM path starts
-    # making imports feel slow. Processing failure (e.g. Ollama down) must not
-    # fail the import itself — the user already has their verbatims uploaded.
-    processing = None
-    try:
-        processing = process_studio(db, studio_id)
-    except Exception as exc:
-        db.rollback()
-        processing = {"error": str(exc)}
+    # separate "Procesar" step. Runs as a background task (own DB session) instead
+    # of inline — the LLM pass can take minutes and blocking the response left the
+    # frontend with nothing but a spinner. Studio stays 'files_uploaded' until the
+    # task flips it to 'preliminary_ready'; the frontend polls GET /studios/{id}.
+    background_tasks.add_task(_process_studio_task, studio_id)
 
     return {
         "imported": {
@@ -370,7 +409,7 @@ def import_file(
             "aliases": n_aliases,
             "skipped_rows": len(rows) - df.height,
         },
-        "processing": processing,
+        "processing": {"status": "queued"},
         "warnings": [],
         "studio_status": db.execute(
             text("select status from studio where id = :id"), {"id": studio_id}

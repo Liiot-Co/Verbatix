@@ -9,11 +9,13 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default=["http://localhost:5173", "http://localhost:4173"])
     host: str = "0.0.0.0"
     port: int = 8001
-    ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "gemma4:e2b"
-    # gemma4:e2b needs its <think> reasoning pass to keep `format` schema enforcement active
-    # (~7s/verbatim); 200 blew the 600s request timeout and truncated content to "". Keep small.
+    llm_api_key: str | None = None
+    llm_base_url: str = "https://api.deepseek.com"
+    llm_model: str = "deepseek-v4-flash"
     classification_batch_size: int = 20
+    # Below this, an LLM classification goes to human review (anomaly) instead of
+    # auto_coded, regardless of which code_numbers it returned.
+    llm_confidence_threshold: float = 0.6
 
     # local  -> local Postgres (docker-compose db service), filesystem storage,
     #           auth bypassed with a fixed dev user. No Supabase calls, no quota spent.

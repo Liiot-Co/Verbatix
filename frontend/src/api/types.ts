@@ -119,9 +119,10 @@ export interface ImportResult {
     aliases: number;
     skipped_rows: number;
   };
-  // Auto-run right after import; null only if processing threw (e.g. LLM
-  // engine unreachable) — the import itself still succeeds.
-  processing: ProcessResult | { error: string } | null;
+  // Queued as a background task right after import — the LLM pass can take
+  // minutes, so the response doesn't wait for it. Poll GET /studios/{id} for
+  // status: 'files_uploaded' (still processing) -> 'preliminary_ready' (done).
+  processing: { status: "queued" };
   warnings: string[];
   studio_status: string;
 }
@@ -141,6 +142,7 @@ export interface PreliminarySummary {
 export interface VerbatimCode {
   code_number: number;
   label: string;
+  net: string | null;
   source: "engine_exact" | "engine_fuzzy" | "homologation" | "analyst_manual" | "audit_correction";
   confidence_score: number | null;
   matched_alias: string | null;

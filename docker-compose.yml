@@ -25,9 +25,6 @@ services:
     environment:
       - APP_MODE=${APP_MODE:-local}
       - DATABASE_URL=${DATABASE_URL:-postgresql://verbatix:verbatix@db:5432/verbatix}
-      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"  # Linux needs this; Docker Desktop resolves it natively
     volumes:
       # WORKDIR is /app (== backend/); local storage defaults to ../data/uploads
       # relative to that, i.e. /data/uploads here — mount it to the repo's ./data.

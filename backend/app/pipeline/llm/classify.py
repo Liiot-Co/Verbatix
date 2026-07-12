@@ -30,6 +30,11 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
     )
     db.commit()
 
+    coding_type = db.execute(
+        text("select coding_type from studio where id = :studio"),
+        {"studio": studio_id},
+    ).scalar()
+
     codes = db.execute(
         text("""
             select c.id, c.code_number, c.label, n.name as net_name
@@ -60,7 +65,7 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
     anomalies = 0
     for batch in _chunks(groups, settings.classification_batch_size):
         payload = [{"id": str(g["id"]), "text": g["sample_text"]} for g in batch]
-        results = classify_batch(codebook_payload, payload)
+        results = classify_batch(codebook_payload, payload, coding_type)
 
         for result in results:
             group = groups_by_id.get(result["verbatim_id"])
@@ -68,8 +73,12 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
                 continue
             group_id = group["id"]
             matched_code_ids = [codes_by_number[n] for n in result["code_numbers"] if n in codes_by_number]
+            confidence = result.get("confidence")
+            # No confidence in the response is treated as low confidence, not high — a case
+            # the LLM won't rate shouldn't get auto-coded any more than one it rates poorly.
+            below_threshold = confidence is None or confidence < settings.llm_confidence_threshold
 
-            if not matched_code_ids:
+            if not matched_code_ids or below_threshold:
                 db.execute(
                     text("update mention_groups set status = 'anomaly', created_by_run_id = :run where id = :id"),
                     {"run": run_id, "id": group_id},

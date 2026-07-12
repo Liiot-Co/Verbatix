@@ -6,8 +6,7 @@ import SignUpPage from "@/components/SignUpPage";
 import ProjectDashboard from "@/components/ProjectDashboard";
 import ProjectDetail from "@/components/ProjectDetail";
 import CreationWizard from "@/components/CreationWizard";
-import VerbatimsTable from "@/components/VerbatimsTable";
-import PreliminaryScreen from "@/components/PreliminaryScreen";
+import UnifiedStudioView from "@/components/UnifiedStudioView";
 import ToastStack from "@/components/ToastStack";
 import { CommandPalette } from "@/components/CommandPalette";
 
@@ -27,8 +26,9 @@ export default function App() {
                     <Route path="/" element={<ProjectDashboard />} />
                     <Route path="/projects/:projectId" element={<ProjectDetail />} />
                     <Route path="/wizard" element={<CreationWizard />} />
-                    <Route path="/studios/:studioId/preliminary" element={<PreliminaryScreen />} />
-                    <Route path="/studios/:studioId/verbatims" element={<VerbatimsTable />} />
+                    <Route path="/studios/:studioId" element={<UnifiedStudioView />} />
+                    <Route path="/studios/:studioId/preliminary" element={<UnifiedStudioView />} />
+                    <Route path="/studios/:studioId/verbatims" element={<UnifiedStudioView />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </main>
