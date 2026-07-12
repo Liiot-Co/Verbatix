@@ -172,7 +172,7 @@ export function CommandPalette() {
   return createPortal(
     <AnimatePresence>
       {isOpen && (
-        <div className="command-palette command-palette-open">
+        <div className="command-palette">
           <motion.div
             className="command-palette-backdrop"
             initial={{ opacity: 0 }}
