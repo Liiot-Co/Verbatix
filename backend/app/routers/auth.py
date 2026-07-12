@@ -1,11 +1,41 @@
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, current_user
+from app.config import settings
 from app.database import get_db
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+@router.post("/login")
+def login(payload: LoginIn):
+    """Obtiene un JWT de Supabase Auth (para pegarlo en Authorize de /docs)."""
+    r = httpx.post(
+        f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=password",
+        headers={
+            "apikey": settings.supabase_secret_key,
+            "Content-Type": "application/json",
+        },
+        json={"email": payload.email, "password": payload.password},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        raise HTTPException(401, f"Login falló: {r.text}")
+    data = r.json()
+    return {
+        "access_token": data["access_token"],
+        "token_type": data.get("token_type", "bearer"),
+        "expires_in": data.get("expires_in"),
+    }
 
 
 @router.get("/me")
