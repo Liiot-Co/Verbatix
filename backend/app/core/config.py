@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
-    classification_batch_size: int = 20
+    classification_batch_size: int = 50
     # Below this, an LLM classification goes to human review (anomaly) instead of
     # auto_coded, regardless of which code_numbers it returned.
     llm_confidence_threshold: float = 0.6
