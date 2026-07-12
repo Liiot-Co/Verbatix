@@ -199,13 +199,14 @@
     filter: brightness(1.06);
   }
 
-  /* Project cards — white surface + soft corner glows clipped by radius */
+  /* Glow cards — white surface + soft corner glows clipped by radius */
+  .glow-card,
   .project-card {
     @apply relative overflow-hidden border border-p-border rounded-[16px] shadow-card;
     background-color: #fff;
   }
 
-  /* Glow sits on the card itself so border-radius clips it (no square box) */
+  .glow-card-1,
   .project-card-glow-1 {
     background-image: radial-gradient(
       ellipse 90% 100% at 100% 0%,
@@ -216,6 +217,7 @@
     background-color: #fff;
   }
 
+  .glow-card-2,
   .project-card-glow-2 {
     background-image: radial-gradient(
       ellipse 90% 100% at 100% 0%,
@@ -226,6 +228,7 @@
     background-color: #fff;
   }
 
+  .glow-card-3,
   .project-card-glow-3 {
     background-image:
       radial-gradient(
@@ -335,7 +338,8 @@
   .input {
     @apply w-full bg-p-surface border border-p-border rounded-lg px-3 py-2 text-sm
            text-p-text placeholder-p-text-faint
-           focus:outline-none focus:ring-2 focus:ring-p-accent/30 focus:border-p-accent-mid
+           focus:outline-none focus:ring-0 focus:border-p-accent
+           focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0
            transition-all duration-150 ease-out-expo
            disabled:bg-p-bg-subtle disabled:text-p-text-faint disabled:cursor-not-allowed
            hover:border-p-border-mid;

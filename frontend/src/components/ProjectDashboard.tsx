@@ -5,15 +5,10 @@ import { ChevronLeft, ChevronRight, FolderOpen, Plus, Search, Sparkles } from "l
 import { getProjects } from "@/api/client";
 import type { ProjectListItem } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
+import GlowCard, { GlowCardGrid, glowVariantForIndex } from "@/components/GlowCard";
 
 const PAGE_SIZE = 10;
 const RECENT_COUNT = 3;
-
-const GLOW_CLASSES = [
-  "project-card-glow-1",
-  "project-card-glow-2",
-  "project-card-glow-3",
-];
 
 const ICON_CLASSES = [
   "project-row-icon-1",
@@ -192,29 +187,18 @@ export default function ProjectDashboard() {
                 <h2 className="text-[11px] font-semibold tracking-[0.08em] uppercase text-p-text-faint">
                   Proyectos recientes
                 </h2>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <GlowCardGrid>
                   {recentProjects.map((project, idx) => (
-                    <Link
+                    <GlowCard
                       key={project.id}
                       to={`/projects/${project.id}`}
-                      className={[
-                        `project-card ${GLOW_CLASSES[idx % GLOW_CLASSES.length]} px-3.5 py-3 text-left space-y-1 group block`,
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40",
-                        "hover:-translate-y-0.5 hover:shadow-card-hover active:scale-[0.98] transition-all duration-200",
-                      ].join(" ")}
-                    >
-                      <div className="relative text-[10px] font-semibold tracking-[0.06em] uppercase text-p-text-faint truncate">
-                        {project.external_code}
-                      </div>
-                      <div className="relative text-sm font-bold text-p-text leading-snug truncate">
-                        {project.name}
-                      </div>
-                      <div className="relative text-[11px] font-subtitle text-p-text-muted">
-                        {roundsLabel(project.rounds_count)}
-                      </div>
-                    </Link>
+                      variant={glowVariantForIndex(idx)}
+                      label={project.external_code}
+                      title={project.name}
+                      footer={roundsLabel(project.rounds_count)}
+                    />
                   ))}
-                </div>
+                </GlowCardGrid>
               </section>
             )}
 
