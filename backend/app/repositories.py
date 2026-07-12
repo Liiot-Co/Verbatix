@@ -1,10 +1,12 @@
 """Acceso a datos con SQL explícito (fuente de verdad: 001_schema_v5.sql)."""
 import uuid
 
+import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.services.normalize import normalize
+from app.services.normalize_pipeline import rows_to_normalized_df
 
 SYSTEM_CODES = [
     (95, "Menciones confusas/Incorrectas", "anomaly"),
@@ -166,11 +168,15 @@ def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict
     return {"codes": len(parsed["codes"]), "aliases": n_alias, "nets": len(parsed["nets"])}
 
 
-def insert_verbatims(db: Session, studio_id: uuid.UUID, file_id: uuid.UUID, rows: list[dict]) -> int:
+def insert_verbatims_from_df(
+    db: Session,
+    studio_id: uuid.UUID,
+    file_id: uuid.UUID,
+    df: pl.DataFrame,
+) -> int:
+    """Persiste verbatims desde el DataFrame normalizado. Sin agrupación."""
     n = 0
-    for r in rows:
-        if not r["respondent_external_id"]:
-            continue
+    for row in df.iter_rows(named=True):
         result = db.execute(
             text("""
                 insert into verbatims (id, studio_id, imported_file_id, respondent_external_id,
@@ -182,11 +188,11 @@ def insert_verbatims(db: Session, studio_id: uuid.UUID, file_id: uuid.UUID, rows
                 "id": uuid.uuid4(),
                 "studio": studio_id,
                 "f": file_id,
-                "resp": r["respondent_external_id"],
-                "q": r["question_key"],
-                "txt": r["original_text"],
-                "norm": normalize(r["original_text"]),
-                "inp": r["input_code_number"],
+                "resp": row["respondent_external_id"],
+                "q": row.get("question_key"),
+                "txt": row["original_text"],
+                "norm": row["normalized_text"],
+                "inp": row.get("input_code_number"),
             },
         )
         if result.rowcount:
@@ -194,7 +200,20 @@ def insert_verbatims(db: Session, studio_id: uuid.UUID, file_id: uuid.UUID, rows
     return n
 
 
+def insert_verbatims(
+    db: Session,
+    studio_id: uuid.UUID,
+    file_id: uuid.UUID,
+    rows: list[dict],
+) -> tuple[int, pl.DataFrame]:
+    """Normaliza con Polars, guarda en BD y devuelve el DataFrame para el siguiente paso."""
+    df = rows_to_normalized_df(rows)
+    n = insert_verbatims_from_df(db, studio_id, file_id, df)
+    return n, df
+
+
 def build_mention_groups(db: Session, studio_id: uuid.UUID) -> int:
+    """Paso 2 (futuro): agrupa verbatims ya normalizados. No se llama en el import."""
     db.execute(
         text("""
             insert into mention_groups (id, studio_id, normalized_text, sample_text,

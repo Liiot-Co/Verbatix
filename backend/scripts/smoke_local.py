@@ -113,15 +113,13 @@ def main() -> None:
     )
     print("import", r.status_code, r.text)
     r.raise_for_status()
+    body = r.json()
+    print("normalization stats:", body["imported"])
+    print("parquet:", body.get("normalized_parquet"))
+    print("preview:", body.get("preview"))
 
     r = client.get(f"{API}/api/v1/studios/{studio}", headers=auth)
     print("FINAL", json.dumps(r.json(), indent=2, default=str))
-
-    r = client.get(f"{API}/api/v1/studios/{studio}/mention-groups", headers=auth)
-    groups = r.json()
-    print(f"mention_groups total={len(groups)}")
-    for g in groups[:8]:
-        print(f"  {g['frequency_count']:4d}  {g['sample_text'][:55]}")
 
 
 if __name__ == "__main__":

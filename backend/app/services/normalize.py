@@ -3,7 +3,10 @@ import unicodedata
 
 
 def normalize(text: str) -> str:
-    """Minúsculas, sin tildes, sin puntuación, espacios colapsados."""
+    """ minúsculas, sin tildes, sin puntuación, espacios colapsados.
+
+    Misma regla para marcas y razones. No modifica el texto original guardado en BD.
+    """
     if not text:
         return ""
     text = str(text).lower().strip()

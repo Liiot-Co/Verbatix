@@ -1,28 +1,27 @@
 import hashlib
 import uuid
 
-<<<<<<< Updated upstream
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-=======
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
->>>>>>> Stashed changes
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-<<<<<<< Updated upstream
 from app.auth import CurrentUser, current_user
 from app.database import get_db
-from app.repositories import build_mention_groups, insert_codebook_from_excel, insert_verbatims
-from app.services import excel, storage
-=======
+from app.repositories import insert_codebook_from_excel
+from app.services import excel, storageq
 from app.classification import classify_verbatims
 from app.database import SessionLocal, get_db
 from app.models import Code, CodeAlias, Codebook, ImportedFile, Round, Study, Verbatim
 from app.seed import DEMO_USER_ID
 from app.utils.text import normalize_text
->>>>>>> Stashed changes
+from app.services.normalize_pipeline import (
+    normalization_stats,
+    preview_rows,
+    rows_to_normalized_df,
+    save_normalized_df,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["files"])
 
@@ -87,11 +86,10 @@ async def upload_file(
     }
 
 
-<<<<<<< Updated upstream
 class ImportIn(BaseModel):
     verbatims_sheet: str
     codebook_sheet: str | None = None
-=======
+
 def _classify_round_in_background(round_id: uuid.UUID) -> None:
     db = SessionLocal()
     try:
@@ -104,7 +102,7 @@ def _classify_round_in_background(round_id: uuid.UUID) -> None:
 def import_file(
     round_id: uuid.UUID,
     file_id: uuid.UUID,
-    body: ImportRequest,
+    body: ImportIn,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
@@ -231,7 +229,6 @@ def import_file(
         "warnings": warnings,
         "round_status": round_.status,
     }
->>>>>>> Stashed changes
 
 
 @router.post("/studios/{studio_id}/files/{file_id}/import")
@@ -242,7 +239,7 @@ def import_file(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Paso 2: importa verbatims (y opcionalmente LC) tras confirmar hojas."""
+    """Normaliza verbatims del Excel → DataFrame → Parquet en Storage. Sin insert en BD."""
     row = db.execute(
         text("""
             select storage_path from imported_files
@@ -252,6 +249,13 @@ def import_file(
     ).mappings().first()
     if not row:
         raise HTTPException(404, "Archivo no encontrado")
+
+    studio = db.execute(
+        text("select coding_type from studio where id = :id"),
+        {"id": studio_id},
+    ).mappings().first()
+    if not studio:
+        raise HTTPException(404, "Estudio no encontrado")
 
     bucket, path = row["storage_path"].split("/", 1)
     content = storage.download(bucket, path)
@@ -269,12 +273,14 @@ def import_file(
         imported = insert_codebook_from_excel(db, cb_id, parsed)
 
     rows = excel.parse_verbatims(content, payload.verbatims_sheet)
-    n_verbatims = insert_verbatims(db, studio_id, file_id, rows)
-    n_groups = build_mention_groups(db, studio_id)
+    coding_type = studio["coding_type"]
+    df = rows_to_normalized_df(rows, coding_type)
+    stats = normalization_stats(df, source_rows=len(rows), coding_type=coding_type)
+    parquet_path = save_normalized_df(studio_id, file_id, df)
 
     db.execute(
         text("update imported_files set status = 'validated', total_rows = :n where id = :id"),
-        {"n": n_verbatims, "id": file_id},
+        {"n": stats["parsed_rows"], "id": file_id},
     )
     db.execute(
         text("update studio set status = 'files_uploaded' where id = :id"),
@@ -283,6 +289,9 @@ def import_file(
     db.commit()
 
     return {
-        "imported": {"verbatims": n_verbatims, "mention_groups": n_groups, **imported},
+        "normalized_parquet": parquet_path,
+        "coding_type": coding_type,
+        "imported": {**stats, **imported},
+        "preview": preview_rows(df),
         "studio_status": "files_uploaded",
     }
