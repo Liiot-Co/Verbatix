@@ -14,22 +14,16 @@ import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.pipeline.fuzzy import load_catalog_aliases, run_fuzzy_matching
+from app.pipeline.fuzzy import (
+    discover_catalog_from_frequency,
+    load_catalog_aliases,
+    run_fuzzy_matching,
+)
 from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD
 from app.pipeline.llm import classify_studio
 
 
 def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict:
-    run_id = uuid.uuid4()
-    db.execute(
-        text("""
-            insert into processing_runs (id, studio_id, run_type, algorithm, min_mentions_threshold, status, started_at)
-            values (:id, :studio, 'initial', 'fuzzy_dictionary', :thr, 'running', now())
-        """),
-        {"id": run_id, "studio": studio_id, "thr": None},
-    )
-    db.commit()
-
     groups = db.execute(
         text("""
             select id, normalized_text from mention_groups
@@ -38,7 +32,32 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
         {"studio": studio_id},
     ).mappings().all()
 
+    # El catálogo sale del codebook cuando existe. Si el studio no trae libro de
+    # códigos, se deriva de la frecuencia: las marcas que superan el mínimo de
+    # menciones se vuelven semillas y el fuzzy arrastra sus typos hacia ellas.
     catalog = load_catalog_aliases(db, studio_id)
+    min_mentions = None
+    if not catalog:
+        min_mentions = db.execute(
+            text("select min_mentions_threshold from studio where id = :studio"),
+            {"studio": studio_id},
+        ).scalar()
+        catalog = discover_catalog_from_frequency(db, studio_id, min_mentions)
+
+    run_id = uuid.uuid4()
+    db.execute(
+        text("""
+            insert into processing_runs (id, studio_id, run_type, algorithm, min_mentions_threshold, status, started_at)
+            values (:id, :studio, 'initial', :algo, :thr, 'running', now())
+        """),
+        {
+            "id": run_id,
+            "studio": studio_id,
+            "algo": "fuzzy_frequency" if min_mentions is not None else "fuzzy_dictionary",
+            "thr": min_mentions,
+        },
+    )
+    db.commit()
 
     matched_by_group: dict[str, dict] = {}
     if groups and catalog:
