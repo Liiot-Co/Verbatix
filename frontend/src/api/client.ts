@@ -100,13 +100,12 @@ export async function getProjects(): Promise<ProjectListItem[]> {
 
 export async function createProject(
   externalCode: string,
-  name: string,
-  clientName?: string
-): Promise<{ id: string; external_code: string; name: string; client_name: string | null; created_at: string }> {
+  name: string
+): Promise<{ id: string; external_code: string; name: string; created_at: string }> {
   return request("/projects", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ external_code: externalCode, name, client_name: clientName ?? null }),
+    body: JSON.stringify({ external_code: externalCode, name }),
   });
 }
 

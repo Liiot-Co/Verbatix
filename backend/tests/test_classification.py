@@ -49,8 +49,8 @@ def test_classify_studio_matches_and_flags_anomaly():
     group_matched = {"id": uuid.uuid4(), "sample_text": "muy caro"}
     group_unmatched = {"id": uuid.uuid4(), "sample_text": "asdf"}
     codes = [
-        {"id": uuid.uuid4(), "code_number": 1, "label": "Precio"},
-        {"id": uuid.uuid4(), "code_number": 97, "label": "Otras menciones"},
+        {"id": uuid.uuid4(), "code_number": 1, "label": "Precio", "net_name": None},
+        {"id": uuid.uuid4(), "code_number": 97, "label": "Otras menciones", "net_name": None},
     ]
     db = FakeSession(codes=codes, groups=[group_matched, group_unmatched])
 
@@ -59,7 +59,7 @@ def test_classify_studio_matches_and_flags_anomaly():
         {"verbatim_id": str(group_unmatched["id"]), "code_numbers": []},
     ]
 
-    with patch("app.pipeline.classify_llm.classify_batch", return_value=fake_results):
+    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results):
         summary = classify_studio(db, uuid.uuid4())
 
     assert summary["groups_classified"] == 1

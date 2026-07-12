@@ -24,10 +24,19 @@ RESULT_SCHEMA = {
 
 
 def _build_prompt(codebook: list[dict], verbatims: list[dict]) -> str:
-    codebook_lines = "\n".join(f"{c['code_number']}: {c['label']}" for c in codebook)
+    codebook_lines = "\n".join(
+        f"{c['code_number']}: {c['net']}/{c['label']}" if c.get("net") else f"{c['code_number']}: {c['label']}"
+        for c in codebook
+    )
     verbatim_lines = "\n".join(f"{v['id']}: {v['text']}" for v in verbatims)
     return (
-        "Eres un clasificador de verbatims de encuestas de marketing. "
+        "Eres un clasificador de verbatims de encuestas de marketing. El codebook de abajo "
+        "codifica RAZONES (motivos que el encuestado da), no marcas. Cada línea tiene el "
+        "formato 'numero: categoria/razon' (p.ej. '12: Contextura/Buena textura' o "
+        "'34: Nivel de sal/Punto de sal'). La categoria es solo contexto para desambiguar "
+        "razones parecidas en distintos temas; nunca clasifiques un verbatim como si fuera "
+        "el nombre de una marca ni le asignes un código de otra categoria solo porque "
+        "menciona una marca de pasada. Clasifica únicamente por la razón que el texto expresa.\n\n"
         "Asigna a cada verbatim uno o más códigos del codebook. Si el verbatim no aplica a "
         "ningún código específico, usa el código de sistema que mejor describa el caso "
         "(95 menciones confusas/incorrectas, 96 no sabe/no contesta, 97 otras menciones, "
@@ -54,10 +63,17 @@ def classify_batch(codebook: list[dict], verbatims: list[dict]) -> list[dict]:
             "model": settings.ollama_model,
             "messages": [{"role": "user", "content": prompt}],
             "format": RESULT_SCHEMA,
+            # gemma4's structured-output grammar only engages after its <think> block; think=False
+            # makes it ignore `format` entirely and free-write "id: code" lines instead (confirmed
+            # in prod). Keep thinking on; give it enough context to finish instead.
+            "options": {"num_ctx": 16384},
             "stream": False,
         },
-        timeout=300,
+        timeout=600,
     )
     response.raise_for_status()
     content = response.json()["message"]["content"]
-    return json.loads(content)["results"]
+    try:
+        return json.loads(content)["results"]
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Ollama returned non-JSON content: {content!r}") from e

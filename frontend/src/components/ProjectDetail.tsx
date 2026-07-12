@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowRight, FastForward, Plus, Tag } from "lucide-react";
 import { getProject } from "@/api/client";
 import type { ProjectDetail as ProjectDetailType, RoundSummary, StudioSummary } from "@/api/types";
@@ -91,11 +91,6 @@ export default function ProjectDetail() {
           <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">{project.name}</h1>
           <div className="flex items-center gap-1.5 text-xs font-subtitle text-p-text-faint">
             <span className="font-semibold text-p-text-muted">{project.external_code}</span>
-            {project.client_name && (
-              <span className="px-1.5 py-0.5 rounded border border-p-border uppercase tracking-wide bg-p-bg-subtle">
-                {project.client_name}
-              </span>
-            )}
             <span>{project.rounds.length} {project.rounds.length === 1 ? "ronda" : "rondas"}</span>
           </div>
         </div>
@@ -103,17 +98,17 @@ export default function ProjectDetail() {
         {/* General actions */}
         <div className="flex items-center gap-2">
           {latestStudio && (
-            <button
-              onClick={() => navigate(`/studios/${latestStudio.id}/preliminary`)}
-              className="btn-ghost text-sm py-2"
+            <Link
+              to={`/studios/${latestStudio.id}/preliminary`}
+              className="btn-ghost text-sm py-2 inline-flex items-center gap-1.5"
               title="Atajo directo al último estudio"
             >
               <FastForward className="w-4 h-4" /> Continuar último estudio
-            </button>
+            </Link>
           )}
-          <button onClick={() => navigate(`/wizard?projectId=${project.id}`)} className="btn-primary text-sm py-2">
+          <Link to={`/wizard?projectId=${project.id}`} className="btn-primary text-sm py-2 inline-flex items-center gap-1.5">
             <Plus className="w-4 h-4" /> Nueva ronda
-          </button>
+          </Link>
         </div>
       </div>
 
@@ -124,9 +119,9 @@ export default function ProjectDetail() {
             <div className="text-sm font-semibold text-p-text">Sin rondas todavía</div>
             <p className="text-xs text-p-text-faint mt-1">Crea la primera ronda para empezar.</p>
           </div>
-          <button onClick={() => navigate(`/wizard?projectId=${project.id}`)} className="btn-primary text-sm mt-2">
+          <Link to={`/wizard?projectId=${project.id}`} className="btn-primary text-sm mt-2 inline-flex items-center gap-1.5">
             <Plus className="w-4 h-4" /> Nueva ronda
-          </button>
+          </Link>
         </div>
       ) : (
         <div className="space-y-4">
@@ -140,12 +135,12 @@ export default function ProjectDetail() {
                   <span className="text-xs font-semibold text-p-text-faint">R{round.round_number}</span>
                   <span className="text-sm font-bold text-p-text">{round.name}</span>
                 </div>
-                <button
-                  onClick={() => navigate(`/wizard?projectId=${project.id}&roundId=${round.id}`)}
-                  className="btn-ghost text-xs py-1 px-2"
+                <Link
+                  to={`/wizard?projectId=${project.id}&roundId=${round.id}`}
+                  className="btn-ghost text-xs py-1 px-2 inline-flex items-center gap-1"
                 >
                   <Plus className="w-3.5 h-3.5" /> Nuevo estudio
-                </button>
+                </Link>
               </div>
 
               {round.studios.length === 0 ? (
@@ -153,9 +148,9 @@ export default function ProjectDetail() {
               ) : (
                 <div className="space-y-1.5">
                   {round.studios.map((studio) => (
-                    <button
+                    <Link
                       key={studio.id}
-                      onClick={() => navigate(`/studios/${studio.id}/preliminary`)}
+                      to={`/studios/${studio.id}/preliminary`}
                       className="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-p-border hover:border-p-accent/40 hover:bg-p-bg-subtle/60 transition-colors text-left group"
                     >
                       <div className="flex items-center gap-2 min-w-0">
@@ -178,7 +173,7 @@ export default function ProjectDetail() {
                         </span>
                         <ArrowRight className="w-3.5 h-3.5 text-p-text-faint group-hover:translate-x-0.5 transition-transform" />
                       </div>
-                    </button>
+                    </Link>
                   ))}
                 </div>
               )}

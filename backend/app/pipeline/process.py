@@ -1,7 +1,7 @@
 """Fase 2 — "el motor propone". Dispatcha por coding_type del studio:
 
   brands  -> fuzzy contra el catálogo de aliases (pipeline.fuzzy)
-  reasons -> LLM structured output (classify_llm.classify_studio)
+  reasons -> LLM structured output (pipeline.llm.classify_studio)
 
 Marcas primero: es fuzzy puro, determinista, y es lo que mejor se ve en demo
 (ver Plan de Acción, Fase 2).
@@ -14,10 +14,9 @@ import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.pipeline.classify_llm import classify_studio
-from app.pipeline.fuzzy import run_fuzzy_matching
+from app.pipeline.fuzzy import load_catalog_aliases, run_fuzzy_matching
 from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD
-from app.pipeline.orchestrator import load_catalog_aliases
+from app.pipeline.llm import classify_studio
 
 
 def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict:
@@ -68,12 +67,18 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
             )
             db.execute(
                 text("""
-                    insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, processing_run_id)
-                    select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', :score, :run
+                    insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias, processing_run_id)
+                    select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', :score, :alias, :run
                     from verbatims v where v.mention_group_id = :gid
                     on conflict (verbatim_id, code_id) do nothing
                 """),
-                {"code": match[Cols.CODE_ID], "score": match[Cols.SCORE] / 100, "run": run_id, "gid": gid},
+                {
+                    "code": match[Cols.CODE_ID],
+                    "score": match[Cols.SCORE] / 100,
+                    "alias": match[Cols.MATCHED_ALIAS],
+                    "run": run_id,
+                    "gid": gid,
+                },
             )
             db.execute(
                 text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :gid"),
@@ -81,14 +86,8 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
             )
             auto_coded += 1
         else:
-            db.execute(
-                text("update mention_groups set status = 'anomaly', created_by_run_id = :run where id = :id"),
-                {"run": run_id, "id": gid},
-            )
-            db.execute(
-                text("update verbatims set coding_status = 'needs_review' where mention_group_id = :gid"),
-                {"gid": gid},
-            )
+            # Leave status = 'pending_review' (its default) instead of marking 'anomaly' —
+            # process_studio runs the LLM pass on these next, before giving up on them.
             anomalies += 1
     db.commit()
 
@@ -113,7 +112,20 @@ def process_studio(db: Session, studio_id: uuid.UUID, threshold: float = SCORE_T
     if coding_type is None:
         raise LookupError(f"Studio no encontrado: {studio_id}")
 
-    result = _process_brands(db, studio_id, threshold) if coding_type == "brands" else classify_studio(db, studio_id)
+    if coding_type == "brands":
+        fuzzy_result = _process_brands(db, studio_id, threshold)
+        # Whatever the alias catalog didn't match stayed 'pending_review' — hand those to
+        # the LLM before giving up on them as anomalies.
+        llm_result = classify_studio(db, studio_id)
+        result = {
+            "run_id": fuzzy_result["run_id"],
+            "llm_run_id": llm_result["run_id"],
+            "groups_classified": fuzzy_result["groups_classified"] + llm_result["groups_classified"],
+            "anomalies": llm_result["anomalies"],
+            "total": fuzzy_result["total"],
+        }
+    else:
+        result = classify_studio(db, studio_id)
 
     db.execute(
         text("update studio set status = 'preliminary_ready', updated_at = now() where id = :id"),

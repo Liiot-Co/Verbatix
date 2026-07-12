@@ -14,7 +14,6 @@ router = APIRouter(prefix="/api/v1", tags=["projects"])
 class ProjectIn(BaseModel):
     external_code: str | None = None
     name: str
-    client_name: str | None = None
 
 
 @router.post("/projects", status_code=201)
@@ -26,14 +25,13 @@ def create_project(
     pid = uuid.uuid4()
     db.execute(
         text("""
-            insert into projects (id, external_code, name, client_name, created_by)
-            values (:id, :code, :name, :client, :u)
+            insert into projects (id, external_code, name, created_by)
+            values (:id, :code, :name, :u)
         """),
         {
             "id": pid,
             "code": payload.external_code,
             "name": payload.name,
-            "client": payload.client_name,
             "u": user["id"],
         },
     )
@@ -42,7 +40,6 @@ def create_project(
         "id": str(pid),
         "external_code": payload.external_code,
         "name": payload.name,
-        "client_name": payload.client_name,
     }
 
 
@@ -53,7 +50,7 @@ def list_projects(
 ):
     rows = db.execute(
         text("""
-            select p.id, p.external_code, p.name, p.client_name, p.created_at,
+            select p.id, p.external_code, p.name, p.created_at,
                    count(r.id) as rounds_count
             from projects p
             left join rounds r on r.project_id = p.id
@@ -66,7 +63,6 @@ def list_projects(
             "id": str(r["id"]),
             "external_code": r["external_code"],
             "name": r["name"],
-            "client_name": r["client_name"],
             "rounds_count": r["rounds_count"],
             "created_at": r["created_at"],
         }
@@ -81,7 +77,7 @@ def get_project(
     user: CurrentUser = Depends(current_user),
 ):
     project = db.execute(
-        text("select id, external_code, name, client_name, created_at from projects where id = :id"),
+        text("select id, external_code, name, created_at from projects where id = :id"),
         {"id": project_id},
     ).mappings().first()
     if not project:
@@ -122,7 +118,6 @@ def get_project(
         "id": str(project["id"]),
         "external_code": project["external_code"],
         "name": project["name"],
-        "client_name": project["client_name"],
         "created_at": project["created_at"],
         "rounds": [
             {

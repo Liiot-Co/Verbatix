@@ -1,8 +1,7 @@
 import polars as pl
 import pytest
 
-from app.pipeline.normalize import normalize
-from app.pipeline.normalize_polars import normalization_stats, rows_to_normalized_df
+from app.pipeline.normalize import normalization_stats, normalize, rows_to_normalized_df
 
 
 @pytest.mark.parametrize(

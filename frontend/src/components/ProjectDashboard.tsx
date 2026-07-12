@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowRight, FolderOpen, Plus, Search } from "lucide-react";
-import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { getProjects } from "@/api/client";
 import type { ProjectListItem } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
@@ -13,12 +12,11 @@ const GRADIENT_CLASSES = ["card-gradient-morph-1", "card-gradient-morph-2", "car
 
 export default function ProjectDashboard() {
   const navigate = useNavigate();
-  const setActiveProjectId = useVerbatixStore((s) => s.setActiveProjectId);
 
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const cardRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const cardRefs = useRef<(HTMLAnchorElement | null)[]>([]);
   const [focusedIndex, setFocusedIndex] = useState(-1);
 
   useEffect(() => {
@@ -29,16 +27,10 @@ export default function ProjectDashboard() {
 
   const filteredProjects = projects.filter((p) =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.external_code.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.client_name?.toLowerCase().includes(searchQuery.toLowerCase())
+    p.external_code.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const totalTiles = filteredProjects.length + 1;
-
-  const enter = (project: ProjectListItem) => {
-    setActiveProjectId(project.id);
-    navigate(`/projects/${project.id}`);
-  };
 
   const onGridKeyDown = (e: React.KeyboardEvent, idx: number) => {
     const deltas: Record<string, number> = {
@@ -155,14 +147,9 @@ export default function ProjectDashboard() {
               </p>
             </div>
             {!searchQuery && (
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => navigate("/wizard")}
-                className="btn-primary text-sm mt-2"
-              >
+              <Link to="/wizard" className="btn-primary text-sm mt-2 inline-flex items-center gap-1.5">
                 <Plus className="w-4 h-4" /> Nuevo proyecto
-              </motion.button>
+              </Link>
             )}
           </motion.div>
         ) : (
@@ -176,23 +163,23 @@ export default function ProjectDashboard() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {filteredProjects.map((project, idx) => {
                 return (
-                  <motion.button
+                  <motion.div
                     key={project.id}
-                    ref={(el) => { cardRefs.current[idx] = el; }}
-                    onClick={() => enter(project)}
-                    onKeyDown={(e) => onGridKeyDown(e, idx)}
-                    onFocus={() => setFocusedIndex(idx)}
-                    whileHover={{ y: -2, boxShadow: "0 12px 24px -8px oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.15)" }}
-                    whileTap={{ scale: 0.98 }}
                     layout
                     exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.15 } }}
-                    className={[
-                      `relative ${GRADIENT_CLASSES[idx % GRADIENT_CLASSES.length]} p-4 text-left space-y-3 overflow-hidden group`,
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40",
-                      focusedIndex === idx ? "ring-2 ring-p-accent/50" : "",
-                    ].join(" ")}
-                    tabIndex={0}
                   >
+                    <Link
+                      to={`/projects/${project.id}`}
+                      ref={(el) => { cardRefs.current[idx] = el; }}
+                      onKeyDown={(e) => onGridKeyDown(e, idx)}
+                      onFocus={() => setFocusedIndex(idx)}
+                      className={[
+                        `relative ${GRADIENT_CLASSES[idx % GRADIENT_CLASSES.length]} p-4 text-left space-y-3 overflow-hidden group block`,
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40",
+                        "hover:-translate-y-0.5 hover:shadow-lg active:scale-[0.98] transition-all duration-200",
+                        focusedIndex === idx ? "ring-2 ring-p-accent/50" : "",
+                      ].join(" ")}
+                    >
                     {/* Ambient glow on hover/focus */}
                     <motion.div
                       aria-hidden
@@ -233,37 +220,32 @@ export default function ProjectDashboard() {
 
                     <motion.div
                       layout
-                      className="relative flex items-center gap-1.5 text-[11px] font-subtitle text-p-text-faint"
+                      className="relative text-[11px] font-subtitle text-p-text-faint"
                     >
                       <span className="font-semibold text-p-text-muted">{project.external_code}</span>
-                      {project.client_name && (
-                        <span className="px-1.5 py-0.5 rounded border border-p-border uppercase tracking-wide bg-p-bg-subtle">
-                          {project.client_name}
-                        </span>
-                      )}
                     </motion.div>
-                  </motion.button>
+                  </Link>
+                  </motion.div>
                 );
               })}
 
               {/* New Project Card */}
-              <motion.button
-                ref={(el) => { cardRefs.current[filteredProjects.length] = el; }}
-                onClick={() => navigate("/wizard")}
-                onKeyDown={(e) => onGridKeyDown(e, filteredProjects.length)}
-                onFocus={() => setFocusedIndex(filteredProjects.length)}
-                whileHover={{ y: -2, boxShadow: "0 12px 24px -8px oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.1)" }}
-                whileTap={{ scale: 0.98 }}
+              <motion.div
                 layout
                 exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.15 } }}
-                className={[
-                  "card-subtle p-4 flex flex-col items-center justify-center gap-2 text-p-text-muted",
-                  "hover:text-p-text hover:border-p-accent/40 active:scale-[0.99] transition-all duration-200",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40",
-                  "min-h-[104px] group",
-                ].join(" ")}
-                tabIndex={0}
               >
+                <Link
+                  to="/wizard"
+                  ref={(el) => { cardRefs.current[filteredProjects.length] = el; }}
+                  onKeyDown={(e) => onGridKeyDown(e, filteredProjects.length)}
+                  onFocus={() => setFocusedIndex(filteredProjects.length)}
+                  className={[
+                    "card-subtle p-4 flex flex-col items-center justify-center gap-2 text-p-text-muted block",
+                    "hover:text-p-text hover:border-p-accent/40 active:scale-[0.99] transition-all duration-200",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40",
+                    "min-h-[104px] group",
+                  ].join(" ")}
+                >
                 <motion.div
                   whileHover={{ rotate: 90, scale: 1.1 }}
                   transition={{ type: "spring", stiffness: 300, damping: 20 }}
@@ -272,8 +254,9 @@ export default function ProjectDashboard() {
                   <Plus />
                 </motion.div>
                 <span className="text-sm font-medium">Nuevo proyecto</span>
-                  <span className="text-xs text-p-text-faint hidden sm:block">{modLabel()}⇧N</span>
-              </motion.button>
+                   <span className="text-xs text-p-text-faint hidden sm:block">{modLabel()}⇧N</span>
+                </Link>
+              </motion.div>
             </div>
           </motion.div>
         )}

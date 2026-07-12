@@ -39,7 +39,6 @@ class Project(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     external_code = Column(String, unique=True, nullable=True)
     name = Column(String, nullable=False)
-    client_name = Column(String, nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

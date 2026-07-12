@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.pipeline.ollama_client import classify_batch
+from app.pipeline.llm.client import classify_batch
 from app.core.config import settings
 
 
@@ -32,16 +32,20 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
 
     codes = db.execute(
         text("""
-            select c.id, c.code_number, c.label
+            select c.id, c.code_number, c.label, n.name as net_name
             from codes c
             join codebooks b on b.id = c.codebook_id
+            left join net_codes nc on nc.code_id = c.id
+            left join nets n on n.id = nc.net_id
             where b.studio_id = :studio and c.is_active
             order by b.version desc
         """),
         {"studio": studio_id},
     ).mappings().all()
     codes_by_number = {c["code_number"]: c["id"] for c in codes}
-    codebook_payload = [{"code_number": c["code_number"], "label": c["label"]} for c in codes]
+    codebook_payload = [
+        {"code_number": c["code_number"], "label": c["label"], "net": c["net_name"]} for c in codes
+    ]
 
     groups = db.execute(
         text("""

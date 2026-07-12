@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { motion } from "framer-motion";
-import { AlertTriangle, ArrowRight, CheckCircle2, PlayCircle } from "lucide-react";
+import { Link, useParams } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import { AlertTriangle, ArrowRight, CheckCircle2, PartyPopper, RefreshCw } from "lucide-react";
 import { getPreliminary, getStudio, processStudio } from "@/api/client";
 import type { PreliminarySummary, StudioStatus } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
@@ -9,7 +9,6 @@ import { useVerbatixStore } from "@/store/useVerbatixStore";
 
 export default function PreliminaryScreen() {
   const { studioId } = useParams<{ studioId: string }>();
-  const navigate = useNavigate();
   const showToast = useVerbatixStore((s) => s.showToast);
 
   const [studio, setStudio] = useState<StudioStatus | null>(null);
@@ -37,7 +36,7 @@ export default function PreliminaryScreen() {
     try {
       const result = await processStudio(studioId);
       showToast(
-        `El motor propuso ${result.groups_classified} grupos, ${result.anomalies} quedaron como anomalías`,
+        `${result.groups_classified} grupos codificados solos, ${result.anomalies} necesitan revisión`,
         "success"
       );
       await refresh();
@@ -69,6 +68,19 @@ export default function PreliminaryScreen() {
   const total = auto_coded + pending_review + anomalies + resolved;
   const codedPct = total ? Math.round(((auto_coded + resolved) / total) * 100) : 0;
   const hasPending = pending_review > 0;
+  const neverProcessed = hasPending && auto_coded + resolved === 0;
+  const justFinished = total > 0 && codedPct === 100;
+
+  const momentum =
+    codedPct === 100
+      ? "¡Todo codificado! El motor resolvió el 100% solo."
+      : codedPct >= 75
+      ? "Casi listo — el motor va muy bien."
+      : codedPct >= 40
+      ? "Buen avance, sigue así."
+      : codedPct > 0
+      ? "Arrancando — el motor ya empezó a codificar."
+      : "Sin codificar todavía.";
 
   return (
     <div className="max-w-3xl mx-auto py-4 space-y-6">
@@ -84,35 +96,53 @@ export default function PreliminaryScreen() {
         <motion.button
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
-          className="btn-primary text-sm py-2"
+          className={neverProcessed ? "btn-primary text-sm py-2" : "btn-ghost text-sm py-2"}
           disabled={processing}
           onClick={handleProcess}
+          title={neverProcessed ? "Codificar automáticamente" : "Volver a correr el motor sobre lo pendiente"}
         >
           {processing ? (
             <motion.span
               animate={{ rotate: 360 }}
               transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-              className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
+              className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full"
             />
           ) : (
-            <PlayCircle className="w-4 h-4" />
+            <RefreshCw className="w-4 h-4" />
           )}
-          {processing ? "Procesando..." : "Procesar"}
+          {processing ? "Procesando..." : neverProcessed ? "Procesar" : "Reprocesar"}
         </motion.button>
       </div>
 
-      {/* Progress bar */}
+      {/* Momentum + progress bar */}
       <div className="card p-4 space-y-2">
         <div className="flex items-center justify-between text-xs text-p-text-muted">
-          <span>Avance del motor</span>
+          <span className="flex items-center gap-1.5">
+            <AnimatePresence mode="wait">
+              {justFinished && (
+                <motion.span
+                  key="party"
+                  initial={{ scale: 0, rotate: -20 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: "spring", stiffness: 400, damping: 15 }}
+                >
+                  <PartyPopper className="w-3.5 h-3.5 text-p-success" />
+                </motion.span>
+              )}
+            </AnimatePresence>
+            {momentum}
+          </span>
           <span className="font-semibold text-p-text">{codedPct}%</span>
         </div>
         <div className="h-2 rounded-full bg-p-bg-subtle overflow-hidden">
           <motion.div
-            className="h-full bg-gradient-to-r from-p-accent to-p-accent-mid"
+            className={[
+              "h-full bg-gradient-to-r",
+              justFinished ? "from-p-success to-p-success" : "from-p-accent to-p-accent-mid",
+            ].join(" ")}
             initial={{ width: 0 }}
             animate={{ width: `${codedPct}%` }}
-            transition={{ duration: 0.5, ease: [0.19, 1, 0.22, 1] as const }}
+            transition={{ duration: 0.6, ease: [0.19, 1, 0.22, 1] as const }}
           />
         </div>
       </div>
@@ -140,18 +170,17 @@ export default function PreliminaryScreen() {
       </div>
 
       <div className="flex justify-end">
-        <motion.button
-          whileHover={{ x: 2 }}
-          className="flex items-center gap-1 text-sm text-p-accent hover:underline"
-          onClick={() => navigate(`/studios/${studio.id}/verbatims`)}
+        <Link
+          to={`/studios/${studio.id}/verbatims`}
+          className="flex items-center gap-1 text-sm text-p-accent hover:underline hover:translate-x-0.5 transition-transform"
         >
           Ver verbatims <ArrowRight className="w-3.5 h-3.5" />
-        </motion.button>
+        </Link>
       </div>
 
-      {!hasPending && total > 0 && (
+      {!hasPending && anomalies > 0 && (
         <p className="text-center text-xs text-p-text-faint">
-          No quedan grupos sin procesar. La resolución manual de anomalías es el siguiente paso (Fase 3).
+          Nada sin procesar. Quedan {anomalies} anomalías por revisar a mano.
         </p>
       )}
     </div>

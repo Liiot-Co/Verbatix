@@ -26,7 +26,6 @@ export interface ProjectListItem {
   id: string;
   external_code: string;
   name: string;
-  client_name: string | null;
   rounds_count: number;
   created_at: string;
 }
@@ -35,7 +34,6 @@ export interface ProjectDetail {
   id: string;
   external_code: string;
   name: string;
-  client_name: string | null;
   rounds: RoundSummary[];
   created_at: string;
 }
@@ -106,6 +104,14 @@ export interface ColumnMap {
   input_code?: string;
 }
 
+// POST /studios/{id}/process
+export interface ProcessResult {
+  run_id: string;
+  groups_classified: number;
+  anomalies: number;
+  total: number;
+}
+
 export interface ImportResult {
   imported: {
     verbatims: number;
@@ -113,16 +119,11 @@ export interface ImportResult {
     aliases: number;
     skipped_rows: number;
   };
+  // Auto-run right after import; null only if processing threw (e.g. LLM
+  // engine unreachable) — the import itself still succeeds.
+  processing: ProcessResult | { error: string } | null;
   warnings: string[];
   studio_status: string;
-}
-
-// POST /studios/{id}/process
-export interface ProcessResult {
-  run_id: string;
-  groups_classified: number;
-  anomalies: number;
-  total: number;
 }
 
 // GET /studios/{id}/preliminary
@@ -135,7 +136,16 @@ export interface PreliminarySummary {
   };
 }
 
-// GET /studios/{id}/verbatims — no codes[] yet, manual code assignment is Fase 3.
+// GET /studios/{id}/verbatims — manual code assignment/edit is still Fase 3;
+// codes[] is read-only transparency into what the engine assigned and why.
+export interface VerbatimCode {
+  code_number: number;
+  label: string;
+  source: "engine_exact" | "engine_fuzzy" | "homologation" | "analyst_manual" | "audit_correction";
+  confidence_score: number | null;
+  matched_alias: string | null;
+}
+
 export interface Verbatim {
   id: string;
   respondent_external_id: string | null;
@@ -144,6 +154,7 @@ export interface Verbatim {
   normalized_text: string | null;
   coding_status: CodingStatus;
   mention_group_id: string | null;
+  codes: VerbatimCode[];
 }
 
 export interface VerbatimList {

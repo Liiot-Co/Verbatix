@@ -11,7 +11,9 @@ class Settings(BaseSettings):
     port: int = 8001
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "gemma4:e2b"
-    classification_batch_size: int = 200
+    # gemma4:e2b needs its <think> reasoning pass to keep `format` schema enforcement active
+    # (~7s/verbatim); 200 blew the 600s request timeout and truncated content to "". Keep small.
+    classification_batch_size: int = 20
 
     # local  -> local Postgres (docker-compose db service), filesystem storage,
     #           auth bypassed with a fixed dev user. No Supabase calls, no quota spent.

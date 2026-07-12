@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, Link } from "react-router-dom";
 import { LayoutDashboard, Wand2, Keyboard, Command, LogOut, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
@@ -118,14 +118,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="flex flex-col gap-1">
               {NAV_ITEMS.map(({ path, label, icon: Icon }) => (
-                <motion.button
+                <Link
                   key={path}
-                  layout
-                  onClick={() => navigate(path)}
-                  whileHover={{ x: 4 }}
-                  whileTap={{ scale: 0.98 }}
+                  to={path}
                   className={[
-                    "relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150",
+                    "relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 hover:translate-x-1 active:scale-[0.98]",
                     location.pathname === path
                       ? "sidebar-nav-item-active-morph text-p-text"
                       : "text-p-text-muted hover:bg-p-bg-subtle/60 hover:text-p-text",
@@ -133,29 +130,27 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 >
                   {location.pathname === path && (
                     <motion.span
-                      layout
+                      layoutId="sidebar-active"
                       className="absolute left-0 top-1.5 bottom-1.5 w-[2.5px] bg-p-accent rounded-r"
                     />
                   )}
                   <Icon className="w-3.5 h-3.5 shrink-0" />
                   <span className="flex-1 text-left truncate">{label}</span>
-                </motion.button>
+                </Link>
               ))}
             </div>
 
             <div className="font-subtitle text-[10px] tracking-[0.22em] uppercase text-p-text-faint px-2 pt-4 pb-1.5">
               Acciones
             </div>
-            <motion.button
-              onClick={() => navigate("/wizard")}
-              whileHover={{ x: 4 }}
-              whileTap={{ scale: 0.98 }}
-              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-p-text-muted hover:text-p-text hover:bg-p-bg-subtle/60 transition-colors duration-150"
+            <Link
+              to="/wizard"
+              className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-p-text-muted hover:text-p-text hover:bg-p-bg-subtle/60 transition-all duration-150 hover:translate-x-1 active:scale-[0.98]"
             >
               <Wand2 className="w-3.5 h-3.5 shrink-0" />
               <span className="flex-1 text-left truncate">Nuevo proyecto</span>
               <span className="kbd-hint shrink-0">{modLabel()}⇧N</span>
-            </motion.button>
+            </Link>
 
             {/* User section at bottom */}
             <div className="mt-auto border-t border-p-border pt-2">

@@ -1,12 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Search, Keyboard } from "lucide-react";
+import { ChevronLeft, ChevronRight, Search, Keyboard, Sparkles, Bot, UserCheck } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { getStudio, getVerbatims } from "@/api/client";
-import type { CodingStatus, StudioStatus, Verbatim } from "@/api/types";
+import { getPreliminary, getStudio, getVerbatims } from "@/api/client";
+import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim, VerbatimCode } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+
+// confidence_score is only set by the fuzzy matcher; the LLM path (Ollama)
+// shares the 'engine_fuzzy' source value (no dedicated 'llm' value in the
+// schema yet) but never sets a score — that's the only way to tell them apart.
+function engineLabel(code: VerbatimCode): { text: string; icon: typeof Sparkles } {
+  if (code.source === "analyst_manual" || code.source === "audit_correction") {
+    return { text: "Manual", icon: UserCheck };
+  }
+  if (code.source === "homologation") {
+    return { text: "Homologado", icon: UserCheck };
+  }
+  if (code.confidence_score != null) {
+    return { text: `Fuzzy ${Math.round(code.confidence_score * 100)}%`, icon: Sparkles };
+  }
+  return { text: "LLM", icon: Bot };
+}
 
 const PAGE_SIZE = 50;
 
@@ -36,6 +52,7 @@ export default function VerbatimsTable() {
   const showToast = useVerbatixStore((s) => s.showToast);
 
   const [studio, setStudio] = useState<StudioStatus | null>(null);
+  const [preliminary, setPreliminary] = useState<PreliminarySummary | null>(null);
   const [verbatims, setVerbatims] = useState<Verbatim[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -47,6 +64,7 @@ export default function VerbatimsTable() {
   useEffect(() => {
     if (!studioId) return;
     getStudio(studioId).then(setStudio);
+    getPreliminary(studioId).then(setPreliminary);
   }, [studioId]);
 
   useEffect(() => {
@@ -171,6 +189,29 @@ export default function VerbatimsTable() {
         )}
       </div>
 
+      {/* Momentum bar: same coded/pending framing as the preliminary screen */}
+      {preliminary && (() => {
+        const { auto_coded, pending_review, anomalies, resolved } = preliminary.summary;
+        const t = auto_coded + pending_review + anomalies + resolved;
+        const pct = t ? Math.round(((auto_coded + resolved) / t) * 100) : 0;
+        return (
+          <div className="card p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs text-p-text-muted">
+              <span>{auto_coded + resolved} de {t} codificados</span>
+              <span className="font-semibold text-p-text">{pct}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-p-bg-subtle overflow-hidden">
+              <motion.div
+                className="h-full bg-gradient-to-r from-p-accent to-p-accent-mid"
+                initial={{ width: 0 }}
+                animate={{ width: `${pct}%` }}
+                transition={{ duration: 0.5, ease: [0.19, 1, 0.22, 1] as const }}
+              />
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Search and filter bar */}
       <div className="flex flex-col sm:flex-row gap-2"
       >
@@ -211,6 +252,7 @@ export default function VerbatimsTable() {
             <tr className="border-b border-p-border text-left">
               <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Respondent</th>
               <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Verbatim</th>
+              <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Código</th>
               <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Estado</th>
             </tr>
           </thead>
@@ -221,6 +263,7 @@ export default function VerbatimsTable() {
                   <tr key={`skeleton-${i}`} className="border-b border-p-border last:border-0">
                     <td className="px-4 py-2.5"><div className="skeleton h-3 w-10 rounded" /></td>
                     <td className="px-4 py-2.5"><div className="skeleton h-3 w-3/4 rounded" /></td>
+                    <td className="px-4 py-2.5"><div className="skeleton h-3 w-24 rounded" /></td>
                     <td className="px-4 py-2.5"><div className="skeleton h-3 w-16 rounded-full" /></td>
                   </tr>
                 ))
@@ -228,7 +271,7 @@ export default function VerbatimsTable() {
                 <motion.tr
                   exit={{ opacity: 0 }}
                 >
-                  <td colSpan={3} className="px-4 py-8 text-center text-p-text-faint text-sm">
+                  <td colSpan={4} className="px-4 py-8 text-center text-p-text-faint text-sm">
                     {search ? `Sin resultados para "${search}" en esta página.` : "Sin verbatims todavía."}
                   </td>
                 </motion.tr>
@@ -242,6 +285,27 @@ export default function VerbatimsTable() {
                   >
                     <td className="px-4 py-2.5 text-p-text-faint text-xs">{v.respondent_external_id ?? "—"}</td>
                     <td className="px-4 py-2.5 text-p-text max-w-2xl truncate">{v.original_text}</td>
+                    <td className="px-4 py-2.5">
+                      {v.codes.length === 0 ? (
+                        <span className="text-xs text-p-text-faint">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-1">
+                          {v.codes.map((code, i) => {
+                            const engine = engineLabel(code);
+                            const EngineIcon = engine.icon;
+                            return (
+                              <div key={i} className="flex items-center gap-1.5" title={code.matched_alias ? `Matcheó con "${code.matched_alias}"` : undefined}>
+                                <span className="text-xs font-medium text-p-text">{code.label}</span>
+                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-p-border bg-p-bg-subtle text-p-text-muted">
+                                  <EngineIcon className="w-3 h-3" />
+                                  {engine.text}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-2.5">
                       <motion.span
                         whileHover={{ scale: 1.05 }}

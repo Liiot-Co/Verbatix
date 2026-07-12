@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.core import storage
-from app.pipeline import excel, process_studio
+from app.pipeline import process_studio
+from app.pipeline.ingest import excel
 from app.repositories import (
     build_mention_groups,
     clone_codebook,
@@ -202,11 +203,26 @@ def list_verbatims(
 ):
     rows = db.execute(
         text("""
-            select id, respondent_external_id, question_key, original_text,
-                   normalized_text, coding_status, mention_group_id
-            from verbatims
-            where studio_id = :id and (:status is null or coding_status = :status)
-            order by created_at
+            select v.id, v.respondent_external_id, v.question_key, v.original_text,
+                   v.normalized_text, v.coding_status, v.mention_group_id,
+                   coalesce(
+                     jsonb_agg(
+                       jsonb_build_object(
+                         'code_number', c.code_number,
+                         'label', c.label,
+                         'source', vc.source,
+                         'confidence_score', vc.confidence_score,
+                         'matched_alias', vc.matched_alias
+                       ) order by vc.output_index
+                     ) filter (where vc.id is not null),
+                     '[]'::jsonb
+                   ) as codes
+            from verbatims v
+            left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
+            left join codes c on c.id = vc.code_id
+            where v.studio_id = :id and (:status is null or v.coding_status = :status)
+            group by v.id
+            order by v.created_at
             limit :lim offset :off
         """),
         {"id": studio_id, "lim": limit, "off": offset, "status": status},
@@ -231,6 +247,7 @@ def list_verbatims(
                 "normalized_text": r["normalized_text"],
                 "coding_status": r["coding_status"],
                 "mention_group_id": str(r["mention_group_id"]) if r["mention_group_id"] else None,
+                "codes": r["codes"],
             }
             for r in rows
         ],
@@ -334,6 +351,18 @@ def import_file(
     )
     db.commit()
 
+    # Auto-process right after import so the user never has to notice/click a
+    # separate "Procesar" step. ponytail: synchronous, no job queue — fine for
+    # local/demo volumes; move to a background task if the LLM path starts
+    # making imports feel slow. Processing failure (e.g. Ollama down) must not
+    # fail the import itself — the user already has their verbatims uploaded.
+    processing = None
+    try:
+        processing = process_studio(db, studio_id)
+    except Exception as exc:
+        db.rollback()
+        processing = {"error": str(exc)}
+
     return {
         "imported": {
             "verbatims": n_inserted,
@@ -341,8 +370,11 @@ def import_file(
             "aliases": n_aliases,
             "skipped_rows": len(rows) - df.height,
         },
+        "processing": processing,
         "warnings": [],
-        "studio_status": "files_uploaded",
+        "studio_status": db.execute(
+            text("select status from studio where id = :id"), {"id": studio_id}
+        ).scalar(),
     }
 
 

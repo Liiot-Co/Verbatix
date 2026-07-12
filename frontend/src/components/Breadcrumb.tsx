@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { ChevronRight } from "lucide-react";
 
 export interface Crumb {
@@ -10,17 +10,20 @@ export interface Crumb {
 }
 
 export default function Breadcrumb({ items }: { items: Crumb[] }) {
-  const navigate = useNavigate();
-
   return (
     <nav aria-label="Ruta de navegación" className="flex items-center gap-1 text-xs">
       {items.map((item, i) => {
         const isLast = i === items.length - 1;
-        const action = item.onClick ?? (item.to ? () => navigate(item.to!) : undefined);
+        const showLink = item.to && !isLast;
+        const showButton = item.onClick && !isLast && !item.to;
         return (
           <span key={i} className="flex items-center gap-1">
-            {action && !isLast ? (
-              <button onClick={action} className="text-p-text-muted hover:text-p-text transition-colors">
+            {showLink ? (
+              <Link to={item.to!} className="text-p-text-muted hover:text-p-text transition-colors">
+                {item.label}
+              </Link>
+            ) : showButton ? (
+              <button onClick={item.onClick} className="text-p-text-muted hover:text-p-text transition-colors">
                 {item.label}
               </button>
             ) : (

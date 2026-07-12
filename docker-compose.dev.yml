@@ -13,7 +13,9 @@ services:
       - ./backend:/app         # hot-reload: code changes reflect immediately
       - ./data:/app/data       # persist SQLite across restarts
     environment:
-      KLASS_DB_PATH: /app/data/catalog.sqlite
+      OLLAMA_HOST: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Linux needs this; Docker Desktop resolves it natively
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --log-level info
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]

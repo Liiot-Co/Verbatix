@@ -39,6 +39,16 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function handle_new_user();
 
+-- 000_local_auth_stub.sql seeds the fixed local dev user into auth.users
+-- *before* this trigger exists, so it never fires for that row. Seed the
+-- matching profile here instead; no-op against real Supabase (that id
+-- never exists in its auth.users).
+insert into profiles (id, email, name)
+select id, 'dev@local.test', 'Dev User'
+from auth.users
+where id = '00000000-0000-0000-0000-000000000001'
+on conflict (id) do nothing;
+
 -- =====================================================================
 -- 1. ESTRUCTURA:  Proyecto -> Ronda -> estudio
 -- =====================================================================
@@ -46,7 +56,6 @@ create table projects (
   id             uuid primary key default gen_random_uuid(),
   external_code  text unique,
   name           text not null,
-  client_name    text,
   created_by     uuid references profiles(id),
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
@@ -249,6 +258,7 @@ create table verbatim_codes (
   source             text not null
                      check (source in ('engine_exact','engine_fuzzy','homologation','analyst_manual','audit_correction')),
   confidence_score   numeric(4,3),
+  matched_alias      text,  -- alias del catálogo que matcheó (transparencia: por qué el fuzzy asignó este código)
   processing_run_id  uuid references processing_runs(id),
   assigned_by        uuid references profiles(id),
   is_active          boolean not null default true,
