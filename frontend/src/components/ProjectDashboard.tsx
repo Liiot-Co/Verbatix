@@ -29,8 +29,10 @@ function formatRelativeDate(iso: string): string {
   return date.toLocaleDateString("es", { day: "numeric", month: "short", year: "numeric" });
 }
 
-function roundsLabel(count: number): string {
-  return count === 1 ? "1 ronda" : `${count} rondas`;
+function studySummaryLabel(studies: number, rounds: number): string {
+  const s = studies === 1 ? "1 estudio" : `${studies} estudios`;
+  const r = rounds === 1 ? "1 ronda" : `${rounds} rondas`;
+  return `${s} · ${r}`;
 }
 
 export default function ProjectDashboard() {
@@ -119,7 +121,7 @@ export default function ProjectDashboard() {
           <div>
             <h1 className="font-heading text-xl font-semibold text-p-text tracking-tight">Proyectos</h1>
             <p className="font-subtitle text-xs text-p-text-muted mt-0.5">
-              Cada proyecto agrupa rondas y estudios de codificación de verbatims.
+              Cada proyecto agrupa estudios (Marcas, Razones) con sus rondas de codificación.
             </p>
           </div>
           <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full shrink-0">
@@ -195,7 +197,7 @@ export default function ProjectDashboard() {
                       variant={glowVariantForIndex(idx)}
                       label={project.external_code}
                       title={project.name}
-                      footer={roundsLabel(project.rounds_count)}
+                      footer={studySummaryLabel(project.studies_count, project.rounds_count)}
                     />
                   ))}
                 </GlowCardGrid>
@@ -240,7 +242,7 @@ export default function ProjectDashboard() {
                           <div className="text-[11px] font-subtitle text-p-text-faint mt-0.5 truncate">
                             {project.external_code}
                             <span className="mx-1.5 text-p-border-mid">·</span>
-                            {roundsLabel(project.rounds_count)}
+                            {studySummaryLabel(project.studies_count, project.rounds_count)}
                             <span className="mx-1.5 text-p-border-mid">·</span>
                             {formatRelativeDate(project.created_at)}
                           </div>
@@ -253,7 +255,7 @@ export default function ProjectDashboard() {
                               : "text-amber-700 bg-amber-50 border-amber-200",
                           ].join(" ")}
                         >
-                          {project.rounds_count > 0 ? "Activo" : "Sin rondas"}
+                          {project.studies_count > 0 ? "Activo" : "Sin estudios"}
                         </span>
                       </Link>
                     );

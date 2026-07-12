@@ -27,6 +27,7 @@ export interface ProjectListItem {
   external_code: string;
   name: string;
   rounds_count: number;
+  studies_count: number;
   created_at: string;
 }
 
@@ -44,8 +45,8 @@ export interface Codebook {
   inherited_aliases: number;
 }
 
-// Rounds belong directly to a project. Each round can hold multiple studios
-// (typically one "brands" + one "reasons"), created separately below.
+// Rounds belong to a project; each round holds one studio instance per
+// logical study (Marcas / Razones). The UI groups those instances by study.
 export interface Round {
   id: string;
   project_id: string;
@@ -70,7 +71,7 @@ export interface Studio {
   codebook: Codebook;
 }
 
-// GET /studios/{id} — the full studio row plus live counters.
+// GET /studios/{id} — the full studio row plus live counters and navigation context.
 export interface StudioCounters {
   verbatims_total: number;
   mention_groups: number;
@@ -78,7 +79,15 @@ export interface StudioCounters {
   aliases_total: number;
 }
 
-export interface StudioStatus extends Studio {
+export interface StudioNavContext {
+  round_name: string;
+  round_number: number;
+  project_id: string;
+  project_name: string;
+  project_external_code: string | null;
+}
+
+export interface StudioStatus extends Studio, StudioNavContext {
   counters: StudioCounters;
 }
 
@@ -104,12 +113,10 @@ export interface ColumnMap {
   input_code?: string;
 }
 
-// POST /studios/{id}/process
+// POST /studios/{id}/process — queued as a background task; poll studio status.
 export interface ProcessResult {
-  run_id: string;
-  groups_classified: number;
-  anomalies: number;
-  total: number;
+  status: "queued";
+  studio_id: string;
 }
 
 export interface ImportResult {
@@ -121,7 +128,7 @@ export interface ImportResult {
   };
   // Queued as a background task right after import — the LLM pass can take
   // minutes, so the response doesn't wait for it. Poll GET /studios/{id} for
-  // status: 'files_uploaded' (still processing) -> 'preliminary_ready' (done).
+  // status: 'processing' (still working) -> 'preliminary_ready' (done).
   processing: { status: "queued" };
   warnings: string[];
   studio_status: string;
