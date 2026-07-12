@@ -1,93 +1,175 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from app.database import get_db
-from app.models import Round, SurveyResponse
-from app.routers.resolve import _to_item
+from app.models import Code, CodeAlias, Codebook, Project, Round, Study
+from app.seed import DEMO_USER_ID
+from app.serializers import round_progress
 
-router = APIRouter(prefix="/api", tags=["rounds"])
+router = APIRouter(prefix="/api/v1", tags=["rounds"])
+
+# 95-99 reservados, nunca se borran ni se homologan (ver Terminos del Proyecto.md)
+SYSTEM_CODES = [
+    (95, "Menciones confusas/Incorrectas", "anomaly"),
+    (96, "No sabe/No contesta", "dont_know"),
+    (97, "Otras menciones", "other"),
+    (98, "Ninguna", "none"),
+    (99, "No responde", "no_response"),
+]
 
 
 class RoundCreate(BaseModel):
     name: str
-    study_id: int | None = None
+    round_number: int
+    origin_mode: str
+    source_round_id: uuid.UUID | None = None
+    min_mentions_threshold: int = 3
+    audit_percentage: float = 10
 
 
-class RoundResponse(BaseModel):
-    id: int
-    name: str
-    study_id: int | None = None
-    total: int = 0
-    auto_approved: int = 0
-    requires_human: int = 0
-    generic: int = 0
-
-
-@router.post("/rounds", response_model=RoundResponse)
-def create_round(body: RoundCreate, db: Session = Depends(get_db)):
-    existing = db.query(Round).filter_by(name=body.name).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="Round name already exists")
-
-    rnd = Round(name=body.name, study_id=body.study_id)
-    db.add(rnd)
-    db.commit()
-    db.refresh(rnd)
-    return RoundResponse(id=rnd.id, name=rnd.name, study_id=rnd.study_id)
-
-
-@router.get("/rounds", response_model=list[RoundResponse])
-def list_rounds(db: Session = Depends(get_db)):
-    rounds = db.query(Round).order_by(Round.created_at.desc()).all()
-    result = []
-    for rnd in rounds:
-        counts = (
-            db.query(
-                func.count(SurveyResponse.id).label("total"),
-                func.count(SurveyResponse.id).filter(
-                    SurveyResponse.status == "auto_approved"
-                ).label("auto_approved"),
-                func.count(SurveyResponse.id).filter(
-                    SurveyResponse.status == "requires_human"
-                ).label("requires_human"),
-                func.count(SurveyResponse.id).filter(
-                    SurveyResponse.status == "generic"
-                ).label("generic"),
-            )
-            .filter(SurveyResponse.round_id == rnd.id)
-            .one()
-        )
-        result.append(RoundResponse(
-            id=rnd.id,
-            name=rnd.name,
-            study_id=rnd.study_id,
-            total=counts.total,
-            auto_approved=counts.auto_approved,
-            requires_human=counts.requires_human,
-            generic=counts.generic,
+def _seed_system_codes(db: Session, codebook: Codebook) -> None:
+    for number, label, system_type in SYSTEM_CODES:
+        db.add(Code(
+            codebook_id=codebook.id,
+            code_number=number,
+            label=label,
+            origin="inherited",
+            is_system=True,
+            system_type=system_type,
+            created_by=DEMO_USER_ID,
         ))
-    return result
 
 
-@router.get("/rounds/{round_id}/responses")
-def get_round_responses(round_id: int, status: str | None = None, db: Session = Depends(get_db)):
-    if not db.get(Round, round_id):
-        raise HTTPException(status_code=404, detail="Round not found")
+def _clone_codebook(db: Session, source_round_id: uuid.UUID, new_codebook: Codebook) -> tuple[int, int]:
+    source_codebook = db.query(Codebook).filter_by(round_id=source_round_id).first()
+    if not source_codebook:
+        return 0, 0
 
-    query = db.query(SurveyResponse).filter(SurveyResponse.round_id == round_id)
-    if status:
-        query = query.filter(SurveyResponse.status == status)
-    items = query.order_by(SurveyResponse.id).all()
-    return [_to_item(r, db) for r in items]
+    new_codebook.parent_codebook_id = source_codebook.id
+    new_codebook.version = source_codebook.version + 1
+
+    source_codes = db.query(Code).filter_by(codebook_id=source_codebook.id).all()
+    code_id_map: dict[uuid.UUID, uuid.UUID] = {}
+    for code in source_codes:
+        clone = Code(
+            codebook_id=new_codebook.id,
+            code_number=code.code_number,
+            label=code.label,
+            origin="inherited",
+            is_system=code.is_system,
+            system_type=code.system_type,
+            inherited_from_code_id=code.id,
+            created_by=DEMO_USER_ID,
+        )
+        db.add(clone)
+        db.flush()
+        code_id_map[code.id] = clone.id
+
+    source_aliases = db.query(CodeAlias).filter_by(codebook_id=source_codebook.id).all()
+    for alias in source_aliases:
+        new_code_id = code_id_map.get(alias.code_id)
+        if not new_code_id:
+            continue
+        db.add(CodeAlias(
+            codebook_id=new_codebook.id,
+            code_id=new_code_id,
+            alias_normalized=alias.alias_normalized,
+            alias_sample=alias.alias_sample,
+            occurrences=alias.occurrences,
+            origin="inherited",
+            match_score=alias.match_score,
+        ))
+
+    return len(source_codes), len(source_aliases)
 
 
-@router.delete("/rounds/{round_id}")
-def delete_round(round_id: int, db: Session = Depends(get_db)):
-    rnd = db.get(Round, round_id)
-    if not rnd:
-        raise HTTPException(status_code=404, detail="Round not found")
-    db.delete(rnd)
+@router.post("/studies/{study_id}/rounds", status_code=201)
+def create_round(study_id: uuid.UUID, body: RoundCreate, db: Session = Depends(get_db)):
+    study = db.get(Study, study_id)
+    if not study:
+        raise HTTPException(
+            status_code=404, detail={"code": "NOT_FOUND", "message": "Study no encontrado", "details": {}}
+        )
+
+    round_ = Round(
+        study_id=study_id,
+        name=body.name,
+        round_number=body.round_number,
+        origin_mode=body.origin_mode,
+        source_round_id=body.source_round_id,
+        min_mentions_threshold=body.min_mentions_threshold,
+        audit_percentage=body.audit_percentage,
+        status="created",
+        created_by=DEMO_USER_ID,
+    )
+    db.add(round_)
+    db.flush()
+
+    codebook = Codebook(round_id=round_.id, version=1)
+    db.add(codebook)
+    db.flush()
+
+    inherited_codes, inherited_aliases = 0, 0
+    if body.origin_mode == "homologated" and body.source_round_id:
+        inherited_codes, inherited_aliases = _clone_codebook(db, body.source_round_id, codebook)
+    elif body.origin_mode == "from_scratch":
+        _seed_system_codes(db, codebook)
+
     db.commit()
-    return {"status": "ok"}
+    db.refresh(round_)
+    db.refresh(codebook)
+
+    return {
+        "id": str(round_.id),
+        "study_id": str(round_.study_id),
+        "name": round_.name,
+        "round_number": round_.round_number,
+        "origin_mode": round_.origin_mode,
+        "source_round_id": str(round_.source_round_id) if round_.source_round_id else None,
+        "min_mentions_threshold": round_.min_mentions_threshold,
+        "audit_percentage": float(round_.audit_percentage),
+        "status": round_.status,
+        "codebook": {
+            "id": str(codebook.id),
+            "version": codebook.version,
+            "inherited_codes": inherited_codes,
+            "inherited_aliases": inherited_aliases,
+        },
+    }
+
+
+@router.get("/rounds/{round_id}")
+def get_round(round_id: uuid.UUID, db: Session = Depends(get_db)):
+    round_ = db.get(Round, round_id)
+    if not round_:
+        raise HTTPException(
+            status_code=404, detail={"code": "NOT_FOUND", "message": "Ronda no encontrada", "details": {}}
+        )
+
+    progress = round_progress(db, round_)
+    codebook = db.query(Codebook).filter_by(round_id=round_.id).first()
+    codes_total = db.query(Code).filter_by(codebook_id=codebook.id).count() if codebook else 0
+    codes_new = (
+        db.query(Code).filter_by(codebook_id=codebook.id, origin="engine_auto").count() if codebook else 0
+    )
+
+    study = db.get(Study, round_.study_id)
+    project = db.get(Project, study.project_id) if study else None
+
+    return {
+        "id": str(round_.id),
+        "name": round_.name,
+        "status": round_.status,
+        "study_name": study.name if study else "",
+        "project_name": project.name if project else "",
+        "counters": {
+            "verbatims_total": progress["total"],
+            "auto_coded": progress["coded"],
+            "pending_review": progress["total"] - progress["coded"],
+            "codes_total": codes_total,
+            "codes_new_this_round": codes_new,
+        },
+    }

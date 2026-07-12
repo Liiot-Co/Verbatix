@@ -7,9 +7,6 @@ export
 # ── APP_ENV: set via cmdline (APP_ENV=prod make up) or defaults to dev
 APP_ENV ?= dev
 
-# ── Derived ─────────────────────────────────────────────────────────
-DB_FILE := data/catalog.sqlite
-
 # COMPOSE resolved at runtime
 define COMPOSE_CMD
 $(if $(filter prod,$(APP_ENV)),\
@@ -71,8 +68,7 @@ shell-frontend: ## Open shell in frontend container
 install: ## Install backend deps in local venv
 	python3 -m venv .venv && \
 	.venv/bin/pip install --upgrade pip && \
-	.venv/bin/pip install -r backend/requirements.txt && \
-	python3 -m spacy download es_core_news_sm
+	.venv/bin/pip install -r backend/requirements.txt
 
 run-backend: ## Run backend locally
 	cd backend && uvicorn app.main:app --reload --host $(KLASS_HOST) --port $(KLASS_PORT)
@@ -93,12 +89,12 @@ typecheck: ## Type-check backend with mypy
 
 # ── Database ────────────────────────────────────────────────────────
 
-db-reset: ## Delete DB and re-seed on next startup
-	rm -f $(DB_FILE)
-	@echo "DB deleted. Run 'make up' to recreate."
+db-reset: ## Drop the Postgres volume and re-seed on next startup
+	$(COMPOSE_CMD) down -v db
+	@echo "DB volume deleted. Run 'make up' to recreate."
 
-db-shell: ## Open sqlite3 shell on the DB
-	sqlite3 $(DB_FILE)
+db-shell: ## Open a psql shell on the DB
+	$(COMPOSE_CMD) exec db psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
 
 # ── Cleanup ─────────────────────────────────────────────────────────
 

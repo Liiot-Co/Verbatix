@@ -1,93 +1,165 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, UniqueConstraint
-from sqlalchemy.orm import relationship, declarative_base
+import uuid
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    TypeDecorator,
+    CHAR,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import declarative_base
 from datetime import datetime
 
 Base = declarative_base()
 
 
-class MarketStudy(Base):
-    __tablename__ = "market_studies"
-    id = Column(Integer, primary_key=True)
+class GUID(TypeDecorator):
+    """Portable UUID: native `uuid` on Postgres, CHAR(36) on SQLite (tests)."""
+
+    impl = CHAR
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PG_UUID(as_uuid=True))
+        return dialect.type_descriptor(CHAR(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == "postgresql":
+            return str(value)
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def new_uuid() -> uuid.UUID:
+    return uuid.uuid4()
+
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(GUID, primary_key=True, default=new_uuid)
     name = Column(String, nullable=False)
-    client = Column(String, nullable=True)
-    # "brands": resolving a brand closes the item. "codebook": assigning
-    # codes closes it. Set once at study creation — drives which surface
-    # is primary in the review step (see ReviewStage.tsx).
-    mode = Column(String, nullable=False, default="brands")
+    email = Column(String, unique=True, nullable=False)
+    role = Column(String, nullable=False, default="analyst")
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    nets = relationship("Net", back_populates="study")
-    codes = relationship("Code", back_populates="study")
-    rounds = relationship("Round", back_populates="study")
 
 
-class Net(Base):
-    __tablename__ = "nets"
-    id = Column(Integer, primary_key=True)
+class Project(Base):
+    __tablename__ = "projects"
+    id = Column(GUID, primary_key=True, default=new_uuid)
+    external_code = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
-    study_id = Column(Integer, ForeignKey("market_studies.id"), nullable=False)
-    study = relationship("MarketStudy", back_populates="nets")
-    codes = relationship("Code", back_populates="net")
+    client_name = Column(String, nullable=True)
+    created_by = Column(GUID, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class Code(Base):
-    __tablename__ = "codes"
-    id = Column(Integer, primary_key=True)
+class Study(Base):
+    __tablename__ = "studies"
+    id = Column(GUID, primary_key=True, default=new_uuid)
+    project_id = Column(GUID, ForeignKey("projects.id"), nullable=False)
     name = Column(String, nullable=False)
-    study_id = Column(Integer, ForeignKey("market_studies.id"), nullable=False)
-    net_id = Column(Integer, ForeignKey("nets.id"), nullable=True)
-    keywords = Column(Text, nullable=True)
-    study = relationship("MarketStudy", back_populates="codes")
-    net = relationship("Net", back_populates="codes")
-    __table_args__ = (UniqueConstraint("study_id", "name", name="uq_code_study_name"),)
-
-
-class ResponseCode(Base):
-    __tablename__ = "response_codes"
-    id = Column(Integer, primary_key=True)
-    response_id = Column(Integer, ForeignKey("survey_responses.id"), nullable=False)
-    code_id = Column(Integer, ForeignKey("codes.id"), nullable=False)
-    confidence = Column(Float, default=0.0)
-    origin = Column(String, default="auto")
-    response = relationship("SurveyResponse", back_populates="codes")
-    code = relationship("Code")
-    __table_args__ = (UniqueConstraint("response_id", "code_id", name="uq_response_code"),)
+    coding_type = Column(String, nullable=False)  # brands | reasons
+    survey_question = Column(Text, nullable=True)
+    created_by = Column(GUID, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Round(Base):
     __tablename__ = "rounds"
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False, unique=True)
+    id = Column(GUID, primary_key=True, default=new_uuid)
+    study_id = Column(GUID, ForeignKey("studies.id"), nullable=False)
+    name = Column(String, nullable=False)
+    round_number = Column(Integer, nullable=False)
+    origin_mode = Column(String, nullable=False)  # from_scratch | homologated
+    source_round_id = Column(GUID, ForeignKey("rounds.id"), nullable=True)
+    min_mentions_threshold = Column(Integer, nullable=False, default=3)
+    audit_percentage = Column(Numeric, nullable=False, default=10)
+    status = Column(String, nullable=False, default="created")
+    created_by = Column(GUID, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    study_id = Column(Integer, ForeignKey("market_studies.id"), nullable=True)
-    responses = relationship("SurveyResponse", back_populates="round", cascade="all, delete-orphan")
-    study = relationship("MarketStudy", back_populates="rounds")
 
 
-class OfficialBrand(Base):
-    __tablename__ = "official_brands"
-    id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True, nullable=False)
-    variations = relationship("BrandVariation", back_populates="brand")
+class ImportedFile(Base):
+    __tablename__ = "imported_files"
+    id = Column(GUID, primary_key=True, default=new_uuid)
+    round_id = Column(GUID, ForeignKey("rounds.id"), nullable=False)
+    file_type = Column(String, nullable=True)
+    sheet_name = Column(String, nullable=True)
+    original_filename = Column(String, nullable=False)
+    storage_path = Column(String, nullable=False)
+    checksum = Column(String, nullable=False)
+    total_rows = Column(Integer, nullable=True)
+    status = Column(String, nullable=False, default="uploaded")
+    error_log = Column(Text, nullable=True)
+    uploaded_by = Column(GUID, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class BrandVariation(Base):
-    __tablename__ = "brand_variations"
-    id = Column(Integer, primary_key=True)
-    variation_text = Column(String, nullable=False, index=True)
-    official_brand_id = Column(Integer, ForeignKey("official_brands.id"))
-    brand = relationship("OfficialBrand", back_populates="variations")
+class Codebook(Base):
+    __tablename__ = "codebooks"
+    id = Column(GUID, primary_key=True, default=new_uuid)
+    round_id = Column(GUID, ForeignKey("rounds.id"), nullable=False, unique=True)
+    version = Column(Integer, nullable=False, default=1)
+    parent_codebook_id = Column(GUID, ForeignKey("codebooks.id"), nullable=True)
+    imported_from_file_id = Column(GUID, ForeignKey("imported_files.id"), nullable=True)
+    status = Column(String, nullable=False, default="draft")
+    approved_by = Column(GUID, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class SurveyResponse(Base):
-    __tablename__ = "survey_responses"
-    id = Column(Integer, primary_key=True)
-    round_id = Column(Integer, ForeignKey("rounds.id"), nullable=False)
+class Code(Base):
+    __tablename__ = "codes"
+    id = Column(GUID, primary_key=True, default=new_uuid)
+    codebook_id = Column(GUID, ForeignKey("codebooks.id"), nullable=False)
+    code_number = Column(Integer, nullable=False)
+    label = Column(String, nullable=False)
+    origin = Column(String, nullable=False, default="analyst_manual")
+    is_system = Column(Boolean, nullable=False, default=False)
+    system_type = Column(String, nullable=True)
+    inherited_from_code_id = Column(GUID, ForeignKey("codes.id"), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by = Column(GUID, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CodeAlias(Base):
+    __tablename__ = "code_aliases"
+    id = Column(GUID, primary_key=True, default=new_uuid)
+    codebook_id = Column(GUID, ForeignKey("codebooks.id"), nullable=False)
+    code_id = Column(GUID, ForeignKey("codes.id"), nullable=False)
+    alias_normalized = Column(String, nullable=False)
+    alias_sample = Column(Text, nullable=True)
+    occurrences = Column(Integer, nullable=False, default=1)
+    origin = Column(String, nullable=False, default="imported_xlsx")
+    match_score = Column(Numeric, nullable=True)
+    approved_by = Column(GUID, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Verbatim(Base):
+    __tablename__ = "verbatims"
+    id = Column(GUID, primary_key=True, default=new_uuid)
+    round_id = Column(GUID, ForeignKey("rounds.id"), nullable=False)
+    respondent_external_id = Column(String, nullable=True)
+    question_key = Column(String, nullable=True)
     original_text = Column(Text, nullable=False)
-    extracted_term = Column(String)
-    confidence = Column(Float, default=0.0)
-    status = Column(String, default="requires_human")
-    official_brand_id = Column(Integer, ForeignKey("official_brands.id"), nullable=True)
-    external_row_id = Column(String, nullable=True)
-    round = relationship("Round", back_populates="responses")
-    brand = relationship("OfficialBrand")
-    codes = relationship("ResponseCode", back_populates="response", cascade="all, delete-orphan")
+    normalized_text = Column(String, nullable=True)
+    input_code_number = Column(Integer, nullable=True)
+    coding_status = Column(String, nullable=False, default="pending")
+    imported_file_id = Column(GUID, ForeignKey("imported_files.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,13 +1,13 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import SessionLocal, init_db
-from app.models import OfficialBrand, MarketStudy
-from app.routers import upload, classify, metrics, rounds, resolve, export, codes
-from app.seed import seed_brands, seed_demo_study
+from app.routers import files, projects, rounds, studies
+from app.seed import seed_demo_project
 
 
 @asynccontextmanager
@@ -15,18 +15,15 @@ async def lifespan(app: FastAPI):
     init_db()
     db = SessionLocal()
     try:
-        if db.query(OfficialBrand).count() == 0:
-            seed_brands(db)
-        if db.query(MarketStudy).count() == 0:
-            seed_demo_study(db)
+        seed_demo_project(db)
     finally:
         db.close()
     yield
 
 
 app = FastAPI(
-    title="klass — classification API",
-    version="0.2.0",
+    title="Verbatix — API de codificación de verbatims",
+    version="0.1.0",
     lifespan=lifespan,
 )
 
@@ -38,13 +35,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(upload.router)
-app.include_router(classify.router)
-app.include_router(metrics.router)
+
+app.include_router(projects.router)
+app.include_router(studies.router)
 app.include_router(rounds.router)
-app.include_router(resolve.router)
-app.include_router(export.router)
-app.include_router(codes.router)
+app.include_router(files.router)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc: HTTPException):
+    detail = exc.detail
+    if isinstance(detail, dict) and "code" in detail:
+        body = {"error": detail}
+    else:
+        body = {"error": {"code": "ERROR", "message": str(detail), "details": {}}}
+    return JSONResponse(status_code=exc.status_code, content=body)
 
 
 @app.get("/health")

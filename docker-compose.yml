@@ -1,4 +1,19 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-verbatix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-verbatix}
+      POSTGRES_DB: ${POSTGRES_DB:-verbatix}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-verbatix}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   backend:
     build: ./backend
     ports:
@@ -6,6 +21,9 @@ services:
     env_file: .env
     environment:
       - KLASS_ENV=${APP_ENV:-dev}
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 10s
@@ -20,3 +38,6 @@ services:
         condition: service_healthy
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://localhost:8001}
+
+volumes:
+  pgdata:

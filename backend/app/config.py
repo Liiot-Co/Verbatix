@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     env: str = "dev"
-    db_path: str = "data/catalog.sqlite"
+    database_url: str = "postgresql+psycopg://verbatix:verbatix@localhost:5432/verbatix"
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:4173"]
     host: str = "0.0.0.0"
     port: int = 8001
