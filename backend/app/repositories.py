@@ -1,4 +1,5 @@
 """Acceso a datos con SQL explícito (fuente de verdad: 001_schema_v5.sql)."""
+import json
 import uuid
 
 import polars as pl
@@ -252,3 +253,305 @@ def build_mention_groups(db: Session, studio_id: uuid.UUID) -> int:
         text("select count(*) from mention_groups where studio_id = :studio"),
         {"studio": studio_id},
     ).scalar()
+
+
+# =====================================================================
+# Centro de Resolución (Fase 4)
+# =====================================================================
+
+def _current_codebook_id(db: Session, studio_id: uuid.UUID) -> uuid.UUID | None:
+    return db.execute(
+        text("select id from codebooks where studio_id = :studio order by version desc limit 1"),
+        {"studio": studio_id},
+    ).scalar()
+
+
+def get_resolution_queue(
+    db: Session, studio_id: uuid.UUID, statuses: list[str], limit: int, offset: int
+) -> tuple[list[dict], int]:
+    """Grupos pendientes ordenados por frecuencia (impacto). `statuses` filtra mention_groups.status."""
+    rows = db.execute(
+        text("""
+            select g.id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
+                   c.id as suggested_code_id, c.code_number as suggested_code_number,
+                   c.label as suggested_code_label
+            from mention_groups g
+            left join codes c on c.id = g.suggested_code_id
+            where g.studio_id = :studio and g.status = any(:statuses)
+            order by g.frequency_count desc, g.normalized_text
+            limit :lim offset :off
+        """),
+        {"studio": studio_id, "statuses": statuses, "lim": limit, "off": offset},
+    ).mappings().all()
+
+    total = db.execute(
+        text("""
+            select count(*) from mention_groups
+            where studio_id = :studio and status = any(:statuses)
+        """),
+        {"studio": studio_id, "statuses": statuses},
+    ).scalar()
+
+    items = [
+        {
+            "id": str(r["id"]),
+            "normalized_text": r["normalized_text"],
+            "sample_text": r["sample_text"],
+            "frequency_count": r["frequency_count"],
+            "status": r["status"],
+            "suggested_code": (
+                {
+                    "id": str(r["suggested_code_id"]),
+                    "code_number": r["suggested_code_number"],
+                    "label": r["suggested_code_label"],
+                }
+                if r["suggested_code_id"]
+                else None
+            ),
+        }
+        for r in rows
+    ]
+    return items, total
+
+
+def get_resolution_summary(db: Session, studio_id: uuid.UUID) -> dict:
+    counts = db.execute(
+        text("select status, count(*) as n from mention_groups where studio_id = :studio group by status"),
+        {"studio": studio_id},
+    ).mappings().all()
+    by_status = {r["status"]: r["n"] for r in counts}
+    pending = by_status.get("anomaly", 0) + by_status.get("below_threshold", 0) + by_status.get("pending_review", 0)
+    auto_coded = by_status.get("auto_coded", 0)
+    resolved = by_status.get("resolved", 0)
+    total = pending + auto_coded + resolved
+    return {
+        "pending": pending,
+        "auto_coded": auto_coded,
+        "resolved": resolved,
+        "progress_pct": round((resolved + auto_coded) / total * 100, 1) if total else 0.0,
+        "can_close": pending == 0,
+    }
+
+
+def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) -> dict | None:
+    group = db.execute(
+        text("""
+            select g.id, g.studio_id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
+                   c.id as suggested_code_id, c.code_number as suggested_code_number,
+                   c.label as suggested_code_label
+            from mention_groups g
+            left join codes c on c.id = g.suggested_code_id
+            where g.id = :id
+        """),
+        {"id": group_id},
+    ).mappings().first()
+    if not group:
+        return None
+
+    samples = db.execute(
+        text("""
+            select original_text from verbatims
+            where mention_group_id = :id
+            order by created_at
+            limit :lim
+        """),
+        {"id": group_id, "lim": sample_limit},
+    ).scalars().all()
+
+    verbatims_count = db.execute(
+        text("select count(*) from verbatims where mention_group_id = :id"),
+        {"id": group_id},
+    ).scalar()
+
+    return {
+        "id": str(group["id"]),
+        "studio_id": str(group["studio_id"]),
+        "normalized_text": group["normalized_text"],
+        "sample_text": group["sample_text"],
+        "frequency_count": group["frequency_count"],
+        "status": group["status"],
+        "verbatims_count": verbatims_count,
+        "samples": list(samples),
+        "suggested_code": (
+            {
+                "id": str(group["suggested_code_id"]),
+                "code_number": group["suggested_code_number"],
+                "label": group["suggested_code_label"],
+            }
+            if group["suggested_code_id"]
+            else None
+        ),
+    }
+
+
+def list_studio_codes(db: Session, studio_id: uuid.UUID, include_system: bool = False) -> list[dict]:
+    cb_id = _current_codebook_id(db, studio_id)
+    if not cb_id:
+        return []
+    rows = db.execute(
+        text("""
+            select c.id, c.code_number, c.label, c.is_system, n.name as net
+            from codes c
+            left join net_codes nc on nc.code_id = c.id
+            left join nets n on n.id = nc.net_id
+            where c.codebook_id = :cb and c.is_active
+              and (:include_system or not c.is_system)
+            order by c.code_number
+        """),
+        {"cb": cb_id, "include_system": include_system},
+    ).mappings().all()
+    return [
+        {
+            "id": str(r["id"]),
+            "code_number": r["code_number"],
+            "label": r["label"],
+            "net": r["net"],
+            "is_system": r["is_system"],
+        }
+        for r in rows
+    ]
+
+
+def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UUID | None, user_id) -> dict:
+    """Crea un código nuevo (deduplicado por normalize(label)); si ya existe, lo retorna."""
+    norm_label = normalize(label)
+    existing = db.execute(
+        text("""
+            select id, code_number, label from codes
+            where codebook_id = :cb and is_active and lower(label) = lower(:label)
+            limit 1
+        """),
+        {"cb": codebook_id, "label": label},
+    ).mappings().first()
+    if not existing:
+        rows = db.execute(
+            text("select id, code_number, label from codes where codebook_id = :cb and is_active"),
+            {"cb": codebook_id},
+        ).mappings().all()
+        for r in rows:
+            if normalize(r["label"]) == norm_label:
+                existing = r
+                break
+
+    if existing:
+        return {"id": str(existing["id"]), "code_number": existing["code_number"], "label": existing["label"], "is_new": False}
+
+    next_number = db.execute(
+        text("select coalesce(max(code_number), 0) + 1 from codes where codebook_id = :cb and not is_system"),
+        {"cb": codebook_id},
+    ).scalar()
+
+    code_id = uuid.uuid4()
+    db.execute(
+        text("""
+            insert into codes (id, codebook_id, code_number, label, origin, is_system, created_by)
+            values (:id, :cb, :n, :l, 'analyst_manual', false, :u)
+        """),
+        {"id": code_id, "cb": codebook_id, "n": next_number, "l": label, "u": user_id},
+    )
+    if net_id:
+        db.execute(
+            text("""
+                insert into net_codes (id, net_id, code_id)
+                values (:id, :n, :c)
+                on conflict (net_id, code_id) do nothing
+            """),
+            {"id": uuid.uuid4(), "n": net_id, "c": code_id},
+        )
+    return {"id": str(code_id), "code_number": next_number, "label": label, "is_new": True}
+
+
+def deactivate_group_codes(db: Session, group_id: uuid.UUID) -> None:
+    """Preserva histórico: para reasignaciones, apaga las relaciones viejas en vez de borrarlas."""
+    db.execute(
+        text("""
+            update verbatim_codes set is_active = false
+            where is_active and verbatim_id in (
+                select id from verbatims where mention_group_id = :gid
+            )
+        """),
+        {"gid": group_id},
+    )
+
+
+def assign_codes_to_group(
+    db: Session, group_id: uuid.UUID, code_ids: list[uuid.UUID], source: str, user_id
+) -> int:
+    """Propaga code_ids (en orden -> output_index 1..N) a todos los verbatims del grupo."""
+    verbatim_ids = db.execute(
+        text("select id from verbatims where mention_group_id = :gid"),
+        {"gid": group_id},
+    ).scalars().all()
+
+    for vid in verbatim_ids:
+        for idx, code_id in enumerate(code_ids, start=1):
+            db.execute(
+                text("""
+                    insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, assigned_by, is_active)
+                    values (:id, :vid, :cid, :idx, :src, :u, true)
+                    on conflict (verbatim_id, code_id) do update set
+                      output_index = excluded.output_index,
+                      source = excluded.source,
+                      assigned_by = excluded.assigned_by,
+                      is_active = true
+                """),
+                {"id": uuid.uuid4(), "vid": vid, "cid": code_id, "idx": idx, "src": source, "u": user_id},
+            )
+    return len(verbatim_ids)
+
+
+def mark_group_resolved(db: Session, group_id: uuid.UUID, user_id) -> None:
+    db.execute(
+        text("""
+            update mention_groups set status = 'resolved', resolved_by = :u, resolved_at = now()
+            where id = :gid
+        """),
+        {"gid": group_id, "u": user_id},
+    )
+    db.execute(
+        text("update verbatims set coding_status = 'manually_coded' where mention_group_id = :gid"),
+        {"gid": group_id},
+    )
+
+
+def add_alias_from_group(db: Session, codebook_id: uuid.UUID, code_id: uuid.UUID, group: dict) -> None:
+    norm = group["normalized_text"]
+    if not norm:
+        return
+    db.execute(
+        text("""
+            insert into code_aliases (id, codebook_id, code_id, alias_normalized, alias_sample, origin)
+            values (:id, :cb, :c, :norm, :sample, 'analyst_manual')
+            on conflict (codebook_id, alias_normalized, code_id) do nothing
+        """),
+        {"id": uuid.uuid4(), "cb": codebook_id, "c": code_id, "norm": norm, "sample": group.get("sample_text")},
+    )
+
+
+def log_action(
+    db: Session,
+    user_id,
+    studio_id: uuid.UUID,
+    entity_name: str,
+    entity_id: uuid.UUID,
+    action: str,
+    old_value: dict | None = None,
+    new_value: dict | None = None,
+) -> None:
+    db.execute(
+        text("""
+            insert into audit_logs (id, user_id, studio_id, entity_name, entity_id, action, old_value, new_value)
+            values (:id, :u, :studio, :entity, :eid, :action,
+                    cast(:old as jsonb), cast(:new as jsonb))
+        """),
+        {
+            "id": uuid.uuid4(),
+            "u": user_id,
+            "studio": studio_id,
+            "entity": entity_name,
+            "eid": entity_id,
+            "action": action,
+            "old": json.dumps(old_value) if old_value is not None else None,
+            "new": json.dumps(new_value) if new_value is not None else None,
+        },
+    )

@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     # auto_coded, regardless of which code_numbers it returned.
     llm_confidence_threshold: float = 0.6
 
+    # Resolution Center (Fase 4): grupo descartado -> este code_number del codebook.
+    discard_code_number: int = 95
+    allow_pure_discard: bool = False
+    resolution_include_auto_coded: bool = True
+
     # local  -> local Postgres (docker-compose db service), filesystem storage,
     #           auth bypassed with a fixed dev user. No Supabase calls, no quota spent.
     # supabase -> real Supabase Postgres/Storage/Auth.

@@ -1,0 +1,154 @@
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.core.auth import CurrentUser, current_user
+from app.core.config import settings
+from app.core.database import get_db
+from app.pipeline.resolution import BelowThresholdError, ResolutionConflict, resolve_group
+from app.repositories import (
+    _current_codebook_id,
+    create_code,
+    get_group_detail,
+    get_resolution_queue,
+    get_resolution_summary,
+    list_studio_codes,
+)
+
+router = APIRouter(prefix="/api/v1", tags=["resolution"])
+
+DEFAULT_STATUSES = ["anomaly", "below_threshold", "pending_review"]
+
+
+def _default_statuses() -> list[str]:
+    return [*DEFAULT_STATUSES, "auto_coded"] if settings.resolution_include_auto_coded else list(DEFAULT_STATUSES)
+
+
+@router.get("/studios/{studio_id}/resolution/queue")
+def resolution_queue(
+    studio_id: uuid.UUID,
+    statuses: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    status_list = statuses.split(",") if statuses else _default_statuses()
+    items, total = get_resolution_queue(db, studio_id, status_list, limit, offset)
+    return {"total": total, "items": items}
+
+
+@router.get("/studios/{studio_id}/resolution/summary")
+def resolution_summary(
+    studio_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    return get_resolution_summary(db, studio_id)
+
+
+@router.get("/studios/{studio_id}/codes")
+def studio_codes(
+    studio_id: uuid.UUID,
+    include_system: bool = False,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    return list_studio_codes(db, studio_id, include_system)
+
+
+class NewCodeIn(BaseModel):
+    label: str
+    net_id: uuid.UUID | None = None
+
+
+@router.post("/studios/{studio_id}/codes", status_code=201)
+def create_studio_code(
+    studio_id: uuid.UUID,
+    payload: NewCodeIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    cb_id = _current_codebook_id(db, studio_id)
+    if not cb_id:
+        raise HTTPException(404, "Estudio no tiene codebook")
+    result = create_code(db, cb_id, payload.label, payload.net_id, user["id"])
+    db.commit()
+    return result
+
+
+@router.get("/mention-groups/{group_id}")
+def mention_group_detail(
+    group_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    detail = get_group_detail(db, group_id)
+    if not detail:
+        raise HTTPException(404, "Grupo no encontrado")
+    return detail
+
+
+class ResolveDecision(BaseModel):
+    action: str  # "approve" | "discard"
+    code_ids: list[uuid.UUID] = []
+    new_code: NewCodeIn | None = None
+    add_alias: bool = False
+    expected_status: str | None = None
+
+
+@router.post("/mention-groups/{group_id}/resolve")
+def resolve_mention_group(
+    group_id: uuid.UUID,
+    payload: ResolveDecision,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    detail = get_group_detail(db, group_id)
+    if not detail:
+        raise HTTPException(404, "Grupo no encontrado")
+
+    decision = payload.model_dump(mode="json", exclude={"expected_status"})
+    try:
+        return resolve_group(
+            db, uuid.UUID(detail["studio_id"]), group_id, decision,
+            user_id=user["id"], expected_status=payload.expected_status,
+        )
+    except ResolutionConflict as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    except BelowThresholdError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+
+
+class BulkResolveIn(BaseModel):
+    group_ids: list[uuid.UUID]
+    decision: ResolveDecision
+
+
+@router.post("/studios/{studio_id}/resolution/bulk")
+def bulk_resolve(
+    studio_id: uuid.UUID,
+    payload: BulkResolveIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    decision = payload.decision.model_dump(mode="json", exclude={"expected_status"})
+    resolved, failed = [], []
+    for gid in payload.group_ids:
+        try:
+            result = resolve_group(db, studio_id, gid, decision, user_id=user["id"])
+            resolved.append(result)
+        except (ResolutionConflict, BelowThresholdError, LookupError, ValueError) as exc:
+            db.rollback()
+            failed.append({"group_id": str(gid), "error": str(exc)})
+    return {"resolved": resolved, "failed": failed}
