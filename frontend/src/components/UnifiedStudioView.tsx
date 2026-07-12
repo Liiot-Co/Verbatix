@@ -2,24 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight,
-  Keyboard, PartyPopper, RefreshCw, Search, Sparkles, Bot, UserCheck,
+  Keyboard, PartyPopper, RefreshCw, Search,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getPreliminary, getStudio, getVerbatims, processStudio } from "@/api/client";
-import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim, VerbatimCode } from "@/api/types";
+import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
-
-function engineLabel(code: VerbatimCode): { text: string; icon: typeof Sparkles } {
-  if (code.source === "analyst_manual" || code.source === "audit_correction")
-    return { text: "Manual", icon: UserCheck };
-  if (code.source === "homologation")
-    return { text: "Homologado", icon: UserCheck };
-  if (code.confidence_score != null)
-    return { text: `Fuzzy ${Math.round(code.confidence_score * 100)}%`, icon: Sparkles };
-  return { text: "LLM", icon: Bot };
-}
 
 const PAGE_SIZE = 50;
 
@@ -388,22 +378,17 @@ export default function UnifiedStudioView() {
                       <span className="text-xs text-p-text-faint">—</span>
                     ) : (
                       <div className="flex flex-col gap-1">
-                        {v.codes.map((code, i) => {
-                          const engine = engineLabel(code);
-                          const EngineIcon = engine.icon;
-                          return (
-                            <div key={i} className="flex items-center gap-1.5" title={code.matched_alias ? `Matcheó con "${code.matched_alias}"` : undefined}>
-                              <span className="text-xs font-medium text-p-text">
-                                {code.net ? <span className="text-p-text-faint">{code.net}/</span> : null}
-                                {code.label}
-                              </span>
-                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-p-border bg-p-bg-subtle text-p-text-muted">
-                                <EngineIcon className="w-3 h-3" />
-                                {engine.text}
-                              </span>
-                            </div>
-                          );
-                        })}
+                        {v.codes.map((code, i) => (
+                          <div key={i} className="flex items-center gap-1.5" title={code.matched_alias ? `Matcheó con "${code.matched_alias}"` : undefined}>
+                            <span className="inline-flex items-center justify-center text-[10px] font-semibold w-5 h-5 rounded-full border border-p-border bg-p-bg-subtle text-p-text-muted shrink-0">
+                              {code.code_number}
+                            </span>
+                            <span className="text-xs font-medium text-p-text">
+                              {code.net ? <span className="text-p-text-faint">{code.net}/</span> : null}
+                              {code.label}
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </td>
