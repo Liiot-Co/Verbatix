@@ -386,10 +386,7 @@ export default function UnifiedStudioView() {
                             <span className="inline-flex items-center justify-center text-[10px] font-semibold w-5 h-5 rounded-full border border-p-border bg-p-bg-subtle text-p-text-muted shrink-0">
                               {code.code_number}
                             </span>
-                            <span className="text-xs font-medium text-p-text">
-                              {code.net ? <span className="text-p-text-faint">{code.net}/</span> : null}
-                              {code.label}
-                            </span>
+                            <span className="text-xs font-medium text-p-text">{code.label}</span>
                           </div>
                         ))}
                       </div>
