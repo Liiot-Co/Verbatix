@@ -210,3 +210,82 @@ export interface UserProfile {
   is_active: boolean;
   created_at: string;
 }
+
+/* ── Resolution Center (Fase 4) ── */
+
+export type MentionGroupStatus = "auto_coded" | "below_threshold" | "anomaly" | "pending_review" | "resolved";
+
+export interface StudioCode {
+  id: string;
+  code_number: number;
+  label: string;
+  net: string | null;
+  is_system: boolean;
+}
+
+export interface CodeSuggestion {
+  id: string;
+  code_number: number;
+  label: string;
+}
+
+export interface ResolutionQueueItem {
+  id: string;
+  normalized_text: string;
+  sample_text: string | null;
+  frequency_count: number;
+  status: MentionGroupStatus;
+  suggested_code: CodeSuggestion | null;
+}
+
+export interface ResolutionQueue {
+  total: number;
+  items: ResolutionQueueItem[];
+}
+
+export interface ResolutionSummary {
+  pending: number;
+  auto_coded: number;
+  resolved: number;
+  progress_pct: number;
+  can_close: boolean;
+}
+
+export interface MentionGroupDetail {
+  id: string;
+  studio_id: string;
+  normalized_text: string;
+  sample_text: string | null;
+  frequency_count: number;
+  status: MentionGroupStatus;
+  verbatims_count: number;
+  samples: string[];
+  suggested_code: CodeSuggestion | null;
+}
+
+export interface NewCodeInput {
+  label: string;
+  net_id?: string | null;
+}
+
+export interface ResolveDecision {
+  action: "approve" | "discard";
+  code_ids: string[];
+  new_code?: NewCodeInput | null;
+  add_alias?: boolean;
+  expected_status?: MentionGroupStatus | null;
+}
+
+export interface ResolveResult {
+  group_id: string;
+  status: "resolved";
+  already_resolved: boolean;
+  codes_assigned: StudioCode[];
+  verbatims_updated: number;
+  new_code: { id: string; code_number: number; label: string; is_new: boolean } | null;
+}
+
+export interface BulkResolveResult {
+  resolved: ResolveResult[];
+  failed: { group_id: string; error: string }[];
+}

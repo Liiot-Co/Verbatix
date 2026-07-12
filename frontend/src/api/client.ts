@@ -1,16 +1,25 @@
 import type {
+  BulkResolveResult,
   ColumnMap,
   ImportResult,
   LoginPayload,
   LoginResponse,
+  MentionGroupDetail,
+  MentionGroupStatus,
+  NewCodeInput,
   PreliminarySummary,
   ProcessResult,
   ProjectDetail,
   ProjectListItem,
+  ResolutionQueue,
+  ResolutionSummary,
+  ResolveDecision,
+  ResolveResult,
   Round,
   SignupPayload,
   SignupResponse,
   Studio,
+  StudioCode,
   StudioStatus,
   UploadedFile,
   UserProfile,
@@ -204,4 +213,58 @@ export async function processStudio(studioId: string): Promise<ProcessResult> {
 
 export async function getPreliminary(studioId: string): Promise<PreliminarySummary> {
   return request<PreliminarySummary>(`/studios/${studioId}/preliminary`);
+}
+
+/* ── Resolution Center (Fase 4) ── */
+
+export async function getResolutionQueue(
+  studioId: string,
+  limit = 50,
+  offset = 0,
+  statuses?: MentionGroupStatus[]
+): Promise<ResolutionQueue> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (statuses?.length) qs.set("statuses", statuses.join(","));
+  return request<ResolutionQueue>(`/studios/${studioId}/resolution/queue?${qs.toString()}`);
+}
+
+export async function getResolutionSummary(studioId: string): Promise<ResolutionSummary> {
+  return request<ResolutionSummary>(`/studios/${studioId}/resolution/summary`);
+}
+
+export async function getStudioCodes(studioId: string, includeSystem = false): Promise<StudioCode[]> {
+  const qs = new URLSearchParams({ include_system: String(includeSystem) });
+  return request<StudioCode[]>(`/studios/${studioId}/codes?${qs.toString()}`);
+}
+
+export async function createStudioCode(studioId: string, input: NewCodeInput): Promise<StudioCode> {
+  return request<StudioCode>(`/studios/${studioId}/codes`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getMentionGroup(groupId: string): Promise<MentionGroupDetail> {
+  return request<MentionGroupDetail>(`/mention-groups/${groupId}`);
+}
+
+export async function resolveMentionGroup(groupId: string, decision: ResolveDecision): Promise<ResolveResult> {
+  return request<ResolveResult>(`/mention-groups/${groupId}/resolve`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(decision),
+  });
+}
+
+export async function bulkResolve(
+  studioId: string,
+  groupIds: string[],
+  decision: ResolveDecision
+): Promise<BulkResolveResult> {
+  return request<BulkResolveResult>(`/studios/${studioId}/resolution/bulk`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ group_ids: groupIds, decision }),
+  });
 }

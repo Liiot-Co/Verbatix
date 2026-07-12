@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight,
   Keyboard, PartyPopper, RefreshCw, Search, Sparkles, Bot, UserCheck,
@@ -305,16 +305,19 @@ export default function UnifiedStudioView() {
               <div className="text-2xl font-bold text-p-text">{autoCoded + resolved}</div>
               <p className="text-xs text-p-text-faint">Grupos que el motor resolvió solo (o ya fueron revisados).</p>
             </div>
-            <div className="card p-4 space-y-2">
+            <Link
+              to={`/studios/${studioId}/resolution`}
+              className="card p-4 space-y-2 block hover:border-p-warning/50 transition-colors"
+            >
               <div className="flex items-center gap-2 text-p-warning">
                 <AlertTriangle className="w-4 h-4" />
                 <span className="text-xs font-semibold uppercase tracking-wide">Pendiente</span>
               </div>
               <div className="text-2xl font-bold text-p-text">{pendingReview + anomalies}</div>
               <p className="text-xs text-p-text-faint">
-                {pendingReview} sin procesar todavía · {anomalies} menciones confusas
+                {pendingReview} sin procesar todavía · {anomalies} menciones confusas — ir al Centro de Resolución
               </p>
-            </div>
+            </Link>
           </div>
         </>
       )}
