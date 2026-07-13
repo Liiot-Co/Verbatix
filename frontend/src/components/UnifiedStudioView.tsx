@@ -322,9 +322,9 @@ export default function UnifiedStudioView() {
 
       </div>
 
-      {preliminary && !isProcessingNow && (
+      {preliminary && !isProcessingNow && !fullscreenResolution && (
         <div className="order-1 xl:order-none xl:sticky xl:top-4 h-auto xl:h-[calc(100vh-5rem)] relative">
-          <div 
+          <div
             className="hidden xl:flex absolute -left-4 top-0 w-4 h-full cursor-col-resize items-center justify-center z-10 opacity-0 hover:opacity-100 transition-opacity group"
             onMouseDown={startResizing}
             title="Ajustar ancho"

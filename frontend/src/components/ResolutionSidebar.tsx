@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { AlertTriangle, Check, CheckCircle2, Maximize2, Plus, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  ApiError,
   getMentionGroup,
   getResolutionQueue,
   getResolutionSummary,
@@ -154,6 +155,21 @@ export default function ResolutionSidebar({
     });
   }, [studioId]);
 
+  // La cola local se agota mucho antes que el total del backend porque el fetch
+  // inicial trae una sola página: cuando queda poco en memoria pero el backend
+  // reporta más pendientes, se reconsulta offset 0 (los ya resueltos ya no vienen)
+  // y se agregan los que falten.
+  useEffect(() => {
+    if (loading || queue.length >= 10 || queue.length >= total) return;
+    getResolutionQueue(studioId, PAGE_SIZE, 0).then((res) => {
+      setQueue((q) => {
+        const ids = new Set(q.map((g) => g.id));
+        return [...q, ...res.items.filter((g) => !ids.has(g.id))];
+      });
+      setTotal(res.total);
+    });
+  }, [studioId, loading, queue.length, total]);
+
   const loadSummary = useCallback(() => {
     return getResolutionSummary(studioId).then(setSummary);
   }, [studioId]);
@@ -229,14 +245,19 @@ export default function ResolutionSidebar({
         }
         loadSummary();
         onResolved?.();
-      } catch {
+      } catch (err) {
         rollback();
         setResolvedThisSession((n) => Math.max(0, n - 1));
-        showToast("No se pudo resolver el grupo. Intenta de nuevo.", "error");
+        if (err instanceof ApiError && (err.status === 409 || err.status === 422)) {
+          showToast(err.message, "error");
+          if (err.status === 409) loadQueue();
+        } else {
+          showToast("No se pudo resolver el grupo. Intenta de nuevo.", "error");
+        }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [queue, loadSummary, showToast, onResolved]
+    [queue, loadQueue, loadSummary, showToast, onResolved]
   );
 
   // Exit animation plays for 230ms while the (already-optimistic) resolve happens
@@ -430,7 +451,7 @@ export default function ResolutionSidebar({
     return { opacity: 0, y: 12, scale: 0.97 };
   }, [cardExiting, cardVisible]);
 
-  const allResolved = !loading && queue.length === 0;
+  const allResolved = !loading && queue.length === 0 && total === 0;
 
   return (
     <div ref={sidebarRef} className="card overflow-hidden flex flex-col h-full">
