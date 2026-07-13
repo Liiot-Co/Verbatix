@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, CheckCircle2, Maximize2, Plus, Sparkles } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { AlertTriangle, Check, CheckCircle2, Maximize2, Plus, Sparkles, Volume2, VolumeX } from "lucide-react";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
   ApiError,
   getMentionGroup,
@@ -12,7 +12,6 @@ import {
 } from "@/api/client";
 import type {
   MentionGroupDetail,
-  MentionGroupStatus,
   ResolutionQueueItem,
   ResolutionSummary,
   ResolveDecision,
@@ -20,17 +19,10 @@ import type {
 } from "@/api/types";
 import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { STATUS_CHIP } from "@/lib/resolutionStatus";
 
 const PAGE_SIZE = 50;
 const MAX_DOTS = 12;
-
-const STATUS_CHIP: Record<MentionGroupStatus, { label: string; className: string }> = {
-  anomaly: { label: "Confusa", className: "badge-error" },
-  below_threshold: { label: "Bajo umbral", className: "badge-warning" },
-  pending_review: { label: "Sin revisar", className: "badge-pending" },
-  auto_coded: { label: "Sugerido", className: "badge-auto" },
-  resolved: { label: "Resuelto", className: "badge-success" },
-};
 
 // Stable per-code color, same idea as the mockup's per-category hue.
 function codeColor(codeNumber: number): string {
@@ -121,7 +113,12 @@ export default function ResolutionSidebar({
     const saved = localStorage.getItem("resolution-auto-cols");
     return saved !== "false";
   });
+  const [soundMuted, setSoundMuted] = useState(() => localStorage.getItem("resolution-sound-muted") === "true");
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    localStorage.setItem("resolution-sound-muted", soundMuted ? "true" : "false");
+  }, [soundMuted]);
 
   useEffect(() => {
     localStorage.setItem("resolution-grid-cols", gridCols.toString());
@@ -337,7 +334,7 @@ export default function ResolutionSidebar({
     (direction: "up" | "down", groupId: string, decision: ResolveDecision) => {
       if (cardExiting || resolving) return;
       setResolving(true);
-      playSound(direction === "up" ? "discard" : "classify");
+      if (!soundMuted) playSound(direction === "up" ? "discard" : "classify");
       setCardExiting(direction);
       setCardVisible(false);
       resolve(groupId, decision);
@@ -348,7 +345,7 @@ export default function ResolutionSidebar({
         setTimeout(() => setCardVisible(true), 20);
       }, 230);
     },
-    [cardExiting, resolving, resolve]
+    [cardExiting, resolving, resolve, soundMuted]
   );
 
   const discardCurrent = useCallback(() => {
@@ -429,7 +426,7 @@ export default function ResolutionSidebar({
         description: "Navegar izquierda",
         category: "Navegación",
       },
-      { key: "d", action: discardCurrent, description: "Descartar", category: "Acciones" },
+      { key: "d", action: discardCurrent, description: "Sin dato (código de sistema)", category: "Acciones" },
       {
         key: "ArrowRight",
         action: () => {
@@ -524,12 +521,15 @@ export default function ResolutionSidebar({
     });
   }, [resolvedThisSession, queue.length]);
 
+  const reducedMotion = useReducedMotion();
+
   const cardMotion = useMemo(() => {
+    if (reducedMotion) return { opacity: cardVisible ? 1 : 0 };
     if (cardExiting === "up") return { opacity: 0, y: -80, rotate: -8 };
     if (cardExiting === "down") return { opacity: 0, y: 80, rotate: 5 };
     if (cardVisible) return { opacity: 1, y: 0, rotate: 0, scale: 1 };
     return { opacity: 0, y: 12, scale: 0.97 };
-  }, [cardExiting, cardVisible]);
+  }, [cardExiting, cardVisible, reducedMotion]);
 
   const allResolved = !loading && queue.length === 0 && total === 0;
 
@@ -539,6 +539,14 @@ export default function ResolutionSidebar({
         <div className="flex items-center justify-between text-sm font-bold text-p-text mb-2.5">
           <span>Centro de Resolución</span>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSoundMuted((m) => !m)}
+              className="text-p-text-faint hover:text-p-text transition-colors"
+              title={soundMuted ? "Activar sonido" : "Silenciar sonido"}
+              aria-label={soundMuted ? "Activar sonido" : "Silenciar sonido"}
+            >
+              {soundMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+            </button>
             {onExpand && (
               <button
                 onClick={onExpand}
@@ -593,7 +601,9 @@ export default function ResolutionSidebar({
                 <span className="font-mono text-[10.5px] tracking-wide uppercase text-p-accent">
                   Revisar · mención #{resolvedThisSession + 1}
                 </span>
-                <span className={STATUS_CHIP[detail.status].className}>{STATUS_CHIP[detail.status].label}</span>
+                <span className={STATUS_CHIP[detail.status].className} title={STATUS_CHIP[detail.status].hint}>
+                  {STATUS_CHIP[detail.status].label}
+                </span>
               </div>
               <div className="font-extrabold text-lg tracking-tight text-p-text mb-1.5">{detail.normalized_text}</div>
               <div className="font-mono text-[11px] text-p-text-faint mb-3">{detail.frequency_count} menciones</div>
@@ -659,10 +669,11 @@ export default function ResolutionSidebar({
                       ref={discardBtnRef}
                       onClick={discardCurrent}
                       disabled={resolving}
+                      title="Asigna un código de sistema (NS/NC, Ninguna, Confusas...)"
                       className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg border border-p-border bg-p-bg-subtle text-sm text-p-text-muted hover:bg-p-surface transition-colors"
                     >
                       <kbd className="kbd-hint">d</kbd>
-                      <span>Descartar</span>
+                      <span>Sin dato</span>
                     </button>
                     
                     {/* Radial Discard Menu (Game-like Popover via Portal) */}
@@ -691,10 +702,14 @@ export default function ResolutionSidebar({
                                 return (
                                   <motion.button
                                     key={sc.id}
-                                    initial={{ opacity: 0, x: 0, y: 0, scale: 0.1 }}
+                                    initial={reducedMotion ? { opacity: 0, x: tx, y: ty, scale: 1 } : { opacity: 0, x: 0, y: 0, scale: 0.1 }}
                                     animate={{ opacity: 1, x: tx, y: ty, scale: 1 }}
-                                    exit={{ opacity: 0, x: 0, y: 0, scale: 0.1, transition: { duration: 0.15 } }}
-                                    transition={{ duration: 0.3, delay: i * 0.04, type: "spring", stiffness: 350, damping: 22 }}
+                                    exit={{ opacity: 0, transition: { duration: 0.1 } }}
+                                    transition={
+                                      reducedMotion
+                                        ? { duration: 0.12 }
+                                        : { duration: 0.3, delay: i * 0.04, type: "spring", stiffness: 350, damping: 22 }
+                                    }
                                     onClick={() => { assignCode(sc.id); setShowDiscardMenu(false); }}
                                     className={[
                                       "absolute -ml-[45px] -mt-[40px] flex flex-col items-center justify-center p-2 rounded-2xl border-2 shadow-xl bg-p-surface transition-colors cursor-pointer",
@@ -831,7 +846,7 @@ export default function ResolutionSidebar({
               <kbd className="kbd-hint">↵</kbd>Asignar
             </span>
             <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-              <kbd className="kbd-hint">d</kbd>Descartar
+              <kbd className="kbd-hint">d</kbd>Sin dato
             </span>
             <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
               <kbd className="kbd-hint">n</kbd>Nueva marca

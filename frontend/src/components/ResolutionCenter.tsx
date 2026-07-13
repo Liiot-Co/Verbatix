@@ -2,20 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Sparkles, X } from "lucide-react";
 import { bulkResolve, getResolutionQueue, getResolutionSummary, getStudioCodes } from "@/api/client";
-import type { MentionGroupStatus, ResolutionQueueItem, ResolutionSummary, StudioCode } from "@/api/types";
+import type { ResolutionQueueItem, ResolutionSummary, StudioCode } from "@/api/types";
 import ResolutionSidebar from "./ResolutionSidebar";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { STATUS_CHIP } from "@/lib/resolutionStatus";
 
 const PAGE_SIZE = 50;
-
-const STATUS_CHIP: Record<MentionGroupStatus, { label: string; className: string }> = {
-  anomaly: { label: "Confusa", className: "badge-error" },
-  below_threshold: { label: "Bajo umbral", className: "badge-warning" },
-  pending_review: { label: "Sin revisar", className: "badge-pending" },
-  auto_coded: { label: "Sugerido", className: "badge-auto" },
-  resolved: { label: "Resuelto", className: "badge-success" },
-};
 
 /** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
 export default function ResolutionCenter({ studioId, onClose }: { studioId: string; onClose: () => void }) {
@@ -204,7 +197,9 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
                     <span className="text-xs text-p-text-faint shrink-0">×{g.frequency_count}</span>
                   </div>
                   <div className="flex items-center gap-1.5 mt-1">
-                    <span className={STATUS_CHIP[g.status].className}>{STATUS_CHIP[g.status].label}</span>
+                    <span className={STATUS_CHIP[g.status].className} title={STATUS_CHIP[g.status].hint}>
+                      {STATUS_CHIP[g.status].label}
+                    </span>
                     {g.suggested_code && (
                       <span className="text-[10px] text-p-text-faint flex items-center gap-1">
                         <Sparkles className="w-3 h-3" /> {g.suggested_code.label}
