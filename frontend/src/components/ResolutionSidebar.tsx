@@ -76,12 +76,17 @@ export default function ResolutionSidebar({
   studioId,
   onResolved,
   onExpand,
+  focusGroupId,
+  onFocusHandled,
 }: {
   studioId: string;
   /** Called after each successful resolve — lets a parent (e.g. a queue list) refresh. */
   onResolved?: () => void;
   /** Shows a fullscreen-expand button in the header when provided. */
   onExpand?: () => void;
+  /** Brings a specific group to the front of the local queue (e.g. clicked from a passive list). */
+  focusGroupId?: string | null;
+  onFocusHandled?: () => void;
 }) {
   const showToast = useVerbatixStore((s) => s.showToast);
   const newCodeInputRef = useRef<HTMLInputElement>(null);
@@ -145,6 +150,18 @@ export default function ResolutionSidebar({
   }, [autoCols]);
 
   const currentCard = queue[0] ?? null;
+
+  useEffect(() => {
+    if (!focusGroupId) return;
+    setQueue((q) => {
+      const idx = q.findIndex((g) => g.id === focusGroupId);
+      if (idx <= 0) return q;
+      const target = q[idx]!;
+      return [target, ...q.slice(0, idx), ...q.slice(idx + 1)];
+    });
+    onFocusHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusGroupId]);
 
   const loadQueue = useCallback(() => {
     return getResolutionQueue(studioId, PAGE_SIZE, 0).then((res) => {
