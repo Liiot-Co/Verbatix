@@ -1,0 +1,67 @@
+import { RefreshCw } from "lucide-react";
+import { motion } from "framer-motion";
+import type { StudioStatus } from "@/api/types";
+
+interface StudioHeaderProps {
+  studio: StudioStatus;
+  autoProcessing: boolean;
+  neverProcessed: boolean;
+  isProcessingNow: boolean;
+  onProcess: () => void;
+}
+
+export function StudioHeader({
+  studio,
+  autoProcessing,
+  neverProcessed,
+  isProcessingNow,
+  onProcess,
+}: StudioHeaderProps) {
+  return (
+    <div className="flex items-start justify-between gap-4 flex-wrap">
+      <div className="space-y-1">
+        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">{studio.name}</h1>
+        <p className="font-subtitle text-sm text-p-text-muted">
+          {studio.coding_type === "brands" ? "Marcas" : "Razones"} · {studio.counters.verbatims_total} verbatims · estado: {studio.status}
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        {autoProcessing && (
+          <span className="flex items-center gap-1.5 text-xs text-p-accent">
+            <motion.span
+              animate={{ opacity: [1, 0.3, 1] }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+              className="w-2 h-2 rounded-full bg-p-accent"
+            />
+            En vivo
+          </span>
+        )}
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          className={neverProcessed ? "btn-primary text-sm py-2" : "btn-ghost text-sm py-2"}
+          disabled={isProcessingNow}
+          onClick={onProcess}
+          title={
+            autoProcessing
+              ? "El motor ya está codificando en segundo plano"
+              : neverProcessed
+              ? "Codificar automáticamente"
+              : "Volver a correr el motor sobre lo pendiente"
+          }
+        >
+          {isProcessingNow ? (
+            <motion.span
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+              className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full"
+            />
+          ) : (
+            <RefreshCw className="w-4 h-4" />
+          )}
+          {isProcessingNow ? "Procesando..." : neverProcessed ? "Procesar" : "Reprocesar"}
+        </motion.button>
+      </div>
+    </div>
+  );
+}
