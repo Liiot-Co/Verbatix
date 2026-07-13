@@ -17,12 +17,15 @@ import type {
   ResolveDecision,
   StudioCode,
 } from "@/api/types";
-import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { modLabel, registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 
 const PAGE_SIZE = 50;
 const GRID_COLS = 2;
 const MAX_DOTS = 12;
+// Grace window before a discard/assign actually hits the server — long enough
+// for a Ctrl+Z, short enough to not pile up more than one undoable action.
+const UNDO_WINDOW_MS = 5000;
 
 const STATUS_CHIP: Record<MentionGroupStatus, { label: string; className: string }> = {
   anomaly: { label: "Confusa", className: "badge-error" },
@@ -143,45 +146,86 @@ export default function ResolutionSidebar({
     setNavCodeIndex(idx >= 0 ? idx : 0);
   }, [detail, codes]);
 
-  const applyOptimisticRemoval = (groupId: string) => {
-    const snapshot = queue;
-    const next = snapshot.filter((g) => g.id !== groupId);
-    setQueue(next);
-    setTotal((t) => Math.max(0, t - 1));
-    return () => {
-      setQueue(snapshot);
-      setTotal((t) => t + 1);
-    };
-  };
+  // The last discard/assign sits here for UNDO_WINDOW_MS before it's actually
+  // sent to the server — Ctrl+Z (or the toast's "Deshacer") cancels the timer
+  // and puts the card back instead of issuing a compensating request.
+  const pendingRef = useRef<{ item: ResolutionQueueItem; decision: ResolveDecision; timer: ReturnType<typeof setTimeout> } | null>(
+    null
+  );
 
-  const resolve = useCallback(
-    async (groupId: string, decision: ResolveDecision) => {
-      const rollback = applyOptimisticRemoval(groupId);
-      setResolvedThisSession((n) => n + 1);
+  const commitAction = useCallback(
+    async (item: ResolutionQueueItem, decision: ResolveDecision) => {
       try {
-        await resolveMentionGroup(groupId, decision);
+        await resolveMentionGroup(item.id, decision);
         loadSummary();
         onResolved?.();
       } catch {
-        rollback();
+        setQueue((q) => [item, ...q]);
+        setTotal((t) => t + 1);
         setResolvedThisSession((n) => Math.max(0, n - 1));
         showToast("No se pudo resolver el grupo. Intenta de nuevo.", "error");
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [queue, loadSummary, showToast, onResolved]
+    [loadSummary, onResolved, showToast]
   );
 
-  // Exit animation plays for 230ms while the (already-optimistic) resolve happens
-  // underneath, then the new current card fades back in — same timing as the mockup.
+  const flushPending = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingRef.current = null;
+    commitAction(pending.item, pending.decision);
+  }, [commitAction]);
+
+  const undoPending = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingRef.current = null;
+    setQueue((q) => [pending.item, ...q]);
+    setTotal((t) => t + 1);
+    setResolvedThisSession((n) => Math.max(0, n - 1));
+    showToast("Deshecho", "info");
+  }, [showToast]);
+
+  // Flush (not discard) any pending action if the studio changes or the
+  // sidebar unmounts, so a fast Ctrl+Z window never loses a write.
+  useEffect(() => {
+    return () => {
+      const pending = pendingRef.current;
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      pendingRef.current = null;
+      resolveMentionGroup(pending.item.id, pending.decision).catch(() => {});
+    };
+  }, [studioId]);
+
+  const scheduleAction = useCallback(
+    (item: ResolutionQueueItem, decision: ResolveDecision, toastMessage: string) => {
+      flushPending();
+      const timer = setTimeout(() => {
+        pendingRef.current = null;
+        commitAction(item, decision);
+      }, UNDO_WINDOW_MS);
+      pendingRef.current = { item, decision, timer };
+      showToast(toastMessage, "info", { label: "Deshacer (Ctrl+Z)", onAction: undoPending });
+    },
+    [flushPending, commitAction, showToast, undoPending]
+  );
+
+  // Exit animation plays for 230ms while the queue/session counters update
+  // optimistically underneath, then the new current card fades back in.
   const playAndResolve = useCallback(
-    (direction: "up" | "down", groupId: string, decision: ResolveDecision) => {
+    (direction: "up" | "down", item: ResolutionQueueItem, decision: ResolveDecision, toastMessage: string) => {
       if (cardExiting || resolving) return;
       setResolving(true);
       playSound(direction === "up" ? "discard" : "classify");
       setCardExiting(direction);
       setCardVisible(false);
-      resolve(groupId, decision);
+      setQueue((q) => q.filter((g) => g.id !== item.id));
+      setTotal((t) => Math.max(0, t - 1));
+      setResolvedThisSession((n) => n + 1);
+      scheduleAction(item, decision, toastMessage);
       setTimeout(() => {
         setCardExiting(null);
         setCardVisible(false);
@@ -189,25 +233,31 @@ export default function ResolutionSidebar({
         setTimeout(() => setCardVisible(true), 20);
       }, 230);
     },
-    [cardExiting, resolving, resolve]
+    [cardExiting, resolving, scheduleAction]
   );
 
   const discardCurrent = useCallback(() => {
     if (!currentCard) return;
-    playAndResolve("up", currentCard.id, { action: "discard", code_ids: [], add_alias: false });
+    playAndResolve(
+      "up",
+      currentCard,
+      { action: "discard", code_ids: [], add_alias: false },
+      `"${currentCard.normalized_text}" descartado`
+    );
   }, [currentCard, playAndResolve]);
 
   const assignCode = useCallback(
     (codeId: string) => {
       if (!currentCard) return;
-      playAndResolve("down", currentCard.id, {
-        action: "approve",
-        code_ids: [codeId],
-        new_code: null,
-        add_alias: addAlias,
-      });
+      const code = codes.find((c) => c.id === codeId);
+      playAndResolve(
+        "down",
+        currentCard,
+        { action: "approve", code_ids: [codeId], new_code: null, add_alias: addAlias },
+        `"${currentCard.normalized_text}" → ${code?.label ?? noun}`
+      );
     },
-    [currentCard, addAlias, playAndResolve]
+    [currentCard, addAlias, playAndResolve, codes, noun]
   );
 
   const assignHighlighted = useCallback(() => {
@@ -219,14 +269,14 @@ export default function ResolutionSidebar({
     (label: string) => {
       if (!currentCard) return;
       const trimmed = label.trim() || currentCard.normalized_text;
-      playAndResolve("down", currentCard.id, {
-        action: "approve",
-        code_ids: [],
-        new_code: { label: trimmed },
-        add_alias: addAlias,
-      });
+      playAndResolve(
+        "down",
+        currentCard,
+        { action: "approve", code_ids: [], new_code: { label: trimmed }, add_alias: addAlias },
+        `Nueva ${noun}: "${trimmed}"`
+      );
     },
-    [currentCard, addAlias, playAndResolve]
+    [currentCard, addAlias, playAndResolve, noun]
   );
 
   const openNewCodeInput = useCallback(() => {
@@ -243,6 +293,7 @@ export default function ResolutionSidebar({
       { key: "d", action: discardCurrent, description: "Descartar", category: "Acciones" },
       { key: "ArrowRight", action: openNewCodeInput, description: `Nueva ${noun}`, category: "Acciones" },
       { key: "n", action: openNewCodeInput, description: `Nueva ${noun}`, category: "Acciones" },
+      { key: "z", meta: true, action: undoPending, description: "Deshacer última acción", category: "Acciones" },
       {
         key: "ArrowUp",
         action: () => setNavCodeIndex((i) => Math.max(0, i - GRID_COLS)),
@@ -262,7 +313,7 @@ export default function ResolutionSidebar({
         category: "Códigos rápidos",
       })),
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, assignCode, noun]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, assignCode, noun, undoPending]);
 
   useKeyboardShortcuts("resolution-sidebar");
 
@@ -463,6 +514,9 @@ export default function ResolutionSidebar({
             </span>
             <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
               <kbd className="kbd-hint">↵</kbd>Asignar
+            </span>
+            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+              <kbd className="kbd-hint">{modLabel()}Z</kbd>Deshacer
             </span>
           </div>
         )}
