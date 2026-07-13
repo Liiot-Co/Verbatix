@@ -214,35 +214,40 @@ export default function ResolutionSidebar({
   }, [navCodeIndex, zone]);
 
   const applyOptimisticRemoval = (groupId: string) => {
-    const snapshot = queue;
-    const next = snapshot.filter((g) => g.id !== groupId);
-    setQueue(next);
+    const removed = queue.find((g) => g.id === groupId);
+    setQueue((q) => q.filter((g) => g.id !== groupId));
     setTotal((t) => Math.max(0, t - 1));
     return () => {
-      setQueue(snapshot);
+      if (!removed) return;
+      setQueue((q) => (q.some((g) => g.id === groupId) ? q : [removed, ...q]));
       setTotal((t) => t + 1);
     };
   };
 
-  const resolve = useCallback(
-    async (groupId: string, decision: ResolveDecision) => {
-      const rollback = applyOptimisticRemoval(groupId);
-      setResolvedThisSession((n) => n + 1);
+  // El POST real se difiere ~4s para permitir "Deshacer" sin backend de unresolve:
+  // la tarjeta ya se quitó de forma optimista, así que cancelar el timer y
+  // restaurarla equivale a no haber resuelto nada.
+  const pendingRef = useRef<{
+    groupId: string;
+    decision: ResolveDecision;
+    timer: ReturnType<typeof setTimeout>;
+    rollback: () => void;
+  } | null>(null);
+
+  const sendResolve = useCallback(
+    async (groupId: string, decision: ResolveDecision, rollback: () => void) => {
       try {
         const result = await resolveMentionGroup(groupId, decision);
+        const parts: string[] = [];
+        if (decision.add_alias) parts.push("Alias aprendido");
         if (result.auto_resolved_groups && result.auto_resolved_groups.length > 0) {
           const autoIds = new Set(result.auto_resolved_groups.map((g) => g.id));
           setQueue((q) => q.filter((g) => !autoIds.has(g.id)));
           setTotal((t) => Math.max(0, t - result.auto_resolved_groups.length));
           setResolvedThisSession((n) => n + result.auto_resolved_groups.length);
-          const codeLabel = result.codes_assigned[0]?.label;
-          const texts = result.auto_resolved_groups.map((g) => `«${g.normalized_text}»`);
-          const shown = texts.slice(0, 3).join(", ") + (texts.length > 3 ? ` y ${texts.length - 3} más` : "");
-          showToast(
-            codeLabel ? `Auto-clasificados como «${codeLabel}»: ${shown}` : `Auto-clasificados: ${shown}`,
-            "success"
-          );
+          parts.push(`${result.auto_resolved_groups.length} grupo(s) auto-clasificados`);
         }
+        if (parts.length > 0) showToast(parts.join(" · "), "success");
         loadSummary();
         onResolved?.();
       } catch (err) {
@@ -256,8 +261,50 @@ export default function ResolutionSidebar({
         }
       }
     },
+    [loadQueue, loadSummary, showToast, onResolved]
+  );
+
+  // Envía ya la acción pendiente (si hay una) — se llama antes de programar la
+  // siguiente resolución, al desmontar y en beforeunload, para no perder trabajo.
+  const flushPending = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingRef.current = null;
+    sendResolve(pending.groupId, pending.decision, pending.rollback);
+  }, [sendResolve]);
+
+  useEffect(() => {
+    window.addEventListener("beforeunload", flushPending);
+    return () => {
+      window.removeEventListener("beforeunload", flushPending);
+      flushPending();
+    };
+  }, [flushPending]);
+
+  const resolve = useCallback(
+    (groupId: string, decision: ResolveDecision) => {
+      flushPending();
+      const rollback = applyOptimisticRemoval(groupId);
+      setResolvedThisSession((n) => n + 1);
+      const timer = setTimeout(() => {
+        pendingRef.current = null;
+        sendResolve(groupId, decision, rollback);
+      }, 4000);
+      pendingRef.current = { groupId, decision, timer, rollback };
+      showToast("Resuelto", "success", {
+        label: "Deshacer",
+        onAction: () => {
+          if (pendingRef.current?.groupId !== groupId) return;
+          clearTimeout(pendingRef.current.timer);
+          pendingRef.current = null;
+          rollback();
+          setResolvedThisSession((n) => Math.max(0, n - 1));
+        },
+      });
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [queue, loadQueue, loadSummary, showToast, onResolved]
+    [queue, flushPending, sendResolve, showToast]
   );
 
   // Exit animation plays for 230ms while the (already-optimistic) resolve happens
@@ -521,6 +568,20 @@ export default function ResolutionSidebar({
               <div className="font-extrabold text-lg tracking-tight text-p-text mb-1.5">{detail.normalized_text}</div>
               <div className="font-mono text-[11px] text-p-text-faint mb-3">{detail.frequency_count} menciones</div>
 
+              {detail.samples.length > 0 && (
+                <ul className="space-y-1 mb-3">
+                  {detail.samples.slice(0, 3).map((sample, i) => (
+                    <li
+                      key={i}
+                      className="text-xs text-p-text-muted italic truncate bg-white/50 rounded-md px-2 py-1"
+                      title={sample}
+                    >
+                      “{sample}”
+                    </li>
+                  ))}
+                </ul>
+              )}
+
               <div className="pt-2.5 border-t border-p-border/60">
                 {showNewCodeInput ? (
                   <div className="flex flex-col gap-2">
@@ -636,6 +697,16 @@ export default function ResolutionSidebar({
                   </div>
                 )}
               </div>
+
+              <label className="flex items-center gap-2 text-xs text-p-text-muted mt-2.5 pt-2.5 border-t border-p-border/60">
+                <input
+                  type="checkbox"
+                  checked={addAlias}
+                  onChange={(e) => setAddAlias(e.target.checked)}
+                  className="rounded border-p-border"
+                />
+                Recordar como alias para futuras rondas
+              </label>
             </motion.div>
           </div>
 
@@ -704,16 +775,6 @@ export default function ResolutionSidebar({
                 })}
               </div>
             </div>
-
-            <label className="flex items-center gap-2 text-xs text-p-text-muted px-1">
-              <input
-                type="checkbox"
-                checked={addAlias}
-                onChange={(e) => setAddAlias(e.target.checked)}
-                className="rounded border-p-border"
-              />
-              Recordar como alias para futuras rondas
-            </label>
           </div>
         </>
       ) : (
