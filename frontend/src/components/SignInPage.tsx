@@ -68,7 +68,7 @@ export default function SignInPage() {
       >
         <div className="card p-6 space-y-5">
           <div className="space-y-1">
-            <h1 className="font-heading text-lg font-semibold text-p-text tracking-tight">Iniciar sesión</h1>
+            <h1 className="font-heading text-xl font-semibold text-p-text tracking-tight">Iniciar sesión</h1>
             <p className="text-sm text-p-text-muted">Ingresa con tu cuenta de Supabase</p>
           </div>
 

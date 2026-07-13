@@ -45,7 +45,7 @@ function Stack() {
                   t.onAction?.();
                   dismissToast(t.id);
                 }}
-                className="text-xs font-semibold text-p-accent hover:underline shrink-0"
+                className="btn-ghost-sm shrink-0 px-2"
               >
                 {t.actionLabel ?? "Deshacer"}
               </motion.button>

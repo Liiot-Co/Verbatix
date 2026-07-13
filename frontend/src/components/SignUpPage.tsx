@@ -112,7 +112,7 @@ export default function SignUpPage() {
       >
         <div className="card p-6 space-y-5">
           <div className="space-y-1">
-            <h1 className="font-heading text-lg font-semibold text-p-text tracking-tight">Crear cuenta</h1>
+            <h1 className="font-heading text-xl font-semibold text-p-text tracking-tight">Crear cuenta</h1>
             <p className="text-sm text-p-text-muted">Regístrate para empezar a usar Verbatix</p>
           </div>
 

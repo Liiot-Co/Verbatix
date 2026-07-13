@@ -273,6 +273,15 @@ export default function ResolutionSidebar({
     async (groupId: string, decision: ResolveDecision, rollback: () => void) => {
       try {
         const result = await resolveMentionGroup(groupId, decision);
+        // Un código creado al vuelo (nueva marca/razón) no vive todavía en la lista local:
+        // sin esto, el analista no puede volver a asignarlo hasta refrescar la página.
+        if (result.codes_assigned?.length) {
+          setCodes((prev) => {
+            const existingIds = new Set(prev.map((c) => c.id));
+            const fresh = result.codes_assigned.filter((c) => !c.is_system && !existingIds.has(c.id));
+            return fresh.length ? [...prev, ...fresh] : prev;
+          });
+        }
         const parts: string[] = [];
         if (decision.add_alias) parts.push("Alias aprendido");
         if (result.auto_resolved_groups && result.auto_resolved_groups.length > 0) {
@@ -631,7 +640,7 @@ export default function ResolutionSidebar({
               animate={cardMotion}
               transition={{ duration: 0.23, ease: cardExiting ? "easeIn" : ([0.22, 1.4, 0.36, 1] as const) }}
               className={[
-                "bg-gradient-to-br from-orange-50 via-white to-purple-50 border border-p-border rounded-2xl p-4 transition-shadow",
+                "card p-4 transition-shadow",
                 zone === "header" ? "ring-2 ring-p-accent/25" : "",
               ].join(" ")}
             >
@@ -688,14 +697,14 @@ export default function ResolutionSidebar({
                           setShowNewCodeInput(false);
                           setNewCodeLabel("");
                         }}
-                        className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-lg border border-p-border bg-p-bg-subtle text-sm text-p-text-muted"
+                        className="btn-ghost-sm flex-1 justify-center"
                       >
                         <kbd className="kbd-hint mr-1">Esc</kbd> Cancelar
                       </button>
                       <button
                         onClick={() => createAndAssign(newCodeLabel)}
                         disabled={resolving}
-                        className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-green-200 bg-green-50 text-sm font-bold text-green-700"
+                        className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-p-success/30 bg-p-success/10 text-sm font-bold text-p-success"
                       >
                         <Plus className="w-3.5 h-3.5" /> Crear <kbd className="kbd-hint ml-1">↵</kbd>
                       </button>
@@ -708,7 +717,7 @@ export default function ResolutionSidebar({
                       onClick={discardCurrent}
                       disabled={resolving}
                       title="Asigna un código de sistema (NS/NC, Ninguna, Confusas...)"
-                      className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg border border-p-border bg-p-bg-subtle text-sm text-p-text-muted hover:bg-p-surface transition-colors"
+                      className="btn-ghost-sm flex-1 justify-center gap-1"
                     >
                       <kbd className="kbd-hint">d</kbd>
                       <span>Sin dato</span>
@@ -771,7 +780,7 @@ export default function ResolutionSidebar({
                     <button
                       onClick={openNewCodeInput}
                       disabled={resolving}
-                      className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 text-sm font-bold text-blue-700 hover:bg-blue-100 transition-colors"
+                      className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-p-accent/30 bg-p-accent-soft text-sm font-bold text-p-accent hover:bg-p-accent-soft/70 transition-colors"
                     >
                       <Plus className="w-3.5 h-3.5" />
                       <span>{newCodeHint}</span>
@@ -786,7 +795,7 @@ export default function ResolutionSidebar({
                   type="checkbox"
                   checked={addAlias}
                   onChange={(e) => setAddAlias(e.target.checked)}
-                  className="rounded border-p-border"
+                  className="rounded border-p-border focus-visible:ring-2 focus-visible:ring-p-accent/40"
                 />
                 Recordar como alias para futuras rondas
               </label>
