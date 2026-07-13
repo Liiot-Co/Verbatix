@@ -154,13 +154,7 @@ export default function ResolutionSidebar({
       const rollback = applyOptimisticRemoval(groupId);
       setResolvedThisSession((n) => n + 1);
       try {
-        const result = await resolveMentionGroup(groupId, decision);
-        showToast(
-          decision.action === "discard"
-            ? "Grupo descartado."
-            : `${result.verbatims_updated} verbatims codificados.`,
-          "success"
-        );
+        await resolveMentionGroup(groupId, decision);
         loadSummary();
         onResolved?.();
       } catch {
