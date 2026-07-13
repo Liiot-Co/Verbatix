@@ -175,7 +175,14 @@ def get_studio(
     user: CurrentUser = Depends(current_user),
 ):
     row = db.execute(
-        text("select * from studio where id = :id"),
+        text("""
+            select s.*, r.project_id, r.name as round_name, r.round_number,
+                   p.name as project_name
+            from studio s
+            join rounds r on r.id = s.round_id
+            join projects p on p.id = r.project_id
+            where s.id = :id
+        """),
         {"id": studio_id},
     ).mappings().first()
     if not row:

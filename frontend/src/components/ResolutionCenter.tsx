@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import { Sparkles } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Sparkles, X } from "lucide-react";
 import { getResolutionQueue, getResolutionSummary } from "@/api/client";
 import type { MentionGroupStatus, ResolutionQueueItem, ResolutionSummary } from "@/api/types";
-import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 
 const PAGE_SIZE = 50;
@@ -16,9 +15,8 @@ const STATUS_CHIP: Record<MentionGroupStatus, { label: string; className: string
   resolved: { label: "Resuelto", className: "badge-success" },
 };
 
-export default function ResolutionCenter() {
-  const { studioId } = useParams<{ studioId: string }>();
-
+/** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
+export default function ResolutionCenter({ studioId, onClose }: { studioId: string; onClose: () => void }) {
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<ResolutionSummary | null>(null);
@@ -40,33 +38,41 @@ export default function ResolutionCenter() {
     loadQueue();
   }, [loadQueue]);
 
-  if (!studioId) return null;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
-  return (
-    <div className="max-w-6xl mx-auto py-4 space-y-4">
-      <Breadcrumb
-        items={[
-          { label: "Proyectos", to: "/" },
-          { label: "Estudio", to: `/studios/${studioId}` },
-          { label: "Centro de Resolución" },
-        ]}
-      />
-
-      <div className="flex items-center justify-between gap-4 flex-wrap">
+  return createPortal(
+    <div className="fixed inset-0 z-50 bg-p-bg flex flex-col">
+      <div className="flex items-center justify-between gap-4 flex-wrap px-6 py-4 border-b border-p-border shrink-0">
         <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">Centro de Resolución</h1>
-        {summary && (
-          <span
-            className={summary.can_close ? "badge-success" : "badge-pending"}
-            title={summary.can_close ? "Todo resuelto: el estudio puede cerrarse" : "Aún hay grupos pendientes"}
+        <div className="flex items-center gap-3">
+          {summary && (
+            <span
+              className={summary.can_close ? "badge-success" : "badge-pending"}
+              title={summary.can_close ? "Todo resuelto: el estudio puede cerrarse" : "Aún hay grupos pendientes"}
+            >
+              {summary.can_close ? "Listo para cerrar" : `${summary.pending} pendientes`}
+            </span>
+          )}
+          <button
+            onClick={onClose}
+            className="btn-ghost text-xs py-1.5 px-2"
+            title="Cerrar (Esc)"
+            aria-label="Cerrar"
           >
-            {summary.can_close ? "Listo para cerrar" : `${summary.pending} pendientes`}
-          </span>
-        )}
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_348px] gap-4 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_460px] gap-4 items-start flex-1 min-h-0 px-6 py-4 overflow-y-auto">
         {/* Cola: contexto de lo que sigue (orden por impacto, ya viene ordenado del backend) */}
-        <div className="card overflow-hidden flex flex-col max-h-[70vh]">
+        <div className="card overflow-hidden flex flex-col max-h-[calc(100vh-8rem)]">
           <div className="px-4 py-2.5 border-b border-p-border text-xs font-semibold text-p-text-muted uppercase tracking-wide">
             Cola ({total})
           </div>
@@ -108,8 +114,11 @@ export default function ResolutionCenter() {
           </div>
         </div>
 
-        <ResolutionSidebar studioId={studioId} onResolved={loadQueue} />
+        <div className="h-[calc(100vh-8rem)]">
+          <ResolutionSidebar studioId={studioId} onResolved={loadQueue} />
+        </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

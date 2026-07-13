@@ -206,6 +206,8 @@ def discover_catalog_from_frequency(
             code_id = alias_to_code[seed_hit[0]]
         else:
             code_id = str(uuid.uuid4())
+            raw_label = seed["sample_text"] or norm
+            formatted_label = raw_label.strip().capitalize() if raw_label else raw_label
             db.execute(
                 text("""
                     insert into codes (id, codebook_id, code_number, label, origin)
@@ -213,7 +215,7 @@ def discover_catalog_from_frequency(
                 """),
                 {
                     "id": code_id, "cb": codebook_id, "n": next(numbers),
-                    "label": seed["sample_text"] or norm,
+                    "label": formatted_label,
                 },
             )
         _persist_alias(code_id, norm, seed["sample_text"], seed["frequency_count"])

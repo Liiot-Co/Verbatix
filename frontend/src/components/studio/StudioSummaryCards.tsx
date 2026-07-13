@@ -1,22 +1,21 @@
-import { Link } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, PartyPopper } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { PreliminarySummary } from "@/api/types";
 
 interface StudioSummaryCardsProps {
-  studioId: string;
   summary: PreliminarySummary["summary"] | undefined;
   momentum: string;
   codedPct: number;
   justFinished: boolean;
+  onOpenResolution: () => void;
 }
 
 export function StudioSummaryCards({
-  studioId,
   summary,
   momentum,
   codedPct,
   justFinished,
+  onOpenResolution,
 }: StudioSummaryCardsProps) {
   const autoCoded = summary?.auto_coded ?? 0;
   const pendingReview = summary?.pending_review ?? 0;
@@ -66,9 +65,10 @@ export function StudioSummaryCards({
           <div className="text-2xl font-bold text-p-text">{autoCoded + resolved}</div>
           <p className="text-xs text-p-text-faint">Grupos que el motor resolvió solo (o ya fueron revisados).</p>
         </div>
-        <Link
-          to={`/studios/${studioId}/resolution`}
-          className="card p-4 space-y-2 block hover:border-p-warning/50 transition-colors"
+        <button
+          type="button"
+          onClick={onOpenResolution}
+          className="card p-4 space-y-2 block text-left w-full hover:border-p-warning/50 transition-colors"
         >
           <div className="flex items-center gap-2 text-p-warning">
             <AlertTriangle className="w-4 h-4" />
@@ -78,7 +78,7 @@ export function StudioSummaryCards({
           <p className="text-xs text-p-text-faint">
             {pendingReview} sin procesar todavía · {anomalies} menciones confusas — ir al Centro de Resolución
           </p>
-        </Link>
+        </button>
       </div>
     </>
   );

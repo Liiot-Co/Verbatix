@@ -25,7 +25,7 @@ import type {
   StudioSummary,
   UploadedFile,
 } from "@/api/types";
-import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
+import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { nextRoundNumber, parseStudyKey } from "@/lib/projectTree";
 
 type WizardStep = "project" | "studio" | "round";
@@ -787,23 +787,6 @@ export default function CreationWizard() {
           )}
         </motion.div>
       </AnimatePresence>
-
-      {/* Keyboard hints */}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 text-xs text-p-text-faint bg-p-surface/90 backdrop-blur-glass border border-p-border rounded-xl px-4 py-2 shadow-lg hidden sm:flex"
-      >
-        <span className="flex items-center gap-1">
-          <kbd className="kbd-hint">Enter</kbd> Crear/Continuar
-        </span>
-        <span className="flex items-center gap-1">
-          <kbd className="kbd-hint">Esc</kbd> Cancelar/Volver
-        </span>
-        <span className="flex items-center gap-1">
-          <kbd className="kbd-hint">{modLabel()}S</kbd> Importar
-        </span>
-        <span className="flex items-center gap-1">
-          <kbd className="kbd-hint">{modLabel()}K</kbd> Comandos
-        </span>
-      </div>
     </div>
   );
 }

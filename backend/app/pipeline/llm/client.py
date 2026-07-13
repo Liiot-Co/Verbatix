@@ -47,10 +47,14 @@ _CODE97_RULE = {
 
 
 def _build_prompt(codebook: list[dict], verbatims: list[dict], coding_type: str) -> str:
-    codebook_lines = "\n".join(
-        f"{c['code_number']}: {c['net']}/{c['label']}" if c.get("net") else f"{c['code_number']}: {c['label']}"
-        for c in codebook
-    )
+    codebook_lines = []
+    for c in codebook:
+        line = f"{c['code_number']}: {c['net']}/{c['label']}" if c.get("net") else f"{c['code_number']}: {c['label']}"
+        aliases = c.get("aliases")
+        if aliases and len(aliases) > 0:
+            line += f" (Aliases: {', '.join(aliases)})"
+        codebook_lines.append(line)
+    codebook_lines = "\n".join(codebook_lines)
     verbatim_lines = "\n".join(f"{v['id']}: {v['text']}" for v in verbatims)
     domain_intro = _DOMAIN_INTRO.get(coding_type, _DOMAIN_INTRO["reasons"])
     code97_rule = _CODE97_RULE.get(coding_type, _CODE97_RULE["reasons"])
@@ -58,6 +62,7 @@ def _build_prompt(codebook: list[dict], verbatims: list[dict], coding_type: str)
         f"Eres un clasificador de verbatims de encuestas de marketing. {domain_intro}\n\n"
         "No estás obligado a dar una respuesta afirmativa. Usa criterio, no adivines:\n"
         "- Si el texto encaja claramente con un code_number del codebook, asígnalo.\n"
+        "- Sé tolerante con errores ortográficos y de tipeo comunes (ej. 'pueraza' -> 'pureza').\n"
         "- Usa un código de sistema (95 menciones confusas/incorrectas, 96 no sabe/no contesta, "
         "98 ninguna, 99 no recuerda/no responde) SOLO cuando el texto en sí expresa literalmente "
         "esa situación: \"no sé\" -> 96; vacío, ilegible, o una respuesta clara que NO corresponde "
@@ -97,6 +102,7 @@ def classify_batch(codebook: list[dict], verbatims: list[dict], coding_type: str
             "model": settings.llm_model,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
+            "temperature": 0.0,
             "stream": False,
         },
         timeout=300,

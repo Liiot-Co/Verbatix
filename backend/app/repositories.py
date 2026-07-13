@@ -414,7 +414,8 @@ def list_studio_codes(db: Session, studio_id: uuid.UUID, include_system: bool = 
 
 def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UUID | None, user_id) -> dict:
     """Crea un código nuevo (deduplicado por normalize(label)); si ya existe, lo retorna."""
-    norm_label = normalize(label)
+    formatted_label = label.strip().capitalize() if label else label
+    norm_label = normalize(formatted_label)
     existing = db.execute(
         text("""
             select id, code_number, label from codes
@@ -447,10 +448,7 @@ def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UU
             insert into codes (id, codebook_id, code_number, label, origin, is_system, created_by)
             values (:id, :cb, :n, :l, 'analyst_manual', false, :u)
         """),
-        # Store the normalized label (lowercase, no accents/punctuation), not whatever
-        # case the analyst typed — keeps codebook labels consistent regardless of who
-        # created them or how they capitalized the input.
-        {"id": code_id, "cb": codebook_id, "n": next_number, "l": norm_label, "u": user_id},
+        {"id": code_id, "cb": codebook_id, "n": next_number, "l": formatted_label, "u": user_id},
     )
     if net_id:
         db.execute(

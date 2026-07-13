@@ -68,6 +68,8 @@ create table rounds (
   round_number  int  not null,
   status        text not null default 'draft'
                 check (status in ('draft','in_progress','completed')),
+  min_mentions_threshold int  not null default 3,
+  audit_percentage       numeric(5,2) not null default 10,
   created_by    uuid references profiles(id),
   created_at    timestamptz not null default now(),
   unique (project_id, round_number)
@@ -82,8 +84,6 @@ create table studio (
   origin_mode            text not null default 'from_scratch'
                          check (origin_mode in ('from_scratch','homologated')),
   source_studio_id       uuid references studio(id),     -- de qué ronda hereda
-  min_mentions_threshold int  not null default 3,
-  audit_percentage       numeric(5,2) not null default 10,
   status                 text not null default 'created'
                          check (status in ('created','files_uploaded','processing',
                                            'preliminary_ready','manual_coding','audit_pending',

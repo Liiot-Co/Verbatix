@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # Resolution Center (Fase 4): grupo descartado -> este code_number del codebook.
     discard_code_number: int = 95
     allow_pure_discard: bool = False
-    resolution_include_auto_coded: bool = True
+    resolution_include_auto_coded: bool = False
 
     # local  -> local Postgres (docker-compose db service), filesystem storage,
     #           auth bypassed with a fixed dev user. No Supabase calls, no quota spent.

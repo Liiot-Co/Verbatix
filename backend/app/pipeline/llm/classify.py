@@ -63,7 +63,11 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
               order by version desc
               limit 1
             )
-            select c.id, c.code_number, c.label, n.name as net_name
+            select c.id, c.code_number, c.label, n.name as net_name,
+                   array(
+                       select alias_sample from code_aliases a 
+                       where a.code_id = c.id and a.alias_sample is not null
+                   ) as aliases
             from codes c
             join latest l on l.id = c.codebook_id
             left join net_codes nc on nc.code_id = c.id
@@ -75,7 +79,12 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
     ).mappings().all()
     codes_by_number = {c["code_number"]: c["id"] for c in codes}
     codebook_payload = [
-        {"code_number": c["code_number"], "label": c["label"], "net": c["net_name"]} for c in codes
+        {
+            "code_number": c["code_number"], 
+            "label": c["label"], 
+            "net": c["net_name"],
+            "aliases": c["aliases"]
+        } for c in codes
     ]
 
     groups = db.execute(

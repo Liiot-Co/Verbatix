@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
-import { LayoutDashboard, Wand2, Keyboard, Command, LogOut, ChevronDown } from "lucide-react";
+import { LayoutDashboard, Wand2, Keyboard, Command, LogOut, ChevronDown, PanelLeftClose, PanelLeft } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -16,6 +16,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const logout = useVerbatixStore((s) => s.logout);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("verbatix:sidebar-collapsed") === "1");
+
+  useEffect(() => {
+    localStorage.setItem("verbatix:sidebar-collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
 
   useKeyboardShortcuts("global");
 
@@ -48,20 +53,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         description: "Nuevo proyecto",
         category: "Navegación",
       },
-      {
-        key: "ArrowLeft",
-        meta: true,
-        action: () => window.history.back(),
-        description: "Atrás",
-        category: "Navegación",
-      },
-      {
-        key: "ArrowRight",
-        meta: true,
-        action: () => window.history.forward(),
-        description: "Adelante",
-        category: "Navegación",
-      },
     ]);
   }, [navigate]);
 
@@ -86,12 +77,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     <>
       {/* Ambient glow — drifting Verbatix Light corner gradients */}
       <div aria-hidden className="ambient-wash pointer-events-none fixed inset-0 -z-10" />
-      <div className="flex h-screen bg-p-bg overflow-hidden">
+      <div className="relative flex h-screen bg-p-bg overflow-hidden">
         {/* Sidebar */}
-        <aside className="app-sidebar w-[220px] shrink-0 h-screen sticky top-0 flex flex-col"
+        <aside className={`app-sidebar ${collapsed ? "w-[64px]" : "w-[220px]"} shrink-0 h-screen sticky top-0 flex flex-col transition-[width] duration-200`}
         >
           {/* Logo */}
-          <div className="p-3.5 border-b border-p-border flex-shrink-0"
+          <div className={`p-3.5 border-b border-p-border flex-shrink-0 ${collapsed ? "flex justify-center" : ""}`}
           >
             <div className="flex items-center gap-2.5">
               <motion.div
@@ -103,24 +94,29 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   <polyline points="1,1.5 4.5,11.5 8.5,3.5 12.5,11.5 16,1.5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               </motion.div>
-              <div className="min-w-0">
-                <div className="font-heading font-extrabold text-[15px] tracking-tight text-p-text leading-tight truncate">Verbatix</div>
-                <div className="font-subtitle text-[10px] tracking-[0.18em] uppercase text-p-text-faint mt-0.5 truncate">Studio</div>
-              </div>
+              {!collapsed && (
+                <div className="min-w-0 flex-1">
+                  <div className="font-heading font-extrabold text-[15px] tracking-tight text-p-text leading-tight truncate">Verbatix</div>
+                  <div className="font-subtitle text-[10px] tracking-[0.18em] uppercase text-p-text-faint mt-0.5 truncate">Studio</div>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Navigation */}
           <nav className="flex-1 p-2 flex flex-col gap-1 overflow-y-auto scrollbar-thin"
           >
-            <div className="font-subtitle text-[10px] tracking-[0.22em] uppercase text-p-text-faint gradient-text-morph-brand px-2 pt-2.5 pb-1.5">
-              Principal
-            </div>
+            {!collapsed && (
+              <div className="font-subtitle text-[10px] tracking-[0.22em] uppercase text-p-text-faint gradient-text-morph-brand px-2 pt-2.5 pb-1.5">
+                Principal
+              </div>
+            )}
             <div className="flex flex-col gap-1">
               {NAV_ITEMS.map(({ path, label, icon: Icon }) => (
                 <Link
                   key={path}
                   to={path}
+                  title={collapsed ? label : undefined}
                   className={[
                     "relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 hover:translate-x-1 active:scale-[0.98]",
                     location.pathname === path
@@ -135,20 +131,23 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                     />
                   )}
                   <Icon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="flex-1 text-left truncate">{label}</span>
+                  {!collapsed && <span className="flex-1 text-left truncate">{label}</span>}
                 </Link>
               ))}
             </div>
 
-            <div className="font-subtitle text-[10px] tracking-[0.22em] uppercase text-p-text-faint px-2 pt-4 pb-1.5">
-              Acciones
-            </div>
+            {!collapsed && (
+              <div className="font-subtitle text-[10px] tracking-[0.22em] uppercase text-p-text-faint px-2 pt-4 pb-1.5">
+                Acciones
+              </div>
+            )}
             <Link
               to="/wizard"
+              title={collapsed ? "Nuevo proyecto" : undefined}
               className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-p-text-muted hover:text-p-text hover:bg-p-bg-subtle/60 transition-all duration-150 hover:translate-x-1 active:scale-[0.98]"
             >
               <Wand2 className="w-3.5 h-3.5 shrink-0" />
-              <span className="flex-1 text-left truncate">Nuevo proyecto</span>
+              {!collapsed && <span className="flex-1 text-left truncate">Nuevo proyecto</span>}
             </Link>
 
             {/* User section at bottom */}
@@ -158,11 +157,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   onClick={() => setMenuOpen(!menuOpen)}
                   whileHover={{ x: 2 }}
                   whileTap={{ scale: 0.98 }}
+                  title={collapsed ? (user?.email ?? "Usuario") : undefined}
                   className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-p-text-muted hover:text-p-text hover:bg-p-bg-subtle/60 transition-colors duration-150"
                 >
                   <div className="avatar w-6 h-6 text-[11px] shrink-0">{userInitial}</div>
-                  <span className="flex-1 text-left truncate text-xs">{user?.email ?? "Usuario"}</span>
-                  <ChevronDown className={`w-3 h-3 shrink-0 transition-transform duration-150 ${menuOpen ? "rotate-180" : ""}`} />
+                  {!collapsed && (
+                    <>
+                      <span className="flex-1 text-left truncate text-xs">{user?.email ?? "Usuario"}</span>
+                      <ChevronDown className={`w-3 h-3 shrink-0 transition-transform duration-150 ${menuOpen ? "rotate-180" : ""}`} />
+                    </>
+                  )}
                 </motion.button>
 
                 <AnimatePresence>
@@ -172,7 +176,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -4, scale: 0.96 }}
                       transition={{ duration: 0.12, ease: [0.19, 1, 0.22, 1] }}
-                      className="absolute bottom-full left-0 right-0 mb-1 bg-p-surface border border-p-border rounded-xl shadow-lg overflow-hidden"
+                      className={`absolute bottom-full mb-1 bg-p-surface border border-p-border rounded-xl shadow-lg overflow-hidden ${collapsed ? "left-0 w-56" : "left-0 right-0"}`}
                     >
                       <div className="p-2 space-y-0.5">
                         <div className="px-3 py-2 text-xs text-p-text-muted border-b border-p-border mb-1">
@@ -201,14 +205,28 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   title={`Abrir paleta de comandos (${modLabel()}K)`}
                 >
                   <Keyboard className="w-3.5 h-3.5 shrink-0" />
-                  <span className="flex-1 text-left">Atajos de teclado</span>
-                  <Command className="w-3.5 h-3.5 shrink-0 opacity-50" />
-                  <span className="kbd-hint">{modLabel()}K</span>
+                  {!collapsed && (
+                    <>
+                      <span className="flex-1 text-left">Atajos de teclado</span>
+                      <Command className="w-3.5 h-3.5 shrink-0 opacity-50" />
+                      <span className="kbd-hint">{modLabel()}K</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
           </nav>
         </aside>
+
+        <button
+          onClick={() => setCollapsed((v) => !v)}
+          style={{ left: collapsed ? 64 : 220 }}
+          className="absolute top-[26px] z-20 -translate-x-1/2 w-6 h-6 rounded-full bg-p-surface border border-p-border shadow-sm flex items-center justify-center text-p-text-faint hover:text-p-text hover:bg-p-bg-subtle transition-[left] duration-200"
+          title={collapsed ? "Expandir menú" : "Colapsar menú"}
+          aria-label={collapsed ? "Expandir menú" : "Colapsar menú"}
+        >
+          {collapsed ? <PanelLeft className="w-3 h-3" /> : <PanelLeftClose className="w-3 h-3" />}
+        </button>
 
         {/* Main content area */}
         <div className="relative flex-1 flex flex-col overflow-hidden min-w-0 bg-p-bg"

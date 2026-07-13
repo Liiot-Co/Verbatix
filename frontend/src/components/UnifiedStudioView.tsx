@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Keyboard, Search } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, ChevronLeft, ChevronRight, Keyboard, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getPreliminary, getStudio, getVerbatims, processStudio } from "@/api/client";
 import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
+import ResolutionCenter from "./ResolutionCenter";
 import { studyKey } from "@/lib/projectTree";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -18,12 +19,9 @@ import { VerbatimsTable } from "./studio/VerbatimsTable";
 
 const PAGE_SIZE = 50;
 
-function isTypingTarget(el: EventTarget | null): boolean {
-  return el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement;
-}
-
 export default function UnifiedStudioView() {
   const { studioId } = useParams<{ studioId: string }>();
+  const navigate = useNavigate();
   const searchRef = useRef<HTMLInputElement>(null);
   const showToast = useVerbatixStore((s) => s.showToast);
 
@@ -37,6 +35,7 @@ export default function UnifiedStudioView() {
   const [statusFilter, setStatusFilter] = useState<CodingStatus | "">("");
   const [search, setSearch] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [fullscreenResolution, setFullscreenResolution] = useState(false);
 
   const loadData = useCallback(() => {
     if (!studioId) return Promise.resolve();
@@ -129,10 +128,6 @@ export default function UnifiedStudioView() {
       { key: "f", meta: true,
         action: () => { searchRef.current?.focus(); searchRef.current?.select(); },
         description: "Enfocar búsqueda", category: "Navegación", allowInInput: false },
-      { key: "ArrowRight", meta: true, action: () => setPage((p) => Math.min(totalPages, p + 1)),
-        description: "Página siguiente", category: "Navegación", allowInInput: false },
-      { key: "ArrowLeft", meta: true, action: () => setPage((p) => Math.max(1, p - 1)),
-        description: "Página anterior", category: "Navegación", allowInInput: false },
       { key: "r", meta: true, action: () => window.location.reload(),
         description: "Recargar", category: "Acciones" },
       { key: "e", meta: true, action: () => showToast("Exportar en desarrollo", "info"),
@@ -194,22 +189,33 @@ export default function UnifiedStudioView() {
 
   return (
     <div className="max-w-[1400px] mx-auto py-4 space-y-4">
-      <Breadcrumb
-        items={[
-          { label: "Proyectos", to: "/" },
-          { label: studio.project_name, to: `/projects/${studio.project_id}` },
-          {
-            label: studio.name,
-            to: `/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`,
-          },
-          { label: `R${studio.round_number} · ${studio.round_name}` },
-        ]}
-      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => navigate(`/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`)}
+          className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-p-text-faint hover:text-p-text hover:bg-p-bg-subtle transition-colors"
+          title="Volver"
+          aria-label="Volver"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+        </button>
+        <Breadcrumb
+          items={[
+            { label: "Proyectos", to: "/" },
+            { label: studio.project_name, to: `/projects/${studio.project_id}` },
+            {
+              label: studio.name,
+              to: `/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`,
+            },
+            { label: `R${studio.round_number} · ${studio.round_name}` },
+          ]}
+        />
+      </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1fr_348px] gap-4 items-start">
-      <div className="space-y-4 min-w-0">
+      <div className={`grid grid-cols-1 gap-4 items-start ${preliminary ? "xl:grid-cols-[1fr_460px]" : ""}`}>
+      <div className="space-y-4 min-w-0 order-2 xl:order-none">
 
-      <StudioHeader 
+      <StudioHeader
         studio={studio}
         autoProcessing={autoProcessing}
         neverProcessed={neverProcessed}
@@ -219,11 +225,11 @@ export default function UnifiedStudioView() {
 
       {preliminary && (
         <StudioSummaryCards
-          studioId={studioId}
           summary={summary}
           momentum={momentum}
           codedPct={codedPct}
           justFinished={justFinished}
+          onOpenResolution={() => setFullscreenResolution(true)}
         />
       )}
 
@@ -255,6 +261,18 @@ export default function UnifiedStudioView() {
           <option value="manually_coded">Codificado a mano</option>
           <option value="unknown">Desconocida</option>
         </motion.select>
+        <motion.button
+          type="button"
+          onClick={() => setShowShortcuts(true)}
+          whileHover={{ scale: 1.03 }}
+          whileTap={{ scale: 0.97 }}
+          title="Ver atajos de teclado"
+          aria-label="Ver atajos de teclado"
+          className="hidden sm:flex items-center gap-1.5 px-3 text-xs text-p-text-faint hover:text-p-text border border-p-border rounded-lg hover:border-p-accent/40 transition-colors shrink-0"
+        >
+          <Keyboard className="w-3.5 h-3.5" />
+          <kbd className="kbd-hint">?</kbd>
+        </motion.button>
       </div>
 
       {isProcessingNow && (
@@ -273,7 +291,6 @@ export default function UnifiedStudioView() {
         <div className="flex items-center justify-between text-xs text-p-text-muted">
           <span>Página {page} de {totalPages} · {total} verbatims</span>
           <div className="flex items-center gap-1.5">
-            <kbd className="hidden sm:inline text-[10px] font-mono text-p-text-faint border border-p-border rounded px-1.5 py-0.5 mr-1">{modLabel()}← →</kbd>
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
@@ -300,21 +317,20 @@ export default function UnifiedStudioView() {
 
       </div>
 
-      <ResolutionSidebar studioId={studioId} onResolved={() => { loadData(); loadVerbatims(); }} />
+      {preliminary && (
+        <div className="order-1 xl:order-none xl:sticky xl:top-4 h-auto xl:h-[calc(100vh-5rem)]">
+          <ResolutionSidebar
+            studioId={studioId}
+            onResolved={() => { loadData(); loadVerbatims(); }}
+            onExpand={() => setFullscreenResolution(true)}
+          />
+        </div>
+      )}
       </div>
 
-      <motion.button
-        type="button"
-        onClick={() => setShowShortcuts(true)}
-        aria-label="Mostrar atajos de teclado"
-        whileHover={{ y: -2 }}
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 text-xs text-p-text-faint bg-p-surface/90 backdrop-blur-glass border border-p-border rounded-xl px-4 py-2 shadow-lg hidden sm:flex hover:text-p-text hover:border-p-accent/40 transition-colors"
-      >
-        <span className="flex items-center gap-1"><kbd className="kbd-hint">{modLabel()}F</kbd> Buscar</span>
-        <span className="flex items-center gap-1"><kbd className="kbd-hint">{modLabel()}← →</kbd> Páginas</span>
-        <span className="flex items-center gap-1"><kbd className="kbd-hint">{modLabel()}K</kbd> Comandos</span>
-        <span className="flex items-center gap-1"><kbd className="kbd-hint">?</kbd> Ver todos</span>
-      </motion.button>
+      {fullscreenResolution && (
+        <ResolutionCenter studioId={studioId} onClose={() => setFullscreenResolution(false)} />
+      )}
 
       <AnimatePresence>
         {showShortcuts && (
@@ -343,7 +359,6 @@ export default function UnifiedStudioView() {
                 <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Navegación</div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="flex justify-between"><span>{modLabel()}F</span><span className="text-p-text-muted">Buscar</span></div>
-                  <div className="flex justify-between"><span>{modLabel()}← →</span><span className="text-p-text-muted">Páginas</span></div>
                   <div className="flex justify-between"><span>Esc</span><span className="text-p-text-muted">Limpiar filtros</span></div>
                   <div className="flex justify-between"><span>{modLabel()}K</span><span className="text-p-text-muted">Comandos</span></div>
                 </div>

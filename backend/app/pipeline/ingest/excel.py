@@ -105,7 +105,7 @@ def parse_codebook(content: bytes, sheet: str) -> dict:
             continue
 
         if isinstance(a, int) and isinstance(b, str):
-            codes.append(_mk_code(a, b, c, None))
+            codes.append(_mk_code(a, b, c, current_net))
             continue
 
     return {"codes": codes, "nets": nets}
@@ -121,9 +121,19 @@ def _mk_code(number: int, label: str, contenido, net) -> dict:
             m = _ALIAS_COUNT.search(raw)
             occ = int(m.group(1)) if m else 1
             aliases.append({"text": _ALIAS_COUNT.sub("", raw).strip(), "occurrences": occ})
+            
+    label_str = str(label).strip()
+    if "/" in label_str:
+        parts = label_str.split("/", 1)
+        if not net:
+            net = parts[0].strip()
+        label_str = parts[1].strip()
+        
+    formatted_label = label_str.capitalize() if label_str else label_str
+    
     return {
         "code_number": number,
-        "label": str(label).strip(),
+        "label": formatted_label,
         "aliases": aliases,
         "net": net,
         "is_system": 95 <= number <= 99,

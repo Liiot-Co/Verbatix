@@ -86,11 +86,6 @@ def resolve_group(
         code_ids = [uuid.UUID(c) for c in (decision.get("code_ids") or [])]
         new_code = decision.get("new_code")
         if new_code:
-            if group["frequency_count"] < studio_threshold:
-                raise BelowThresholdError(
-                    f"El grupo tiene {group['frequency_count']} menciones, "
-                    f"bajo el umbral mínimo de {studio_threshold}"
-                )
             new_code_result = create_code(db, cb_id, new_code["label"], new_code.get("net_id"), user_id)
             code_ids.append(uuid.UUID(new_code_result["id"]))
         source = "analyst_manual"
@@ -100,8 +95,10 @@ def resolve_group(
     deactivate_group_codes(db, group_id)
     verbatims_updated = assign_codes_to_group(db, group_id, code_ids, source, user_id) if code_ids else 0
 
+    auto_resolved = []
     if action == "approve" and decision.get("add_alias") and not is_system_target and code_ids:
         add_alias_from_group(db, cb_id, code_ids[0], group)
+        auto_resolved = _auto_resolve_similar_pending_groups(db, studio_id, code_ids[0], group, user_id)
 
     mark_group_resolved(db, group_id, user_id)
 
@@ -122,4 +119,44 @@ def resolve_group(
         "codes_assigned": codes_assigned,
         "verbatims_updated": verbatims_updated,
         "new_code": new_code_result,
+        "auto_resolved_groups": auto_resolved,
     }
+
+def _auto_resolve_similar_pending_groups(db, studio_id, code_id, reference_group, user_id):
+    from rapidfuzz import fuzz
+    from app.pipeline.fuzzy.models import SCORE_THRESHOLD, SHORT_TEXT_EXACT_MAX_LEN
+    
+    new_alias = reference_group.get("normalized_text")
+    if not new_alias:
+        return []
+        
+    pending = db.execute(
+        text("SELECT id, normalized_text FROM mention_groups WHERE studio_id = :sid AND status = 'pending_review'"),
+        {"sid": studio_id}
+    ).mappings().all()
+    
+    auto_resolved = []
+    for p_group in pending:
+        text_norm = p_group["normalized_text"]
+        if not text_norm:
+            continue
+            
+        if len(text_norm) <= SHORT_TEXT_EXACT_MAX_LEN or len(new_alias) <= SHORT_TEXT_EXACT_MAX_LEN:
+            score = 100.0 if text_norm == new_alias else 0.0
+        else:
+            score = fuzz.WRatio(text_norm, new_alias)
+            
+        if score >= SCORE_THRESHOLD:
+            pid = p_group["id"]
+            deactivate_group_codes(db, pid)
+            assign_codes_to_group(db, pid, [code_id], "analyst_manual", user_id)
+            mark_group_resolved(db, pid, user_id)
+            
+            log_action(
+                db, user_id, studio_id, "mention_group", pid, "resolve:approve:auto_fuzzy",
+                old_value={"status": "pending_review"},
+                new_value={"status": "resolved", "code_ids": [str(code_id)], "score": score, "matched_alias": new_alias},
+            )
+            auto_resolved.append(str(pid))
+            
+    return auto_resolved

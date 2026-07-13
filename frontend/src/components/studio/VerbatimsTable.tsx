@@ -1,4 +1,4 @@
-import { Sparkles, Bot, UserCheck } from "lucide-react";
+import { Sparkles, Bot, UserCheck, Clock, AlertTriangle, HelpCircle, type LucideIcon } from "lucide-react";
 import type { CodingStatus, Verbatim, VerbatimCode } from "@/api/types";
 
 export function engineLabel(code: VerbatimCode): { text: string; icon: typeof Sparkles } {
@@ -15,7 +15,7 @@ export const STATUS_BADGE: Record<string, string> = {
   pending: "badge-pending",
   auto_coded: "badge-auto",
   needs_review: "badge-warning",
-  manually_coded: "badge-success",
+  manually_coded: "badge-manual",
   unknown: "badge-error",
 };
 
@@ -25,6 +25,14 @@ export const STATUS_LABELS: Record<CodingStatus, string> = {
   needs_review: "Necesita revisión",
   manually_coded: "Codificado a mano",
   unknown: "Desconocida",
+};
+
+export const STATUS_ICON: Record<CodingStatus, LucideIcon> = {
+  pending: Clock,
+  auto_coded: Sparkles,
+  needs_review: AlertTriangle,
+  manually_coded: UserCheck,
+  unknown: HelpCircle,
 };
 
 interface VerbatimsTableProps {
@@ -52,7 +60,7 @@ export function VerbatimsTable({ loading, verbatims, search }: VerbatimsTablePro
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-10 rounded" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-3/4 rounded" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-24 rounded" /></td>
-                <td className="px-4 py-2.5"><div className="skeleton h-3 w-16 rounded-full" /></td>
+                <td className="px-4 py-2.5"><div className="skeleton w-8 h-8 rounded-full" /></td>
               </tr>
             ))
           ) : verbatims.length === 0 ? (
@@ -79,31 +87,32 @@ export function VerbatimsTable({ loading, verbatims, search }: VerbatimsTablePro
                     <span className="text-xs text-p-text-faint">—</span>
                   ) : (
                     <div className="flex flex-col gap-1">
-                      {v.codes.map((code, i) => {
-                        const engine = engineLabel(code);
-                        const EngineIcon = engine.icon;
-                        return (
-                          <div key={i} className="flex items-center gap-1.5" title={code.matched_alias ? `Matcheó con "${code.matched_alias}"` : undefined}>
-                            <span className="text-xs font-medium text-p-text">
-                              {code.net ? <span className="text-p-text-faint">{code.net}/</span> : null}
-                              {code.label}
-                            </span>
-                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-p-border bg-p-bg-subtle text-p-text-muted">
-                              <EngineIcon className="w-3 h-3" />
-                              {engine.text}
-                            </span>
-                          </div>
-                        );
-                      })}
+                      {v.codes.map((code, i) => (
+                        <div key={i} className="flex items-center gap-1.5" title={code.matched_alias ? `Matcheó con "${code.matched_alias}"` : undefined}>
+                          <span className="text-xs font-medium text-p-text">
+                            {code.net ? <span className="text-p-text-faint">{code.net}/</span> : null}
+                            {code.label}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </td>
                 <td className="px-4 py-2.5">
-                  <span
-                    className={["inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full border", STATUS_BADGE[v.coding_status] ?? STATUS_BADGE.pending].join(" ")}
-                  >
-                    {STATUS_LABELS[v.coding_status as CodingStatus] ?? v.coding_status}
-                  </span>
+                  {(() => {
+                    const status = v.coding_status as CodingStatus;
+                    const label = STATUS_LABELS[status] ?? v.coding_status;
+                    const StatusIcon = STATUS_ICON[status] ?? HelpCircle;
+                    return (
+                      <span
+                        className={["inline-flex items-center justify-center w-8 h-8 rounded-full border", STATUS_BADGE[v.coding_status] ?? STATUS_BADGE.pending].join(" ")}
+                        title={label}
+                        aria-label={label}
+                      >
+                        <StatusIcon className="w-5 h-5" />
+                      </span>
+                    );
+                  })()}
                 </td>
               </tr>
             ))

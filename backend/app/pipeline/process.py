@@ -137,6 +137,24 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
     return {"run_id": str(run_id), "groups_classified": auto_coded, "anomalies": anomalies, "total": len(groups)}
 
 
+def _prefilter_garbage(db: Session, studio_id: uuid.UUID) -> int:
+    # Filter short strings or meaningless stopwords
+    res = db.execute(
+        text("""
+            update mention_groups
+            set status = 'anomaly'
+            where studio_id = :studio 
+            and status = 'pending_review'
+            and (
+                length(normalized_text) <= 2
+                or normalized_text in ('uno', 'dos', 'tres', 'ninguna', 'nada', 'no se', 'ninguno', 'na', 'nc')
+            )
+        """),
+        {"studio": studio_id},
+    )
+    return res.rowcount
+
+
 def process_studio(db: Session, studio_id: uuid.UUID, threshold: float = SCORE_THRESHOLD) -> dict:
     coding_type = db.execute(
         text("select coding_type from studio where id = :id"), {"id": studio_id}
@@ -144,20 +162,22 @@ def process_studio(db: Session, studio_id: uuid.UUID, threshold: float = SCORE_T
     if coding_type is None:
         raise LookupError(f"Studio no encontrado: {studio_id}")
 
-    if coding_type == "brands":
-        fuzzy_result = _process_brands(db, studio_id, threshold)
-        # Whatever the alias catalog didn't match stayed 'pending_review' — hand those to
-        # the LLM before giving up on them as anomalies.
-        llm_result = classify_studio(db, studio_id)
-        result = {
-            "run_id": fuzzy_result["run_id"],
-            "llm_run_id": llm_result["run_id"],
-            "groups_classified": fuzzy_result["groups_classified"] + llm_result["groups_classified"],
-            "anomalies": llm_result["anomalies"],
-            "total": fuzzy_result["total"],
-        }
-    else:
-        result = classify_studio(db, studio_id)
+    # Step 0: Bypass LLM for obvious garbage strings to save cost and reduce noise
+    filtered_count = _prefilter_garbage(db, studio_id)
+
+    # Step 1: Run fuzzy matching to auto-code exact/close matches from the catalog
+    fuzzy_result = _process_brands(db, studio_id, threshold)
+
+    # Step 2: Whatever didn't match stays 'pending_review'. Hand those to the LLM.
+    llm_result = classify_studio(db, studio_id)
+    
+    result = {
+        "run_id": fuzzy_result["run_id"],
+        "llm_run_id": llm_result["run_id"],
+        "groups_classified": fuzzy_result["groups_classified"] + llm_result["groups_classified"],
+        "anomalies": llm_result["anomalies"],
+        "total": fuzzy_result["total"],
+    }
 
     db.execute(
         text("update studio set status = 'preliminary_ready', updated_at = now() where id = :id"),
