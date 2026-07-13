@@ -185,7 +185,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                         </div>
                         <button
                           onClick={() => { logout(); navigate("/login"); }}
-                          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-p-text-muted hover:text-p-error hover:bg-red-50 transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-p-text-muted hover:text-p-error hover:bg-p-error/10 transition-colors"
                         >
                           <LogOut className="w-3.5 h-3.5" />
                           Cerrar sesión

@@ -120,7 +120,7 @@ export default function SignInPage() {
                   initial={{ opacity: 0, y: -8, height: 0 }}
                   animate={{ opacity: 1, y: 0, height: "auto" }}
                   exit={{ opacity: 0, y: -8, height: 0 }}
-                  className="flex items-center gap-2 text-sm text-p-error bg-red-50 border border-red-200 rounded-lg p-3"
+                  className="flex items-center gap-2 text-sm text-p-error bg-p-error/10 border border-p-error/30 rounded-lg p-3"
                 >
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span>{error}</span>

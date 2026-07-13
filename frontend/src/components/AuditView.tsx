@@ -571,7 +571,7 @@ export default function AuditView() {
                     whileTap={{ scale: 0.98 }}
                     onClick={handleApproveSection}
                     disabled={busy}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-accent text-xs font-bold text-white disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg project-row-icon-5 text-xs font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150 disabled:opacity-50"
                   >
                     <Check className="w-3.5 h-3.5" /> Aprobar sección
                   </motion.button>
@@ -841,7 +841,7 @@ function AuditRow({
                 <button
                   onClick={onSubmitReassign}
                   disabled={!reassignCodeId && !newCodeLabel.trim()}
-                  className="px-2.5 py-1 rounded-lg bg-gradient-accent text-xs font-bold text-white disabled:opacity-50"
+                  className="px-2.5 py-1 rounded-lg project-row-icon-2 text-xs font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150 disabled:opacity-50"
                 >
                   Aplicar
                 </button>
@@ -864,7 +864,7 @@ function AuditRow({
                 />
                 <button
                   onClick={onSubmitComment}
-                  className="px-2.5 py-1 rounded-lg border border-blue-200 bg-blue-50 text-xs font-bold text-blue-700"
+                  className="px-2.5 py-1 rounded-lg project-row-icon-2 text-xs font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150"
                 >
                   Guardar
                 </button>
