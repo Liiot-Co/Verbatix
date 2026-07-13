@@ -39,7 +39,11 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
     min_mentions = None
     if not catalog:
         min_mentions = db.execute(
-            text("select min_mentions_threshold from studio where id = :studio"),
+            text("""
+                select r.min_mentions_threshold from rounds r
+                join studio s on s.round_id = r.id
+                where s.id = :studio
+            """),
             {"studio": studio_id},
         ).scalar()
         catalog = discover_catalog_from_frequency(db, studio_id, min_mentions, threshold)

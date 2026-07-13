@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowRight, Plus, Trash2 } from "lucide-react";
-import { deleteRound, getProject } from "@/api/client";
-import type { ProjectDetail as ProjectDetailType, RoundSummary } from "@/api/types";
+import { ArrowRight, Plus } from "lucide-react";
+import { getProject } from "@/api/client";
+import type { ProjectDetail as ProjectDetailType } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import { countStudies, groupProjectByStudies } from "@/lib/projectTree";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -47,14 +47,6 @@ export default function ProjectDetail() {
     ]);
   }, [navigate, projectId]);
   useKeyboardShortcuts("project-detail");
-
-  const handleDeleteRound = async (e: React.MouseEvent, round: RoundSummary) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!confirm(`¿Eliminar la ronda "${round.name}"? Esto borra todos sus estudios.`)) return;
-    await deleteRound(round.id);
-    setProject((p) => (p ? { ...p, rounds: p.rounds.filter((r) => r.id !== round.id) } : p));
-  };
 
   if (loading) {
     return (
@@ -151,36 +143,6 @@ export default function ProjectDetail() {
                 </Link>
               );
             })}
-          </div>
-        </section>
-      )}
-
-      {project.rounds.length > 0 && (
-        <section className="space-y-2.5 pt-2 border-t border-p-border">
-          <h2 className="text-[11px] font-semibold tracking-[0.08em] uppercase text-p-text-faint">
-            Rondas del proyecto
-          </h2>
-          <div className="space-y-1.5">
-            {project.rounds.map((round) => (
-              <div key={round.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-p-border bg-p-surface/60">
-                <div className="min-w-0">
-                  <span className="text-xs font-semibold text-p-text-faint mr-2">R{round.round_number}</span>
-                  <span className="text-sm text-p-text">{round.name}</span>
-                  <span className="text-[11px] text-p-text-faint ml-2">
-                    {round.studios.length} {round.studios.length === 1 ? "estudio" : "estudios"}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={(e) => handleDeleteRound(e, round)}
-                  className="w-7 h-7 flex items-center justify-center rounded-md text-p-text-faint hover:text-p-error hover:bg-p-error/10 transition-colors shrink-0"
-                  title="Eliminar ronda"
-                  aria-label={`Eliminar ronda ${round.name}`}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
           </div>
         </section>
       )}

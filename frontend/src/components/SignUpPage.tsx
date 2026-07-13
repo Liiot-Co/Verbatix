@@ -40,8 +40,10 @@ export default function SignUpPage() {
       } else {
         setSuccess(true);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error al registrarse");
+    } catch {
+      // El error crudo del backend/Supabase viene en inglés y como texto técnico
+      // (JSON, códigos internos) — no es apto para mostrar tal cual.
+      setError("No se pudo crear la cuenta. Intenta de nuevo.");
     } finally {
       setLoading(false);
     }
@@ -63,7 +65,7 @@ export default function SignUpPage() {
           >
             <CheckCircle2 className="w-12 h-12 text-p-success mx-auto" />
           </motion.div>
-          <h2 className="font-heading text-lg font-semibold text-p-text tracking-tight">Revisa tu email</h2>
+          <h2 className="font-heading text-lg font-semibold text-p-text tracking-tight">Revisa tu correo</h2>
           <p className="text-sm text-p-text-muted">
             Te enviamos un enlace de confirmación a <strong className="text-p-text">{email}</strong>.
           </p>
@@ -116,7 +118,7 @@ export default function SignUpPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="form-label" htmlFor="signup-email">Email</label>
+              <label className="form-label" htmlFor="signup-email">Correo electrónico</label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-p-text-faint pointer-events-none" />
                 <input

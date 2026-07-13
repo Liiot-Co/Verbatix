@@ -138,6 +138,8 @@ export async function deleteStudio(studioId: string): Promise<void> {
 export interface CreateRoundInput {
   name: string;
   round_number: number;
+  min_mentions_threshold: number;
+  audit_percentage: number;
 }
 
 export async function createRound(projectId: string, input: CreateRoundInput): Promise<Round> {
@@ -154,8 +156,6 @@ export interface CreateStudioInput {
   survey_question?: string | undefined;
   origin_mode: "from_scratch" | "homologated";
   source_studio_id?: string | null | undefined;
-  min_mentions_threshold: number;
-  audit_percentage: number;
 }
 
 export async function createStudio(roundId: string, input: CreateStudioInput): Promise<Studio> {

@@ -29,6 +29,8 @@ router = APIRouter(prefix="/api/v1", tags=["rounds & studios"])
 class RoundIn(BaseModel):
     name: str
     round_number: int
+    min_mentions_threshold: int = 3
+    audit_percentage: float = 10
 
 
 @router.post("/projects/{project_id}/rounds", status_code=201)
@@ -48,14 +50,17 @@ def create_round(
     rid = uuid.uuid4()
     db.execute(
         text("""
-            insert into rounds (id, project_id, name, round_number, created_by)
-            values (:id, :p, :n, :num, :u)
+            insert into rounds (id, project_id, name, round_number,
+                                min_mentions_threshold, audit_percentage, created_by)
+            values (:id, :p, :n, :num, :thr, :pct, :u)
         """),
         {
             "id": rid,
             "p": project_id,
             "n": payload.name,
             "num": payload.round_number,
+            "thr": payload.min_mentions_threshold,
+            "pct": payload.audit_percentage,
             "u": user["id"],
         },
     )
@@ -63,7 +68,7 @@ def create_round(
     return {
         "id": str(rid),
         "project_id": str(project_id),
-        **payload.model_dump(),
+        **payload.model_dump(mode="json"),
         "status": "draft",
     }
 
@@ -89,8 +94,6 @@ class StudioIn(BaseModel):
     survey_question: str | None = None
     origin_mode: str = "from_scratch"
     source_studio_id: uuid.UUID | None = None
-    min_mentions_threshold: int = 3
-    audit_percentage: float = 10
 
 
 @router.post("/rounds/{round_id}/studios", status_code=201)
@@ -114,9 +117,8 @@ def create_studio(
     db.execute(
         text("""
             insert into studio (id, round_id, name, coding_type, survey_question,
-                                origin_mode, source_studio_id,
-                                min_mentions_threshold, audit_percentage)
-            values (:id, :r, :n, :ct, :q, :om, :src, :thr, :pct)
+                                origin_mode, source_studio_id)
+            values (:id, :r, :n, :ct, :q, :om, :src)
         """),
         {
             "id": studio_id,
@@ -126,8 +128,6 @@ def create_studio(
             "q": payload.survey_question,
             "om": payload.origin_mode,
             "src": payload.source_studio_id,
-            "thr": payload.min_mentions_threshold,
-            "pct": payload.audit_percentage,
         },
     )
 

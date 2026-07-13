@@ -56,7 +56,12 @@ def resolve_group(
         )
 
     studio_threshold = db.execute(
-        text("select min_mentions_threshold from studio where id = :id"), {"id": studio_id}
+        text("""
+            select r.min_mentions_threshold from rounds r
+            join studio s on s.round_id = r.id
+            where s.id = :id
+        """),
+        {"id": studio_id},
     ).scalar()
     cb_id = _current_codebook_id(db, studio_id)
 

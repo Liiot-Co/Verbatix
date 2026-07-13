@@ -56,6 +56,8 @@ class Round(Base):
     name = Column(String, nullable=False)
     round_number = Column(Integer, nullable=False)
     status = Column(String, nullable=False, default="draft")
+    min_mentions_threshold = Column(Integer, nullable=False, default=3)
+    audit_percentage = Column(Numeric(5, 2), nullable=False, default=10.00)
     created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
@@ -77,8 +79,6 @@ class Studio(Base):
     survey_question = Column(Text, nullable=True)
     origin_mode = Column(String, nullable=False, default="from_scratch")  # 'from_scratch' | 'homologated'
     source_studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id"), nullable=True)
-    min_mentions_threshold = Column(Integer, nullable=False, default=3)
-    audit_percentage = Column(Numeric(5, 2), nullable=False, default=10.00)
     status = Column(String, nullable=False, default="created")
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
