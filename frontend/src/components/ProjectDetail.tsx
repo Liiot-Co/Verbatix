@@ -4,7 +4,7 @@ import { ArrowRight, Plus } from "lucide-react";
 import { getProject } from "@/api/client";
 import type { ProjectDetail as ProjectDetailType } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
-import { countStudies, groupProjectByStudies } from "@/lib/projectTree";
+import { codingTypeLabel, countStudies, groupProjectByStudies, studyDisplayName } from "@/lib/projectTree";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
 
@@ -117,7 +117,7 @@ export default function ProjectDetail() {
             {studies.map((study) => {
               const totalVerbatims = study.rounds.reduce((n, r) => n + r.studio.verbatims_total, 0);
               const totalCoded = study.rounds.reduce((n, r) => n + r.studio.auto_coded, 0);
-              const typeLabel = study.coding_type === "brands" ? "Marcas" : "Razones";
+              const typeLabel = codingTypeLabel(study.coding_type);
               return (
                 <Link
                   key={study.key}
@@ -129,7 +129,7 @@ export default function ProjectDetail() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-semibold text-p-text truncate group-hover:text-p-accent transition-colors">
-                      {study.name}
+                      {studyDisplayName(study.name, study.coding_type)}
                     </div>
                     <div className="text-[11px] font-subtitle text-p-text-faint mt-0.5 truncate">
                       {typeLabel}

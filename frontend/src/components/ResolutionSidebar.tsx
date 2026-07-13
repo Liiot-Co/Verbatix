@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router-dom";
 import { AlertTriangle, Check, CheckCircle2, Maximize2, Plus, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   getMentionGroup,
   getResolutionQueue,
   getResolutionSummary,
+  getStudio,
   getStudioCodes,
   resolveMentionGroup,
 } from "@/api/client";
 import type {
+  CodingType,
   MentionGroupDetail,
   MentionGroupStatus,
   ResolutionQueueItem,
@@ -17,6 +20,7 @@ import type {
   ResolveDecision,
   StudioCode,
 } from "@/api/types";
+import { codingTypeNoun } from "@/lib/projectTree";
 import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 
@@ -91,6 +95,7 @@ export default function ResolutionSidebar({
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
   const [total, setTotal] = useState(0);
   const [, setSummary] = useState<ResolutionSummary | null>(null);
+  const [codingType, setCodingType] = useState<CodingType>("brands");
   const [codes, setCodes] = useState<StudioCode[]>([]);
   const [systemCodes, setSystemCodes] = useState<StudioCode[]>([]);
   const [detail, setDetail] = useState<MentionGroupDetail | null>(null);
@@ -146,6 +151,10 @@ export default function ResolutionSidebar({
   }, [autoCols]);
 
   const currentCard = queue[0] ?? null;
+  const noun = codingTypeNoun(codingType);
+  const newCodeHint = `Nueva ${noun}`;
+  const assignHint = `Asignar a ${noun}`;
+  const newCodeNameLabel = `Nombre de nueva ${noun}`;
 
   const loadQueue = useCallback(() => {
     return getResolutionQueue(studioId, PAGE_SIZE, 0).then((res) => {
@@ -161,12 +170,13 @@ export default function ResolutionSidebar({
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      loadQueue(), 
-      loadSummary(), 
+      loadQueue(),
+      loadSummary(),
+      getStudio(studioId).then((s) => setCodingType(s.coding_type)),
       getStudioCodes(studioId, true).then((allCodes) => {
         setCodes(allCodes.filter(c => !c.is_system));
         setSystemCodes(allCodes.filter(c => c.is_system).sort((a, b) => a.code_number - b.code_number));
-      })
+      }),
     ]).finally(() => setLoading(false));
   }, [studioId, loadQueue, loadSummary]);
 
@@ -353,10 +363,10 @@ export default function ResolutionSidebar({
             openNewCodeInput();
           }
         },
-        description: "Nueva marca / Navegar derecha",
+        description: `${newCodeHint} / Navegar derecha`,
         category: "Acciones",
       },
-      { key: "n", action: openNewCodeInput, description: "Nueva marca", category: "Acciones" },
+      { key: "n", action: openNewCodeInput, description: newCodeHint, category: "Acciones" },
       {
         key: "ArrowUp",
         action: () => {
@@ -384,7 +394,7 @@ export default function ResolutionSidebar({
             setNavCodeIndex((i) => Math.min(codes.length - 1, i + gridCols));
           }
         },
-        description: "Navegar abajo / Ir a marcas",
+        description: `Navegar abajo / Ir a ${codingType === "reasons" ? "razones" : "marcas"}`,
         category: "Navegación",
       },
       ...Array.from({ length: 9 }, (_, i) => ({
@@ -410,7 +420,7 @@ export default function ResolutionSidebar({
         category: "Acciones",
       },
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols, newCodeHint, codingType]);
 
   useKeyboardShortcuts("resolution-sidebar");
 
@@ -469,14 +479,20 @@ export default function ResolutionSidebar({
 
       {allResolved ? (
         <div className="flex-1 overflow-y-auto scrollbar-thin p-4 flex flex-col">
-          <div className="flex-1 bg-p-surface border border-p-border rounded-2xl flex flex-col items-center justify-center gap-2.5 text-center">
+          <div className="flex-1 bg-p-surface border border-p-border rounded-2xl flex flex-col items-center justify-center gap-2.5 text-center px-4">
             <div className="w-12 h-12 rounded-full bg-green-50 border border-green-200 flex items-center justify-center">
               <CheckCircle2 className="w-6 h-6 text-p-success" />
             </div>
             <div>
               <div className="font-semibold text-sm text-p-text mb-0.5">¡Todo clasificado!</div>
-              <div className="text-sm text-p-text-muted">Podés finalizar el proceso.</div>
+              <div className="text-sm text-p-text-muted">Podés seguir a la auditoría cuando quieras.</div>
             </div>
+            <Link
+              to={`/studios/${studioId}/audit`}
+              className="btn-primary text-xs py-1.5 px-3 mt-1"
+            >
+              Ir a auditoría
+            </Link>
           </div>
         </div>
       ) : currentCard && detail ? (
@@ -504,7 +520,7 @@ export default function ResolutionSidebar({
                 {showNewCodeInput ? (
                   <div className="flex flex-col gap-2">
                     <label className="font-mono text-[10.5px] tracking-wide uppercase text-blue-600">
-                      Nombre de nueva marca
+                      {newCodeNameLabel}
                     </label>
                     <input
                       ref={newCodeInputRef}
@@ -609,7 +625,7 @@ export default function ResolutionSidebar({
                       className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 text-sm font-bold text-blue-700 hover:bg-blue-100 transition-colors"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Nueva</span>
+                      <span>{newCodeHint}</span>
                       <kbd className="kbd-hint">→</kbd>
                     </button>
                   </div>
@@ -622,8 +638,8 @@ export default function ResolutionSidebar({
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-4 pt-3 space-y-3">
             <div className="bg-p-surface border border-p-border rounded-2xl p-3.5">
               <div className="flex items-center gap-1.5 mb-2">
-                <span className="text-[10.5px] tracking-wide uppercase text-p-text-faint whitespace-nowrap">
-                  Asignar
+                <span className="font-mono text-[10.5px] tracking-wide uppercase text-p-text-faint whitespace-nowrap">
+                  {assignHint}
                 </span>
                 <div className="flex-1 h-px bg-p-border" />
                 <div className="flex items-center gap-0.5">
@@ -710,10 +726,10 @@ export default function ResolutionSidebar({
                   <kbd className="kbd-hint">←</kbd>Descartar
                 </span>
                 <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-                  <kbd className="kbd-hint">→</kbd>Nueva marca
+                  <kbd className="kbd-hint">→</kbd>{newCodeHint}
                 </span>
                 <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-                  <kbd className="kbd-hint">↓</kbd>Ir a marcas
+                  <kbd className="kbd-hint">↓</kbd>Ir a {codingType === "reasons" ? "razones" : "marcas"}
                 </span>
               </>
             ) : (

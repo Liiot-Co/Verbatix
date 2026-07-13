@@ -180,6 +180,19 @@ def get_studio(
 ):
     row = require_studio(db, studio_id, user["id"])
 
+    nav = db.execute(
+        text("""
+            select r.name as round_name, r.round_number,
+                   p.id as project_id, p.name as project_name,
+                   p.external_code as project_external_code
+            from studio s
+            join rounds r on r.id = s.round_id
+            join projects p on p.id = r.project_id
+            where s.id = :id
+        """),
+        {"id": studio_id},
+    ).mappings().first()
+
     counters = db.execute(
         text("""
             select
@@ -216,7 +229,21 @@ def get_studio(
         "target_met": audit_row["target_met"] if audit_row else False,
     }
 
-    return {**row, "counters": dict(counters), "audit": audit}
+    # UUID → str para que el front arme breadcrumbs/rutas sin "undefined".
+    studio_out = {
+        k: str(v) if isinstance(v, uuid.UUID) else v
+        for k, v in dict(row).items()
+    }
+    return {
+        **studio_out,
+        "round_name": nav["round_name"] if nav else None,
+        "round_number": nav["round_number"] if nav else None,
+        "project_id": str(nav["project_id"]) if nav else None,
+        "project_name": nav["project_name"] if nav else None,
+        "project_external_code": nav["project_external_code"] if nav else None,
+        "counters": dict(counters),
+        "audit": audit,
+    }
 
 
 @router.get("/studios/{studio_id}/mention-groups")

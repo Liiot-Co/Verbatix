@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.access import require_audit_code_review, require_audit_item, require_studio
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.pipeline.audit import (
     AuditConflict,
     AuditPrecondition,
+    approve_code_review,
     approve_session,
     review_item,
     start_audit_session,
@@ -37,6 +39,7 @@ def create_or_resume_audit_session(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     try:
         return start_audit_session(
             db, studio_id, user_id=user["id"], resample=bool(payload and payload.resample)
@@ -55,6 +58,7 @@ def audit_session_summary(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     summary = get_audit_summary(db, studio_id)
     if not summary:
         raise HTTPException(404, "El estudio no tiene sesión de auditoría")
@@ -67,6 +71,7 @@ def audit_code_reviews(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     session = get_audit_session(db, studio_id)
     if not session:
         raise HTTPException(404, "El estudio no tiene sesión de auditoría")
@@ -81,8 +86,28 @@ def audit_items(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_audit_code_review(db, review_id, user["id"])
     items, total = list_audit_items(db, review_id, limit, offset)
     return {"total": total, "items": items}
+
+
+@router.post("/audit-code-reviews/{review_id}/approve")
+def approve_audit_section(
+    review_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    # La unidad de revisión es la sección: da por correctos los items sin
+    # corregir y cierra el code review (approved / with_corrections).
+    require_audit_code_review(db, review_id, user["id"])
+    try:
+        return approve_code_review(db, review_id, user_id=user["id"])
+    except AuditConflict as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(404, str(exc)) from exc
 
 
 class NewCodeIn(BaseModel):
@@ -91,7 +116,7 @@ class NewCodeIn(BaseModel):
 
 
 class ReviewDecision(BaseModel):
-    action: str  # "correct" | "reassign" | "remove"
+    action: str  # "reassign" | "remove" — lo "correcto" se da por sección, no por item
     code_ids: list[uuid.UUID] = []
     new_code: NewCodeIn | None = None
     comment: str | None = None
@@ -105,6 +130,7 @@ def review_audit_item(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_audit_item(db, item_id, user["id"])
     decision = payload.model_dump(mode="json", exclude={"expected_status"})
     try:
         return review_item(
@@ -123,7 +149,6 @@ def review_audit_item(
 
 class PatchItemIn(BaseModel):
     comment: str | None = None
-    status: str | None = None  # solo "pending" | "correct"
 
 
 @router.patch("/audit-items/{item_id}")
@@ -133,10 +158,9 @@ def patch_audit_item(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_audit_item(db, item_id, user["id"])
     try:
-        return update_item(
-            db, item_id, user_id=user["id"], comment=payload.comment, status=payload.status
-        )
+        return update_item(db, item_id, user_id=user["id"], comment=payload.comment)
     except AuditConflict as exc:
         db.rollback()
         raise HTTPException(409, str(exc)) from exc
@@ -156,6 +180,7 @@ def delete_audit_item(
 ):
     # "Eliminar" audita: desactiva las asignaciones del verbatim (queda
     # 'needs_review', visible como "sin código") — no borra el item muestreado.
+    require_audit_item(db, item_id, user["id"])
     try:
         return review_item(db, item_id, {"action": "remove"}, user_id=user["id"])
     except AuditConflict as exc:
@@ -172,6 +197,7 @@ def approve_audit(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     try:
         return approve_session(db, studio_id, user_id=user["id"])
     except AuditPrecondition as exc:

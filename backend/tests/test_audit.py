@@ -13,6 +13,7 @@ import pytest
 from app.pipeline.audit import (
     AuditConflict,
     AuditPrecondition,
+    approve_code_review,
     approve_session,
     review_item,
     select_sample,
@@ -257,7 +258,7 @@ def test_review_item_not_found():
     db = FakeSession()
     with patch("app.pipeline.audit.get_audit_item", return_value=None):
         with pytest.raises(LookupError):
-            review_item(db, ITEM_ID, {"action": "correct"}, user_id=USER_ID)
+            review_item(db, ITEM_ID, {"action": "remove"}, user_id=USER_ID)
 
 
 def test_review_blocked_after_approval():
@@ -265,41 +266,24 @@ def test_review_blocked_after_approval():
     with ExitStack() as stack:
         ReviewMocks(stack, _item(session_status="approved"))
         with pytest.raises(AuditConflict):
-            review_item(db, ITEM_ID, {"action": "correct"}, user_id=USER_ID)
+            review_item(db, ITEM_ID, {"action": "remove"}, user_id=USER_ID)
 
 
 def test_review_conflict_on_expected_status_mismatch():
     db = FakeSession()
     with ExitStack() as stack:
-        ReviewMocks(stack, _item(status="correct"))
+        ReviewMocks(stack, _item(status="reassigned"))
         with pytest.raises(AuditConflict):
-            review_item(db, ITEM_ID, {"action": "correct"}, user_id=USER_ID, expected_status="pending")
+            review_item(db, ITEM_ID, {"action": "remove"}, user_id=USER_ID, expected_status="pending")
 
 
-def test_review_correct_is_idempotent():
+def test_review_correct_is_no_longer_an_item_action():
+    # "Correcto" se resuelve por sección (approve_code_review), no por item.
     db = FakeSession()
     with ExitStack() as stack:
-        mocks = ReviewMocks(stack, _item(status="correct"))
-        result = review_item(db, ITEM_ID, {"action": "correct"}, user_id=USER_ID)
-
-    assert result["already_reviewed"] is True
-    mocks.update_item.assert_not_called()
-    assert not db.committed
-
-
-def test_review_correct_marks_and_commits():
-    db = FakeSession()
-    with ExitStack() as stack:
-        mocks = ReviewMocks(stack, _item())
-        result = review_item(db, ITEM_ID, {"action": "correct"}, user_id=USER_ID)
-
-    assert result["status"] == "correct"
-    mocks.update_item.assert_called_once()
-    mocks.deactivate.assert_not_called()
-    mocks.bump.assert_not_called()
-    mocks.refresh.assert_called_once()
-    mocks.log.assert_called_once()
-    assert db.committed
+        ReviewMocks(stack, _item())
+        with pytest.raises(ValueError):
+            review_item(db, ITEM_ID, {"action": "correct"}, user_id=USER_ID)
 
 
 def test_review_reassign_rewrites_codes_as_audit_correction():
@@ -373,14 +357,6 @@ def test_review_invalid_action():
 # ── update_item (PATCH) ──
 
 
-def test_update_item_rejects_reassigned_status():
-    db = FakeSession()
-    with ExitStack() as stack:
-        ReviewMocks(stack, _item())
-        with pytest.raises(ValueError):
-            update_item(db, ITEM_ID, user_id=USER_ID, status="reassigned")
-
-
 def test_update_item_blocked_after_approval():
     db = FakeSession()
     with ExitStack() as stack:
@@ -398,6 +374,85 @@ def test_update_item_edits_comment():
     assert result["comment"] == "ojo con este"
     mocks.update_item.assert_called_once()
     assert db.committed
+
+
+# ── approve_code_review (aprobar sección) ──
+
+
+def _review(status="pending", pending_items=5, corrections=0, session_status="in_progress"):
+    return {
+        "id": str(uuid.uuid4()), "status": status, "items_count": 5,
+        "corrections_count": corrections, "pending_items": pending_items,
+        "session_id": SESSION_ID, "session_status": session_status,
+        "studio_id": str(STUDIO_ID),
+    }
+
+
+class SectionMocks:
+    def __init__(self, stack: ExitStack, review):
+        base = "app.pipeline.audit."
+        stack.enter_context(patch(base + "get_audit_code_review", return_value=review))
+        self.mark = stack.enter_context(patch(base + "mark_review_items_correct", return_value=review["pending_items"] if review else 0))
+        self.set_result = stack.enter_context(
+            patch(base + "set_code_review_result",
+                  return_value="with_corrections" if review and review["corrections_count"] else "approved")
+        )
+        self.refresh = stack.enter_context(
+            patch(base + "refresh_audit_session_progress",
+                  return_value={"total_items": 10, "reviewed_items": 10, "target_met": True})
+        )
+        stack.enter_context(patch(base + "get_audit_summary", return_value={"status": "in_progress"}))
+        self.log = stack.enter_context(patch(base + "log_action"))
+
+
+def test_approve_section_not_found():
+    db = FakeSession()
+    with patch("app.pipeline.audit.get_audit_code_review", return_value=None):
+        with pytest.raises(LookupError):
+            approve_code_review(db, uuid.uuid4(), user_id=USER_ID)
+
+
+def test_approve_section_blocked_after_session_approval():
+    db = FakeSession()
+    with ExitStack() as stack:
+        SectionMocks(stack, _review(session_status="approved"))
+        with pytest.raises(AuditConflict):
+            approve_code_review(db, uuid.uuid4(), user_id=USER_ID)
+
+
+def test_approve_section_marks_pending_items_correct():
+    db = FakeSession()
+    with ExitStack() as stack:
+        mocks = SectionMocks(stack, _review(pending_items=5))
+        result = approve_code_review(db, uuid.uuid4(), user_id=USER_ID)
+
+    assert result["status"] == "approved"
+    assert result["items_marked"] == 5
+    assert result["already_approved"] is False
+    mocks.mark.assert_called_once()
+    mocks.set_result.assert_called_once()
+    mocks.refresh.assert_called_once()
+    mocks.log.assert_called_once()
+    assert db.committed
+
+
+def test_approve_section_with_corrections():
+    db = FakeSession()
+    with ExitStack() as stack:
+        SectionMocks(stack, _review(pending_items=2, corrections=3))
+        result = approve_code_review(db, uuid.uuid4(), user_id=USER_ID)
+    assert result["status"] == "with_corrections"
+
+
+def test_approve_section_is_idempotent():
+    db = FakeSession()
+    with ExitStack() as stack:
+        mocks = SectionMocks(stack, _review(status="approved", pending_items=0))
+        result = approve_code_review(db, uuid.uuid4(), user_id=USER_ID)
+
+    assert result["already_approved"] is True
+    mocks.mark.assert_not_called()
+    assert not db.committed
 
 
 # ── approve_session ──

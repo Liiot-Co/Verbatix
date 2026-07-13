@@ -372,8 +372,10 @@ export interface AuditItemList {
   items: AuditItem[];
 }
 
+// Solo correcciones por item — lo "correcto" se da al aprobar la SECCIÓN
+// (approveAuditSection), no marcando verbatim por verbatim.
 export interface AuditReviewDecision {
-  action: "correct" | "reassign" | "remove";
+  action: "reassign" | "remove";
   code_ids?: string[];
   new_code?: NewCodeInput | null;
   comment?: string | null;
@@ -392,6 +394,16 @@ export interface AuditPatchResult {
   item_id: string;
   status: AuditItemStatus;
   comment: string | null;
+}
+
+// POST /audit-code-reviews/{id}/approve — cierra una sección: los items sin
+// corregir quedan 'correct' y el code review pasa a approved/with_corrections.
+export interface AuditSectionApproveResult {
+  review_id: string;
+  status: AuditCodeReviewStatus;
+  items_marked: number;
+  already_approved: boolean;
+  summary: AuditSessionSummary;
 }
 
 export type AuditApproveResult = AuditSessionSummary & { already_approved: boolean };

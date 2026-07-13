@@ -821,6 +821,61 @@ def get_audit_item(db: Session, item_id: uuid.UUID) -> dict | None:
     }
 
 
+def get_audit_code_review(db: Session, review_id: uuid.UUID) -> dict | None:
+    """Sección (code review) + contexto de su sesión — lo que la aprobación por sección valida."""
+    row = db.execute(
+        text("""
+            select r.id, r.status, r.items_count, r.corrections_count,
+                   s.id as session_id, s.status as session_status, s.studio_id,
+                   (select count(*) from audit_items i
+                     where i.audit_code_review_id = r.id and i.status = 'pending') as pending_items
+            from audit_code_reviews r
+            join audit_sessions s on s.id = r.audit_session_id
+            where r.id = :id
+        """),
+        {"id": review_id},
+    ).mappings().first()
+    if not row:
+        return None
+    return {
+        "id": str(row["id"]),
+        "status": row["status"],
+        "items_count": row["items_count"],
+        "corrections_count": row["corrections_count"],
+        "pending_items": row["pending_items"],
+        "session_id": str(row["session_id"]),
+        "session_status": row["session_status"],
+        "studio_id": str(row["studio_id"]),
+    }
+
+
+def mark_review_items_correct(db: Session, review_id: uuid.UUID, user_id) -> int:
+    """Aprobar la sección da por correctos sus items sin corregir — el analista revisa
+    por código, no verbatim por verbatim; lo editado/eliminado ya quedó 'reassigned'."""
+    return db.execute(
+        text("""
+            update audit_items
+            set status = 'correct', reviewer_id = :u, reviewed_at = now()
+            where audit_code_review_id = :id and status = 'pending'
+        """),
+        {"id": review_id, "u": user_id},
+    ).rowcount
+
+
+def set_code_review_result(db: Session, review_id: uuid.UUID, user_id) -> str:
+    """Cierra la sección: 'approved' si no hubo correcciones, 'with_corrections' si las hubo."""
+    return db.execute(
+        text("""
+            update audit_code_reviews
+            set status = case when corrections_count > 0 then 'with_corrections' else 'approved' end,
+                reviewer_id = :u, reviewed_at = now()
+            where id = :id
+            returning status
+        """),
+        {"id": review_id, "u": user_id},
+    ).scalar()
+
+
 def deactivate_verbatim_codes(db: Session, verbatim_id: uuid.UUID) -> int:
     """Como deactivate_group_codes pero para un solo verbatim: preserva histórico."""
     return db.execute(

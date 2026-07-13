@@ -7,7 +7,7 @@ import type { CodingStatus, PreliminarySummary, ResolutionSummary, StudioStatus,
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 import ResolutionCenter from "./ResolutionCenter";
-import { studyKey } from "@/lib/projectTree";
+import { studyDisplayName, studyKey } from "@/lib/projectTree";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -102,6 +102,18 @@ export default function UnifiedStudioView() {
     }, 10000);
     return () => clearInterval(id);
   }, [autoProcessing, loadData, loadVerbatims]);
+
+  // Solo al cerrar la resolución (false → true) se avanza a auditoría.
+  // Si el usuario vuelve a procesamiento por breadcrumb, no se lo expulsa.
+  const wasCloseable = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!studioId || resolution == null) return;
+    const canClose = resolution.can_close;
+    if (wasCloseable.current === false && canClose) {
+      navigate(`/studios/${studioId}/audit`);
+    }
+    wasCloseable.current = canClose;
+  }, [studioId, resolution, navigate]);
 
   const handleProcess = async () => {
     if (!studioId) return;
@@ -209,10 +221,10 @@ export default function UnifiedStudioView() {
             { label: "Proyectos", to: "/" },
             { label: studio.project_name, to: `/projects/${studio.project_id}` },
             {
-              label: studio.name,
+              label: studyDisplayName(studio.name, studio.coding_type),
               to: `/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`,
             },
-            { label: `R${studio.round_number} · ${studio.round_name}` },
+            { label: "Procesamiento" },
           ]}
         />
       </div>
@@ -237,10 +249,7 @@ export default function UnifiedStudioView() {
           momentum={momentum}
           codedPct={codedPct}
           justFinished={justFinished}
-          studioId={studioId!}
           onOpenResolution={() => setFullscreenResolution(true)}
-          canClose={resolution?.can_close ?? false}
-          audit={studio.audit}
         />
       )}
 

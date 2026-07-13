@@ -4,9 +4,23 @@ import { ArrowRight, Plus, Trash2 } from "lucide-react";
 import { deleteStudio, getProject } from "@/api/client";
 import type { ProjectDetail as ProjectDetailType } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
-import { findStudyGroup, parseStudyKey } from "@/lib/projectTree";
+import { findStudyGroup, parseStudyKey, studyDisplayName, codingTypeLabel, studioPhasePath } from "@/lib/projectTree";
 import { STUDIO_STATUS_TONE, studioStatusLabel } from "@/lib/studioStatus";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+
+function phaseLabel(status: string): string {
+  if (status === "audit_pending") return "Auditoría";
+  if (status === "audit_approved") return "Auditado";
+  if (
+    status === "processing" ||
+    status === "files_uploaded" ||
+    status === "preliminary_ready" ||
+    status === "manual_coding"
+  ) {
+    return "Procesamiento";
+  }
+  return studioStatusLabel(status);
+}
 
 export default function StudyDetail() {
   const { projectId, studyKey } = useParams<{ projectId: string; studyKey: string }>();
@@ -59,7 +73,8 @@ export default function StudyDetail() {
     );
   }
 
-  const typeLabel = study.coding_type === "brands" ? "Marcas" : "Razones";
+  const typeLabel = codingTypeLabel(study.coding_type);
+  const displayName = studyDisplayName(study.name, study.coding_type);
 
   return (
     <div className="max-w-4xl mx-auto py-4 space-y-5">
@@ -67,7 +82,7 @@ export default function StudyDetail() {
         items={[
           { label: "Proyectos", to: "/" },
           { label: project.name, to: `/projects/${project.id}` },
-          { label: study.name },
+          { label: displayName },
         ]}
       />
 
@@ -77,7 +92,7 @@ export default function StudyDetail() {
             <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border border-p-border bg-p-bg-subtle uppercase tracking-wide text-p-text-muted">
               {typeLabel}
             </span>
-            <h1 className="font-heading text-xl font-semibold text-p-text tracking-tight">{study.name}</h1>
+            <h1 className="font-heading text-xl font-semibold text-p-text tracking-tight">{displayName}</h1>
           </div>
           <p className="font-subtitle text-xs text-p-text-muted">
             {study.rounds.length} {study.rounds.length === 1 ? "ronda" : "rondas"} en {project.external_code}
@@ -107,7 +122,7 @@ export default function StudyDetail() {
           {study.rounds.map((entry) => (
             <Link
               key={entry.studio.id}
-              to={`/studios/${entry.studio.id}`}
+              to={studioPhasePath(entry.studio.id, entry.studio.status)}
               className="project-row group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40"
             >
               <div className="flex-1 min-w-0">
@@ -115,6 +130,8 @@ export default function StudyDetail() {
                   R{entry.round_number} · {entry.round_name}
                 </div>
                 <div className="text-[11px] font-subtitle text-p-text-faint mt-0.5">
+                  {phaseLabel(entry.studio.status)}
+                  <span className="mx-1.5 text-p-border-mid">·</span>
                   {entry.studio.auto_coded}/{entry.studio.verbatims_total} codificados
                 </div>
               </div>

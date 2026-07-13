@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
   Check,
@@ -13,6 +13,7 @@ import {
 import { motion } from "framer-motion";
 import {
   approveAudit,
+  approveAuditSection,
   createAuditSession,
   deleteAuditItem,
   getAuditCodes,
@@ -33,6 +34,7 @@ import type {
 import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { playSuccess, playTick } from "@/lib/sound";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { studyDisplayName, studyKey } from "@/lib/projectTree";
 import Breadcrumb from "./Breadcrumb";
 
 const ITEMS_PAGE = 200;
@@ -58,11 +60,14 @@ function codeColor(codeNumber: number): string {
 /**
  * Vista de Auditoría (Fase 5) — master-detail coherente con el Centro de
  * Resolución: lista de códigos muestreados a la izquierda, tabla de verbatims
- * del código seleccionado a la derecha. El analista confirma, reasigna, edita
- * o elimina asignaciones hasta alcanzar el % objetivo, y aprueba.
+ * del código seleccionado a la derecha. La revisión es POR SECCIÓN: el analista
+ * corrige (reasigna/elimina/comenta) lo que esté mal y aprueba la sección — los
+ * items sin corregir quedan correctos. Al completar las secciones, aprueba la
+ * auditoría.
  */
 export default function AuditView() {
   const { studioId } = useParams<{ studioId: string }>();
+  const navigate = useNavigate();
   const showToast = useVerbatixStore((s) => s.showToast);
 
   const [studio, setStudio] = useState<StudioStatus | null>(null);
@@ -104,6 +109,10 @@ export default function AuditView() {
         const [s, session] = await Promise.all([getStudio(studioId), createAuditSession(studioId)]);
         setStudio(s);
         setSummary(session);
+        if (session.status === "approved") {
+          navigate("/", { replace: true });
+          return;
+        }
         const [list] = await Promise.all([
           loadReviews(studioId),
           getStudioCodes(studioId, true).then(setCodes),
@@ -121,7 +130,7 @@ export default function AuditView() {
         setLoading(false);
       }
     })();
-  }, [studioId, loadReviews]);
+  }, [studioId, loadReviews, navigate]);
 
   useEffect(() => {
     if (!selectedReviewId) {
@@ -165,17 +174,32 @@ export default function AuditView() {
     [items, refreshCounters, showToast]
   );
 
-  const markCorrect = useCallback(
-    (item: AuditItem) => {
-      if (item.status === "correct") return;
+  // Aprueba la SECCIÓN seleccionada: los items sin corregir pasan a 'correct'
+  // de una vez — el analista no marca verbatim por verbatim.
+  const handleApproveSection = useCallback(async () => {
+    if (!selectedReviewId || busy || !studioId) return;
+    setBusy(true);
+    try {
+      const res = await approveAuditSection(selectedReviewId);
       playTick();
-      applyOptimistic(item.id, { status: "correct" }, async () => {
-        const res = await reviewAuditItem(item.id, { action: "correct", expected_status: item.status });
-        return res.summary;
-      });
-    },
-    [applyOptimistic]
-  );
+      setItems((list) => list.map((it) => (it.status === "pending" ? { ...it, status: "correct" } : it)));
+      setSummary(res.summary);
+      showToast(
+        res.status === "with_corrections"
+          ? "Sección aprobada con correcciones."
+          : "Sección aprobada.",
+        "success"
+      );
+      // Saltar a la siguiente sección pendiente para mantener el flujo.
+      const list = await loadReviews(studioId);
+      const next = list.find((r) => r.id !== selectedReviewId && r.status === "pending");
+      if (next) setSelectedReviewId(next.id);
+    } catch {
+      showToast("No se pudo aprobar la sección.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }, [selectedReviewId, busy, studioId, showToast, loadReviews]);
 
   const submitReassign = useCallback(
     (item: AuditItem) => {
@@ -248,7 +272,8 @@ export default function AuditView() {
       setSummary(res);
       playSuccess();
       showToast("Auditoría aprobada — el estudio quedó auditado.", "success");
-      if (studioId) loadReviews(studioId).catch(() => {});
+      // Siguiente paso del flujo: dashboard (export Excel llega después).
+      navigate("/");
     } catch (err) {
       const message = err instanceof Error ? err.message : "";
       showToast(
@@ -258,7 +283,7 @@ export default function AuditView() {
     } finally {
       setBusy(false);
     }
-  }, [studioId, summary, busy, showToast, loadReviews]);
+  }, [studioId, summary, busy, showToast, navigate]);
 
   const handleResample = useCallback(async () => {
     if (!studioId || busy) return;
@@ -294,9 +319,9 @@ export default function AuditView() {
         category: "Navegación",
       },
       {
-        key: "c",
-        action: () => focusedItem && !approved && markCorrect(focusedItem),
-        description: "Marcar correcto",
+        key: "a",
+        action: () => !approved && handleApproveSection(),
+        description: "Aprobar sección",
         category: "Acciones",
       },
       {
@@ -336,7 +361,7 @@ export default function AuditView() {
         category: "Navegación",
       },
     ]);
-  }, [items.length, focusedItem, approved, markCorrect, noun]);
+  }, [items.length, focusedItem, approved, handleApproveSection, noun]);
 
   useKeyboardShortcuts("audit-view");
 
@@ -360,13 +385,22 @@ export default function AuditView() {
     );
   }
 
+  const studyCrumb = studio
+    ? {
+        label: studyDisplayName(studio.name, studio.coding_type),
+        to: `/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`,
+      }
+    : { label: "Estudio", to: `/studios/${studioId}` };
+
   if (blockedReason) {
     return (
       <div className="max-w-3xl mx-auto py-4 space-y-4">
         <Breadcrumb
           items={[
             { label: "Proyectos", to: "/" },
-            { label: "Estudio", to: `/studios/${studioId}` },
+            ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
+            studyCrumb,
+            { label: "Procesamiento", to: `/studios/${studioId}` },
             { label: "Auditoría" },
           ]}
         />
@@ -374,8 +408,8 @@ export default function AuditView() {
           <AlertTriangle className="w-8 h-8 text-p-warning mx-auto" />
           <h1 className="font-heading text-xl font-semibold text-p-text">Auditoría no disponible</h1>
           <p className="text-sm text-p-text-muted">{blockedReason}</p>
-          <Link to={`/studios/${studioId}/resolution`} className="btn-primary inline-flex justify-center">
-            Ir al Centro de Resolución
+          <Link to={`/studios/${studioId}`} className="btn-primary inline-flex justify-center">
+            Ir al procesamiento
           </Link>
         </div>
       </div>
@@ -393,7 +427,9 @@ export default function AuditView() {
       <Breadcrumb
         items={[
           { label: "Proyectos", to: "/" },
-          { label: studio?.name ?? "Estudio", to: `/studios/${studioId}` },
+          ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
+          studyCrumb,
+          { label: "Procesamiento", to: `/studios/${studioId}` },
           { label: "Auditoría" },
         ]}
       />
@@ -520,13 +556,31 @@ export default function AuditView() {
               <span className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
                 {selectedReview ? `${selectedReview.code.label} · ${selectedReview.items_count} en la muestra` : "Verbatims"}
               </span>
-              <span className="flex gap-2.5 font-mono text-[10px] text-p-text-faint">
+              <span className="flex items-center gap-2.5 font-mono text-[10px] text-p-text-faint">
                 <span className="flex items-center gap-1"><kbd className="kbd-hint">↑↓</kbd>Navegar</span>
-                <span className="flex items-center gap-1"><kbd className="kbd-hint">C</kbd>Correcto</span>
                 <span className="flex items-center gap-1"><kbd className="kbd-hint">R</kbd>Reasignar</span>
                 <span className="flex items-center gap-1"><kbd className="kbd-hint">E</kbd>Comentar</span>
                 <span className="flex items-center gap-1"><kbd className="kbd-hint">X</kbd>Eliminar</span>
+                <span className="flex items-center gap-1"><kbd className="kbd-hint">A</kbd>Aprobar sección</span>
               </span>
+              {/* La unidad de revisión: se aprueba la sección completa, no cada verbatim. */}
+              {!approved && selectedReview && (
+                selectedReview.status === "pending" ? (
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleApproveSection}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-green-200 bg-green-50 text-xs font-bold text-green-700 disabled:opacity-50"
+                  >
+                    <Check className="w-3.5 h-3.5" /> Aprobar sección
+                  </motion.button>
+                ) : (
+                  <span className={REVIEW_CHIP[selectedReview.status].className}>
+                    {REVIEW_CHIP[selectedReview.status].label}
+                  </span>
+                )
+              )}
             </div>
 
             {itemsLoading ? (
@@ -569,7 +623,6 @@ export default function AuditView() {
                         commentInputRef={commentInputRef}
                         confirmDelete={confirmDeleteId === item.id}
                         onFocus={() => setFocusIndex(i)}
-                        onCorrect={() => markCorrect(item)}
                         onToggleReassign={() => {
                           setReassignItemId((id) => (id === item.id ? null : item.id));
                           setReassignCodeId("");
@@ -615,7 +668,6 @@ interface AuditRowProps {
   commentInputRef: React.RefObject<HTMLInputElement | null>;
   confirmDelete: boolean;
   onFocus: () => void;
-  onCorrect: () => void;
   onToggleReassign: () => void;
   onReassignCodeChange: (id: string) => void;
   onNewCodeLabelChange: (label: string) => void;
@@ -642,7 +694,6 @@ function AuditRow({
   commentInputRef,
   confirmDelete,
   onFocus,
-  onCorrect,
   onToggleReassign,
   onReassignCodeChange,
   onNewCodeLabelChange,
@@ -727,15 +778,6 @@ function AuditRow({
             </div>
           ) : (
             <div className="flex items-center justify-end gap-1">
-              <button
-                onClick={(e) => { e.stopPropagation(); onCorrect(); }}
-                disabled={item.status === "correct"}
-                className="p-1.5 rounded-lg text-p-success hover:bg-p-success/10 disabled:opacity-30"
-                title="Marcar correcto (C)"
-                aria-label="Marcar correcto"
-              >
-                <Check className="w-4 h-4" />
-              </button>
               <button
                 onClick={(e) => { e.stopPropagation(); onToggleReassign(); }}
                 className="p-1.5 rounded-lg text-p-accent hover:bg-p-accent/10"

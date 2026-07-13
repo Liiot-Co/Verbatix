@@ -24,6 +24,7 @@ from app.repositories import (
     create_code,
     deactivate_verbatim_codes,
     finalize_audit_session,
+    get_audit_code_review,
     get_audit_item,
     get_audit_session,
     get_audit_summary,
@@ -33,7 +34,9 @@ from app.repositories import (
     get_round_audit_percentage,
     increment_review_corrections,
     log_action,
+    mark_review_items_correct,
     refresh_audit_session_progress,
+    set_code_review_result,
     set_run_random_seed,
     set_studio_status,
     set_verbatim_coding_status,
@@ -147,11 +150,14 @@ def review_item(
     user_id,
     expected_status: str | None = None,
 ) -> dict:
-    """Aplica una revisión sobre un item muestreado:
+    """Aplica una corrección sobre un item muestreado:
 
-      correct  -> confirma lo que hizo el motor/resolución, no toca códigos
       reassign -> reemplaza los códigos activos del verbatim (source='audit_correction')
       remove   -> desactiva todas las asignaciones; el verbatim queda 'needs_review'
+
+    No hay acción "correct" por item: el analista revisa POR SECCIÓN — corrige lo
+    que esté mal y aprueba la sección (approve_code_review), que da por correctos
+    los items sin corregir.
     """
     item = get_audit_item(db, item_id)
     if not item:
@@ -167,15 +173,7 @@ def review_item(
     comment = decision.get("comment")
     new_code_result = None
 
-    if action == "correct":
-        if item["status"] == "correct":
-            # Doble-submit: no-op, no re-loguea ni re-cuenta.
-            return {"item_id": item["id"], "status": "correct", "already_reviewed": True,
-                    "new_code": None, "summary": get_audit_summary(db, item["studio_id"])}
-        update_audit_item_review(db, item_id, "correct", comment, user_id)
-        new_status = "correct"
-
-    elif action == "reassign":
+    if action == "reassign":
         code_ids = [uuid.UUID(c) for c in (decision.get("code_ids") or [])]
         new_code = decision.get("new_code")
         if new_code:
@@ -237,27 +235,61 @@ def update_item(
     *,
     user_id,
     comment: str | None = None,
-    status: str | None = None,
 ) -> dict:
-    """Edita comentario y/o estado (pending/correct) sin tocar códigos — para
-    'reassigned' está review_item, que sí muta verbatim_codes."""
+    """Edita el comentario sin tocar códigos ni estado — las correcciones van por
+    review_item y el "dar por correcto" ocurre al aprobar la sección."""
     item = get_audit_item(db, item_id)
     if not item:
         raise LookupError("Item de auditoría no encontrado")
     if item["session_status"] == "approved":
         raise AuditConflict("La auditoría ya fue aprobada; no admite más cambios")
-    if status is not None and status not in ("pending", "correct"):
-        raise ValueError("status solo admite 'pending' o 'correct' — usá review para reasignar")
 
-    update_audit_item_review(db, item_id, status or item["status"], comment, user_id)
-    refresh_audit_session_progress(db, item["session_id"])
+    update_audit_item_review(db, item_id, item["status"], comment, user_id)
     log_action(
         db, user_id, uuid.UUID(item["studio_id"]), "audit_item", item_id, "audit:edit",
-        old_value={"status": item["status"], "comment": item["comment"]},
-        new_value={"status": status or item["status"], "comment": comment},
+        old_value={"comment": item["comment"]},
+        new_value={"comment": comment},
     )
     db.commit()
-    return {"item_id": item["id"], "status": status or item["status"], "comment": comment}
+    return {"item_id": item["id"], "status": item["status"], "comment": comment}
+
+
+def approve_code_review(db: Session, review_id: uuid.UUID, *, user_id) -> dict:
+    """Aprueba una SECCIÓN (un código de la muestra): da por correctos los items
+    que el analista no corrigió y cierra la sección como 'approved' o
+    'with_corrections'. Es la unidad de revisión — no se marca verbatim por verbatim."""
+    review = get_audit_code_review(db, review_id)
+    if not review:
+        raise LookupError("Sección de auditoría no encontrada")
+    if review["session_status"] == "approved":
+        raise AuditConflict("La auditoría ya fue aprobada; no admite más revisiones")
+
+    if review["status"] != "pending" and review["pending_items"] == 0:
+        # Doble-submit: la sección ya estaba cerrada.
+        return {
+            "review_id": review["id"], "status": review["status"],
+            "items_marked": 0, "already_approved": True,
+            "summary": get_audit_summary(db, review["studio_id"]),
+        }
+
+    marked = mark_review_items_correct(db, review_id, user_id)
+    status = set_code_review_result(db, review_id, user_id)
+    progress = refresh_audit_session_progress(db, review["session_id"])
+    log_action(
+        db, user_id, uuid.UUID(review["studio_id"]), "audit_code_review", review_id,
+        "audit:approve_section",
+        old_value={"status": review["status"], "pending_items": review["pending_items"]},
+        new_value={"status": status, "items_marked": marked},
+    )
+    db.commit()
+
+    return {
+        "review_id": review["id"],
+        "status": status,
+        "items_marked": marked,
+        "already_approved": False,
+        "summary": {**get_audit_summary(db, review["studio_id"]), **progress},
+    }
 
 
 def approve_session(db: Session, studio_id: uuid.UUID, *, user_id) -> dict:
