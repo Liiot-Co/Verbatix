@@ -1,104 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import {
-  AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight,
-  Keyboard, PartyPopper, RefreshCw, Search, Sparkles, Bot, UserCheck,
-} from "lucide-react";
+import { useParams } from "react-router-dom";
+import { ChevronLeft, ChevronRight, Keyboard, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getPreliminary, getStudio, getVerbatims, processStudio } from "@/api/client";
-import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim, VerbatimCode } from "@/api/types";
+import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 import { studyKey } from "@/lib/projectTree";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 
-function engineLabel(code: VerbatimCode): { text: string; icon: typeof Sparkles } {
-  if (code.source === "analyst_manual" || code.source === "audit_correction")
-    return { text: "Manual", icon: UserCheck };
-  if (code.source === "homologation")
-    return { text: "Homologado", icon: UserCheck };
-  if (code.confidence_score != null)
-    return { text: `Fuzzy ${Math.round(code.confidence_score * 100)}%`, icon: Sparkles };
-  return { text: "LLM", icon: Bot };
-}
+// Decoupled components
+import { AgentProcessingUI } from "./studio/AgentProcessingUI";
+import { StudioHeader } from "./studio/StudioHeader";
+import { StudioSummaryCards } from "./studio/StudioSummaryCards";
+import { VerbatimsTable } from "./studio/VerbatimsTable";
 
 const PAGE_SIZE = 50;
 
-const STATUS_BADGE: Record<string, string> = {
-  pending: "badge-pending",
-  auto_coded: "badge-auto",
-  needs_review: "badge-warning",
-  manually_coded: "badge-success",
-  unknown: "badge-error",
-};
-
-const STATUS_LABELS: Record<CodingStatus, string> = {
-  pending: "Pendiente",
-  auto_coded: "Auto-codificado",
-  needs_review: "Necesita revisión",
-  manually_coded: "Codificado a mano",
-  unknown: "Desconocida",
-};
-
-function AgentProcessingUI() {
-  const [step, setStep] = useState(0);
-  
-  const steps = [
-    "Normalizando y limpiando registros...",
-    "Motor Fuzzy cruzando histórico...",
-    "Agente LLM evaluando casos atípicos...",
-    "Encontrando patrones semánticos...",
-    "Construyendo libro de códigos final..."
-  ];
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setStep((s) => (s + 1) % steps.length);
-    }, 2500);
-    return () => clearInterval(id);
-  }, []); // steps is static
-
-  return (
-    <div className="flex flex-col items-center justify-center py-20 space-y-8">
-      <div className="relative flex items-center justify-center">
-        <motion.div
-          animate={{ scale: [1, 1.5, 1], opacity: [0.2, 0.5, 0.2] }}
-          transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
-          className="absolute w-28 h-28 rounded-full bg-p-accent blur-xl pointer-events-none"
-        />
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
-          className="relative w-16 h-16 rounded-full border-[3px] border-p-surface border-t-p-accent flex items-center justify-center bg-p-surface"
-        >
-          <motion.div animate={{ rotate: -360 }} transition={{ duration: 4, repeat: Infinity, ease: "linear" }}>
-             <Bot className="w-7 h-7 text-p-accent" />
-          </motion.div>
-        </motion.div>
-      </div>
-      <div className="space-y-2 text-center">
-        <h3 className="text-xl font-heading font-semibold text-p-text tracking-tight">Agente en ejecución</h3>
-        <div className="h-6 overflow-hidden">
-          <AnimatePresence mode="wait">
-            <motion.p
-              key={step}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.3 }}
-              className="text-sm font-mono text-p-text-muted"
-            >
-              <span className="text-p-accent mr-2">➜</span>
-              {steps[step]}
-            </motion.p>
-          </AnimatePresence>
-        </div>
-      </div>
-    </div>
-  );
+function isTypingTarget(el: EventTarget | null): boolean {
+  return el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement;
 }
-
 
 export default function UnifiedStudioView() {
   const { studioId } = useParams<{ studioId: string }>();
@@ -183,7 +105,6 @@ export default function UnifiedStudioView() {
     try {
       await processStudio(studioId);
       showToast("Procesamiento encolado — el motor está trabajando", "info");
-      // Optimistic: flip local status so the live poll kicks in immediately.
       setStudio((s) => (s ? { ...s, status: "processing" } : s));
       await Promise.all([loadData(), loadVerbatims()]);
     } catch {
@@ -288,110 +209,22 @@ export default function UnifiedStudioView() {
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_348px] gap-4 items-start">
       <div className="space-y-4 min-w-0">
 
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div className="space-y-1">
-          <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">{studio.name}</h1>
-          <p className="font-subtitle text-sm text-p-text-muted">
-            {studio.coding_type === "brands" ? "Marcas" : "Razones"} · {studio.counters.verbatims_total} verbatims · estado: {studio.status}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {autoProcessing && (
-            <span className="flex items-center gap-1.5 text-xs text-p-accent">
-              <motion.span
-                animate={{ opacity: [1, 0.3, 1] }}
-                transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
-                className="w-2 h-2 rounded-full bg-p-accent"
-              />
-              En vivo
-            </span>
-          )}
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className={neverProcessed ? "btn-primary text-sm py-2" : "btn-ghost text-sm py-2"}
-            disabled={isProcessingNow}
-            onClick={handleProcess}
-            title={
-              autoProcessing
-                ? "El motor ya está codificando en segundo plano"
-                : neverProcessed
-                ? "Codificar automáticamente"
-                : "Volver a correr el motor sobre lo pendiente"
-            }
-          >
-            {isProcessingNow ? (
-              <motion.span
-                animate={{ rotate: 360 }}
-                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full"
-              />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            {isProcessingNow ? "Procesando..." : neverProcessed ? "Procesar" : "Reprocesar"}
-          </motion.button>
-        </div>
-      </div>
+      <StudioHeader 
+        studio={studio}
+        autoProcessing={autoProcessing}
+        neverProcessed={neverProcessed}
+        isProcessingNow={isProcessingNow}
+        onProcess={handleProcess}
+      />
 
       {preliminary && (
-        <>
-          <div className="card p-4 space-y-2">
-            <div className="flex items-center justify-between text-xs text-p-text-muted">
-              <span className="flex items-center gap-1.5">
-                <AnimatePresence mode="wait">
-                  {justFinished && (
-                    <motion.span
-                      key="party"
-                      initial={{ scale: 0, rotate: -20 }}
-                      animate={{ scale: 1, rotate: 0 }}
-                      transition={{ type: "spring", stiffness: 400, damping: 15 }}
-                    >
-                      <PartyPopper className="w-3.5 h-3.5 text-p-success" />
-                    </motion.span>
-                  )}
-                </AnimatePresence>
-                {momentum}
-              </span>
-              <span className="font-semibold text-p-text">{codedPct}%</span>
-            </div>
-            <div className="h-2 rounded-full bg-p-bg-subtle overflow-hidden">
-              <motion.div
-                className={[
-                  "h-full bg-gradient-to-r",
-                  justFinished ? "from-p-success to-p-success" : "from-p-accent to-p-accent-mid",
-                ].join(" ")}
-                initial={{ width: 0 }}
-                animate={{ width: `${codedPct}%` }}
-                transition={{ duration: 0.6, ease: [0.19, 1, 0.22, 1] as const }}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="card p-4 space-y-2">
-              <div className="flex items-center gap-2 text-p-success">
-                <CheckCircle2 className="w-4 h-4" />
-                <span className="text-xs font-semibold uppercase tracking-wide">Codificado</span>
-              </div>
-              <div className="text-2xl font-bold text-p-text">{autoCoded + resolved}</div>
-              <p className="text-xs text-p-text-faint">Grupos que el motor resolvió solo (o ya fueron revisados).</p>
-            </div>
-            <Link
-              to={`/studios/${studioId}/resolution`}
-              className="card p-4 space-y-2 block hover:border-p-warning/50 transition-colors"
-            >
-              <div className="flex items-center gap-2 text-p-warning">
-                <AlertTriangle className="w-4 h-4" />
-                <span className="text-xs font-semibold uppercase tracking-wide">Pendiente</span>
-              </div>
-              <div className="text-2xl font-bold text-p-text">{pendingReview + anomalies}</div>
-              <p className="text-xs text-p-text-faint">
-                {pendingReview} sin procesar todavía · {anomalies} menciones confusas — ir al Centro de Resolución
-              </p>
-            </Link>
-          </div>
-        </>
+        <StudioSummaryCards
+          studioId={studioId}
+          summary={summary}
+          momentum={momentum}
+          codedPct={codedPct}
+          justFinished={justFinished}
+        />
       )}
 
       <div className="flex flex-col sm:flex-row gap-2">
@@ -430,82 +263,11 @@ export default function UnifiedStudioView() {
         </div>
       )}
 
-      <div className="card overflow-hidden">
-        <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-p-border text-left">
-                <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Respondent</th>
-                <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Verbatim</th>
-                <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Código</th>
-                <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Estado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                Array.from({ length: 6 }).map((_, i) => (
-                  <tr key={`skeleton-${i}`} className="border-b border-p-border last:border-0">
-                    <td className="px-4 py-2.5"><div className="skeleton h-3 w-10 rounded" /></td>
-                    <td className="px-4 py-2.5"><div className="skeleton h-3 w-3/4 rounded" /></td>
-                    <td className="px-4 py-2.5"><div className="skeleton h-3 w-24 rounded" /></td>
-                    <td className="px-4 py-2.5"><div className="skeleton h-3 w-16 rounded-full" /></td>
-                  </tr>
-                ))
-              ) : visible.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-p-text-faint text-sm">
-                    {search ? `Sin resultados para "${search}" en esta página.` : "Sin verbatims todavía."}
-                  </td>
-                </tr>
-              ) : (
-                visible.map((v) => (
-                  <tr
-                    key={v.id}
-                    className="border-b border-p-border last:border-0 hover:bg-p-bg-subtle/50 transition-colors duration-100"
-                  >
-                    <td className="px-4 py-2.5 text-p-text-faint text-xs">{v.respondent_external_id ?? "—"}</td>
-                    <td className="px-4 py-2.5 text-p-text max-w-sm">
-                      <div className="tooltip-trigger w-full">
-                        <span className="block truncate">{v.original_text}</span>
-                        <div className="tooltip whitespace-normal break-words max-w-xl">{v.original_text}</div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {v.codes.length === 0 ? (
-                        <span className="text-xs text-p-text-faint">—</span>
-                      ) : (
-                        <div className="flex flex-col gap-1">
-                          {v.codes.map((code, i) => {
-                            const engine = engineLabel(code);
-                            const EngineIcon = engine.icon;
-                            return (
-                              <div key={i} className="flex items-center gap-1.5" title={code.matched_alias ? `Matcheó con "${code.matched_alias}"` : undefined}>
-                                <span className="text-xs font-medium text-p-text">
-                                  {code.net ? <span className="text-p-text-faint">{code.net}/</span> : null}
-                                  {code.label}
-                                </span>
-                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full border border-p-border bg-p-bg-subtle text-p-text-muted">
-                                  <EngineIcon className="w-3 h-3" />
-                                  {engine.text}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span
-                        className={["inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full border", STATUS_BADGE[v.coding_status] ?? STATUS_BADGE.pending].join(" ")}
-                      >
-                        {STATUS_LABELS[v.coding_status as CodingStatus] ?? v.coding_status}
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+      <VerbatimsTable
+        loading={loading}
+        verbatims={visible}
+        search={search}
+      />
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between text-xs text-p-text-muted">
@@ -601,3 +363,5 @@ export default function UnifiedStudioView() {
     </div>
   );
 }
+
+
