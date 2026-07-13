@@ -270,6 +270,7 @@ class VerbatimCode(Base):
     output_index = Column(Integer, nullable=False, default=1)
     source = Column(String, nullable=False)
     confidence_score = Column(Numeric(4, 3), nullable=True)
+    matched_alias = Column(String, nullable=True)
     processing_run_id = Column(UUID(as_uuid=True), ForeignKey("processing_runs.id", ondelete="SET NULL"), nullable=True)
     assigned_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)

@@ -9,6 +9,7 @@ import ResolutionSidebar from "./ResolutionSidebar";
 import ResolutionCenter from "./ResolutionCenter";
 import { studyKey } from "@/lib/projectTree";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
+import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 
 // Decoupled components
@@ -36,6 +37,7 @@ export default function UnifiedStudioView() {
   const [search, setSearch] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fullscreenResolution, setFullscreenResolution] = useState(false);
+  const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
   const loadData = useCallback(() => {
     if (!studioId) return Promise.resolve();
@@ -212,7 +214,10 @@ export default function UnifiedStudioView() {
         />
       </div>
 
-      <div className={`grid grid-cols-1 gap-4 items-start ${preliminary ? "xl:grid-cols-[1fr_460px]" : ""}`}>
+      <div 
+        className={`grid grid-cols-1 gap-4 items-start ${preliminary ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
+        style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
+      >
       <div className="space-y-4 min-w-0 order-2 xl:order-none">
 
       <StudioHeader
@@ -317,8 +322,15 @@ export default function UnifiedStudioView() {
 
       </div>
 
-      {preliminary && (
-        <div className="order-1 xl:order-none xl:sticky xl:top-4 h-auto xl:h-[calc(100vh-5rem)]">
+      {preliminary && !isProcessingNow && (
+        <div className="order-1 xl:order-none xl:sticky xl:top-4 h-auto xl:h-[calc(100vh-5rem)] relative">
+          <div 
+            className="hidden xl:flex absolute -left-4 top-0 w-4 h-full cursor-col-resize items-center justify-center z-10 opacity-0 hover:opacity-100 transition-opacity group"
+            onMouseDown={startResizing}
+            title="Ajustar ancho"
+          >
+            <div className="w-1 h-12 bg-p-text-muted/30 group-hover:bg-p-accent rounded-full transition-colors" />
+          </div>
           <ResolutionSidebar
             studioId={studioId}
             onResolved={() => { loadData(); loadVerbatims(); }}
@@ -328,7 +340,7 @@ export default function UnifiedStudioView() {
       )}
       </div>
 
-      {fullscreenResolution && (
+      {fullscreenResolution && !isProcessingNow && (
         <ResolutionCenter studioId={studioId} onClose={() => setFullscreenResolution(false)} />
       )}
 

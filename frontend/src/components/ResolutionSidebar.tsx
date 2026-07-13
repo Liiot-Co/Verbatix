@@ -21,7 +21,6 @@ import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShor
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 
 const PAGE_SIZE = 50;
-const GRID_COLS = 2;
 const MAX_DOTS = 12;
 
 const STATUS_CHIP: Record<MentionGroupStatus, { label: string; className: string }> = {
@@ -110,6 +109,41 @@ export default function ResolutionSidebar({
   // Zonas de foco tipo Excel: "header" = tarjeta de la mención (←/→ descartan/crean),
   // "list" = grilla de marcas (las 4 flechas navegan). ↓ baja a la lista, ↑ desde la primera fila vuelve.
   const [zone, setZone] = useState<"header" | "list">("header");
+  const [gridCols, setGridCols] = useState(() => {
+    const saved = localStorage.getItem("resolution-grid-cols");
+    return saved ? parseInt(saved, 10) : 2;
+  });
+  const [autoCols, setAutoCols] = useState(() => {
+    const saved = localStorage.getItem("resolution-auto-cols");
+    return saved !== "false";
+  });
+  const sidebarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    localStorage.setItem("resolution-grid-cols", gridCols.toString());
+  }, [gridCols]);
+
+  useEffect(() => {
+    localStorage.setItem("resolution-auto-cols", autoCols ? "true" : "false");
+  }, [autoCols]);
+
+  useEffect(() => {
+    if (!autoCols || !sidebarRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (!rect) return;
+      const { width } = rect;
+      let newCols = 2;
+      if (width >= 650) newCols = 4;
+      else if (width >= 480) newCols = 3;
+      else if (width >= 350) newCols = 2;
+      else newCols = 1;
+
+      setGridCols((prev) => (prev !== newCols ? newCols : prev));
+    });
+    observer.observe(sidebarRef.current);
+    return () => observer.disconnect();
+  }, [autoCols]);
 
   const currentCard = queue[0] ?? null;
 
@@ -299,7 +333,7 @@ export default function ResolutionSidebar({
         action: () => {
           if (showDiscardMenu) return;
           if (zone === "list") {
-            setNavCodeIndex((i) => (i % GRID_COLS > 0 ? i - 1 : i));
+            setNavCodeIndex((i) => (i % gridCols > 0 ? i - 1 : i));
           } else {
             discardCurrent();
           }
@@ -314,7 +348,7 @@ export default function ResolutionSidebar({
           if (showDiscardMenu) {
             setShowDiscardMenu(false);
           } else if (zone === "list") {
-            setNavCodeIndex((i) => (i % GRID_COLS < GRID_COLS - 1 && i + 1 < codes.length ? i + 1 : i));
+            setNavCodeIndex((i) => (i % gridCols < gridCols - 1 && i + 1 < codes.length ? i + 1 : i));
           } else {
             openNewCodeInput();
           }
@@ -329,10 +363,10 @@ export default function ResolutionSidebar({
           if (showDiscardMenu) {
             setNavDiscardIndex(i => Math.max(0, i - 1));
           } else if (zone === "list") {
-            if (navCodeIndex < GRID_COLS) {
+            if (navCodeIndex < gridCols) {
               setZone("header");
             } else {
-              setNavCodeIndex((i) => i - GRID_COLS);
+              setNavCodeIndex((i) => i - gridCols);
             }
           }
         },
@@ -347,7 +381,7 @@ export default function ResolutionSidebar({
           } else if (zone === "header") {
             setZone("list");
           } else {
-            setNavCodeIndex((i) => Math.min(codes.length - 1, i + GRID_COLS));
+            setNavCodeIndex((i) => Math.min(codes.length - 1, i + gridCols));
           }
         },
         description: "Navegar abajo / Ir a marcas",
@@ -376,7 +410,7 @@ export default function ResolutionSidebar({
         category: "Acciones",
       },
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols]);
 
   useKeyboardShortcuts("resolution-sidebar");
 
@@ -399,7 +433,7 @@ export default function ResolutionSidebar({
   const allResolved = !loading && queue.length === 0;
 
   return (
-    <div className="card overflow-hidden flex flex-col h-full">
+    <div ref={sidebarRef} className="card overflow-hidden flex flex-col h-full">
       <div className="px-4 pt-3.5 pb-2.5 bg-p-surface border-b border-p-border shrink-0">
         <div className="flex items-center justify-between text-sm font-bold text-p-text mb-2.5">
           <span>Centro de Resolución</span>
@@ -588,13 +622,36 @@ export default function ResolutionSidebar({
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-4 pt-3 space-y-3">
             <div className="bg-p-surface border border-p-border rounded-2xl p-3.5">
               <div className="flex items-center gap-1.5 mb-2">
-                <span className="font-mono text-[10.5px] tracking-wide uppercase text-p-text-faint whitespace-nowrap">
-                  Asignar a marca
+                <span className="text-[10.5px] tracking-wide uppercase text-p-text-faint whitespace-nowrap">
+                  Asignar
                 </span>
                 <div className="flex-1 h-px bg-p-border" />
-                <span className="font-mono text-[10px] text-p-text-faint">{codes.length}</span>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    onClick={() => setAutoCols(true)}
+                    title="Ajustar columnas automáticamente"
+                    className={`px-1.5 h-4 text-[9px] font-bold flex items-center justify-center rounded transition-colors ${autoCols ? 'bg-p-accent text-white' : 'text-p-text-muted hover:bg-p-bg-subtle'}`}
+                  >
+                    AUTO
+                  </button>
+                  {[1, 2, 3, 4].map(c => (
+                    <button
+                      key={c}
+                      onClick={() => { setGridCols(c); setAutoCols(false); }}
+                      title={`${c} ${c === 1 ? 'columna' : 'columnas'} fijas`}
+                      className={`w-4 h-4 text-[9px] font-bold flex items-center justify-center rounded transition-colors ${!autoCols && gridCols === c ? 'bg-p-accent text-white' : 'text-p-text-muted hover:bg-p-bg-subtle'}`}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[10px] text-p-text-faint ml-1 font-mono">{codes.length}</span>
               </div>
-              <div ref={gridRef} className="grid grid-cols-2 gap-1">
+              <div
+                ref={gridRef}
+                className="grid gap-1"
+                style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
+              >
                 {codes.map((c, i) => {
                   const isSuggested = detail.suggested_code?.id === c.id;
                   const isNavSel = i === navCodeIndex;

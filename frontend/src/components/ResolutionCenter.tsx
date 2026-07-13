@@ -4,6 +4,7 @@ import { Sparkles, X } from "lucide-react";
 import { getResolutionQueue, getResolutionSummary } from "@/api/client";
 import type { MentionGroupStatus, ResolutionQueueItem, ResolutionSummary } from "@/api/types";
 import ResolutionSidebar from "./ResolutionSidebar";
+import { useSidebarResize } from "@/hooks/useSidebarResize";
 
 const PAGE_SIZE = 50;
 
@@ -21,6 +22,7 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<ResolutionSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
   const loadQueue = useCallback(() => {
     if (!studioId) return;
@@ -70,7 +72,10 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_460px] gap-4 items-start flex-1 min-h-0 px-6 py-4 overflow-y-auto">
+      <div 
+        className="grid grid-cols-1 gap-4 items-start flex-1 min-h-0 px-6 py-4 overflow-y-auto lg:[grid-template-columns:1fr_var(--sidebar-w)]"
+        style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
+      >
         {/* Cola: contexto de lo que sigue (orden por impacto, ya viene ordenado del backend) */}
         <div className="card overflow-hidden flex flex-col max-h-[calc(100vh-8rem)]">
           <div className="px-4 py-2.5 border-b border-p-border text-xs font-semibold text-p-text-muted uppercase tracking-wide">
@@ -114,7 +119,14 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
           </div>
         </div>
 
-        <div className="h-[calc(100vh-8rem)]">
+        <div className="h-[calc(100vh-8rem)] relative">
+          <div 
+            className="hidden lg:flex absolute -left-4 top-0 w-4 h-full cursor-col-resize items-center justify-center z-10 opacity-0 hover:opacity-100 transition-opacity group"
+            onMouseDown={startResizing}
+            title="Ajustar ancho"
+          >
+            <div className="w-1 h-12 bg-p-text-muted/30 group-hover:bg-p-accent rounded-full transition-colors" />
+          </div>
           <ResolutionSidebar studioId={studioId} onResolved={loadQueue} />
         </div>
       </div>
