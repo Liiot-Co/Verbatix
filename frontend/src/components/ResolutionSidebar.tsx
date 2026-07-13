@@ -625,8 +625,8 @@ export default function ResolutionSidebar({
               <div className="pt-2.5 border-t border-p-border/60">
                 {showNewCodeInput ? (
                   <div className="flex flex-col gap-2">
-                    <label className="font-mono text-[10.5px] tracking-wide uppercase text-blue-600">
-                      Nombre de nueva marca
+                    <label className="text-[10.5px] tracking-wide uppercase text-blue-600">
+                      Nuevo alias
                     </label>
                     <input
                       ref={newCodeInputRef}

@@ -18,6 +18,48 @@ import { StudioHeader } from "./studio/StudioHeader";
 import { StudioSummaryCards } from "./studio/StudioSummaryCards";
 import { VerbatimsTable } from "./studio/VerbatimsTable";
 
+function playProcessingFinishedSound() {
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new Ctx();
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+    
+    osc1.connect(gainNode);
+    osc2.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    
+    osc1.type = "sine";
+    osc2.type = "triangle";
+    
+    const now = ctx.currentTime;
+    
+    osc1.frequency.setValueAtTime(523.25, now); // C5
+    osc2.frequency.setValueAtTime(523.25, now);
+    
+    osc1.frequency.setValueAtTime(659.25, now + 0.1); // E5
+    osc2.frequency.setValueAtTime(659.25, now + 0.1);
+    
+    osc1.frequency.setValueAtTime(783.99, now + 0.2); // G5
+    osc2.frequency.setValueAtTime(783.99, now + 0.2);
+    
+    osc1.frequency.setValueAtTime(1046.50, now + 0.3); // C6
+    osc2.frequency.setValueAtTime(1046.50, now + 0.3);
+    
+    gainNode.gain.setValueAtTime(0, now);
+    gainNode.gain.linearRampToValueAtTime(0.1, now + 0.05);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+    
+    osc1.start(now);
+    osc2.start(now);
+    osc1.stop(now + 0.65);
+    osc2.stop(now + 0.65);
+  } catch {
+    // silent fallback
+  }
+}
+
 const PAGE_SIZE = 50;
 
 export default function UnifiedStudioView() {
@@ -87,6 +129,7 @@ export default function UnifiedStudioView() {
     if (wasProcessing.current && studio?.status === "preliminary_ready") {
       wasProcessing.current = false;
       showToast("Procesamiento terminado", "success");
+      playProcessingFinishedSound();
       loadVerbatims();
     }
   }, [autoProcessing, studio?.status, showToast, loadVerbatims]);
@@ -215,7 +258,7 @@ export default function UnifiedStudioView() {
       </div>
 
       <div 
-        className={`grid grid-cols-1 gap-4 items-start ${preliminary ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
+        className={`grid grid-cols-1 gap-4 items-start ${preliminary && !isProcessingNow && !fullscreenResolution ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
         style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
       >
       <div className="space-y-4 min-w-0 order-2 xl:order-none">
@@ -323,7 +366,12 @@ export default function UnifiedStudioView() {
       </div>
 
       {preliminary && !isProcessingNow && !fullscreenResolution && (
-        <div className="order-1 xl:order-none xl:sticky xl:top-4 h-auto xl:h-[calc(100vh-5rem)] relative">
+        <motion.div
+          initial={{ opacity: 0, x: 40, scale: 0.95 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          transition={{ type: "spring", stiffness: 350, damping: 25, delay: 0.1 }}
+          className="order-1 xl:order-none xl:sticky xl:top-4 h-auto xl:h-[calc(100vh-5rem)] relative"
+        >
           <div
             className="hidden xl:flex absolute -left-4 top-0 w-4 h-full cursor-col-resize items-center justify-center z-10 opacity-0 hover:opacity-100 transition-opacity group"
             onMouseDown={startResizing}
@@ -336,7 +384,7 @@ export default function UnifiedStudioView() {
             onResolved={() => { loadData(); loadVerbatims(); }}
             onExpand={() => setFullscreenResolution(true)}
           />
-        </div>
+        </motion.div>
       )}
       </div>
 
