@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.access import require_mention_group, require_studio
 from app.core.auth import CurrentUser, current_user
 from app.core.config import settings
 from app.core.database import get_db
@@ -35,6 +36,7 @@ def resolution_queue(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     status_list = statuses.split(",") if statuses else _default_statuses()
     items, total = get_resolution_queue(db, studio_id, status_list, limit, offset)
     return {"total": total, "items": items}
@@ -46,6 +48,7 @@ def resolution_summary(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     return get_resolution_summary(db, studio_id)
 
 
@@ -56,6 +59,7 @@ def studio_codes(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     return list_studio_codes(db, studio_id, include_system)
 
 
@@ -71,6 +75,7 @@ def create_studio_code(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     cb_id = _current_codebook_id(db, studio_id)
     if not cb_id:
         raise HTTPException(404, "Estudio no tiene codebook")
@@ -85,6 +90,7 @@ def mention_group_detail(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_mention_group(db, group_id, user["id"])
     detail = get_group_detail(db, group_id)
     if not detail:
         raise HTTPException(404, "Grupo no encontrado")
@@ -106,6 +112,7 @@ def resolve_mention_group(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_mention_group(db, group_id, user["id"])
     detail = get_group_detail(db, group_id)
     if not detail:
         raise HTTPException(404, "Grupo no encontrado")
@@ -142,6 +149,7 @@ def bulk_resolve(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     decision = payload.decision.model_dump(mode="json", exclude={"expected_status"})
     resolved, failed = [], []
     for gid in payload.group_ids:
