@@ -44,7 +44,7 @@ class FakeSession:
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
-        if "min_mentions_threshold from studio" in sql:
+        if "min_mentions_threshold" in sql:
             return FakeResult(scalar=self.threshold)
         if "code_number = :n" in sql:
             mapping = {"id": self.discard_code_id} if self.discard_code_id else None

@@ -52,6 +52,8 @@ export interface Round {
   project_id: string;
   name: string;
   round_number: number;
+  min_mentions_threshold: number;
+  audit_percentage: number;
   status: string;
 }
 
@@ -65,8 +67,6 @@ export interface Studio {
   survey_question: string | null;
   origin_mode: OriginMode;
   source_studio_id: string | null;
-  min_mentions_threshold: number;
-  audit_percentage: number;
   status: string;
   codebook: Codebook;
 }

@@ -28,13 +28,12 @@ import type {
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { nextRoundNumber, parseStudyKey } from "@/lib/projectTree";
 
-type WizardStep = "project" | "studio" | "round" | "upload";
+type WizardStep = "project" | "studio" | "round";
 
 const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: "project", label: "Proyecto", icon: "📁" },
   { key: "studio", label: "Estudio", icon: "🏷️" },
-  { key: "round", label: "Ronda", icon: "🔄" },
-  { key: "upload", label: "Excel", icon: "📊" },
+  { key: "round", label: "Ronda y Excel", icon: "🔄" },
 ];
 
 function ToggleGroup<T extends string>({
@@ -121,14 +120,15 @@ export default function CreationWizard() {
   const [newStudioQuestion, setNewStudioQuestion] = useState("");
   const [sOriginMode, setSOriginMode] = useState<OriginMode>("from_scratch");
   const [sSourceId, setSSourceId] = useState<string>("");
-  const [sThreshold, setSThreshold] = useState(3);
-  const [sAudit, setSAudit] = useState(10);
 
-  // Step 3: ronda (wave de datos dentro del estudio)
+  // Step 3: ronda (wave de datos dentro del estudio) + Excel — umbrales de
+  // clasificación se configuran por ronda, no por estudio: todos los estudios
+  // de una misma ola comparten el mismo mínimo de menciones y % de auditoría.
   const [rName, setRName] = useState("Ronda 1 - 2026");
   const [rRoundNumber, setRRoundNumber] = useState(1);
+  const [rThreshold, setRThreshold] = useState(3);
+  const [rAudit, setRAudit] = useState(10);
 
-  // Step 4: excel
   const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
   const [verbatimsSheet, setVerbatimsSheet] = useState("");
   const [codebookSheet, setCodebookSheet] = useState("");
@@ -139,7 +139,6 @@ export default function CreationWizard() {
   const projectRef = useRef<HTMLInputElement>(null);
   const studioRef = useRef<HTMLInputElement>(null);
   const roundRef = useRef<HTMLInputElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
 
   // Deep-link: /wizard?projectId=... (nuevo estudio) o &study=... (nueva ronda)
   useEffect(() => {
@@ -221,12 +220,18 @@ export default function CreationWizard() {
     goToStep("round");
   };
 
-  const handleCreateRoundAndStudio = async () => {
-    if (!project || !rName.trim() || !newStudioName.trim()) return;
+  // Crea la ronda + el estudio la primera vez que hace falta (al soltar el
+  // Excel) — el usuario no ve un paso de "crear ronda" separado del de subir
+  // el archivo, ambos viven en el mismo panel.
+  const ensureStudio = async (): Promise<Studio | null> => {
+    if (studio) return studio;
+    if (!project || !rName.trim() || !newStudioName.trim()) return null;
     try {
       const createdRound = await createRound(project.id, {
         name: rName.trim(),
         round_number: rRoundNumber,
+        min_mentions_threshold: rThreshold,
+        audit_percentage: rAudit,
       });
       setRound(createdRound);
       const created = await createStudio(createdRound.id, {
@@ -235,26 +240,27 @@ export default function CreationWizard() {
         survey_question: newStudioQuestion.trim() || undefined,
         origin_mode: sOriginMode,
         source_studio_id: sOriginMode === "homologated" && sSourceId ? sSourceId : null,
-        min_mentions_threshold: sThreshold,
-        audit_percentage: sAudit,
       });
       setStudio(created);
       if (created.codebook.inherited_codes > 0) {
         showToast(`Se heredaron ${created.codebook.inherited_codes} códigos y ${created.codebook.inherited_aliases} alias`, "success");
       }
       playSuccess();
-      goToStep("upload");
+      return created;
     } catch {
       showToast("Error al crear la ronda o el estudio", "error");
+      return null;
     }
   };
 
   const onDrop = useCallback(
     async (accepted: File[]) => {
       const file = accepted[0];
-      if (!file || !studio) return;
+      if (!file) return;
+      const st = await ensureStudio();
+      if (!st) return;
       setSheetError(null);
-      const result = await uploadFile(studio.id, file);
+      const result = await uploadFile(st.id, file);
       setUploaded(result);
       const verbatimGuess = result.detected_sheets.find((s) => s.guessed_as === "verbatims");
       const codebookGuess = result.detected_sheets.find((s) => s.guessed_as === "codebook");
@@ -262,7 +268,8 @@ export default function CreationWizard() {
       setCodebookSheet(codebookGuess?.name ?? "");
       playTick();
     },
-    [studio]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [studio, project, rName, rRoundNumber, rThreshold, rAudit, newStudioName, newStudioCodingType, newStudioQuestion, sOriginMode, sSourceId]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -315,12 +322,10 @@ export default function CreationWizard() {
 
   const projectPanelKeyDown = useEnterToSubmit(handleCreateProject);
   const studioPanelKeyDown = useEnterToSubmit(handleContinueFromStudio);
-  const roundPanelKeyDown = useEnterToSubmit(handleCreateRoundAndStudio);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (step === "upload" && !uploaded) return goToStep("round");
       if (step === "round") return goToStep("studio");
       if (step === "studio") return goToStep("project");
     };
@@ -349,9 +354,8 @@ export default function CreationWizard() {
       if (step === "project") projectRef.current?.focus();
       if (step === "studio") studioRef.current?.focus();
       if (step === "round") roundRef.current?.focus();
-      if (step === "upload" && !uploaded) searchRef.current?.focus();
     }, 100);
-  }, [step, uploaded]);
+  }, [step]);
 
   return (
     <div className="relative max-w-2xl mx-auto py-4 space-y-6">
@@ -373,7 +377,7 @@ export default function CreationWizard() {
           {isNewRoundFlow ? "Nueva ronda" : project ? "Nuevo estudio" : "Nuevo proyecto"}
         </h1>
         <p className="font-subtitle text-xs text-p-text-muted">
-          Proyecto → Estudio → Ronda → Excel
+          Proyecto → Estudio → Ronda y Excel
         </p>
       </div>
 
@@ -558,34 +562,6 @@ export default function CreationWizard() {
                   </motion.div>
                 )}
 
-                <motion.div className={newStudioCodingType === "brands" ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
-                  {newStudioCodingType === "brands" && (
-                    <div>
-                      <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</motion.label>
-                      <motion.input
-                        type="number"
-                        min={1}
-                        className="input w-full text-sm mt-1"
-                        value={sThreshold}
-                        onChange={(e) => setSThreshold(Number(e.target.value))}
-                        whileFocus={{ scale: 1.002 }}
-                      />
-                    </div>
-                  )}
-                  <div>
-                    <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">% de auditoría</motion.label>
-                    <motion.input
-                      type="number"
-                      min={0}
-                      max={100}
-                      className="input w-full text-sm mt-1"
-                      value={sAudit}
-                      onChange={(e) => setSAudit(Number(e.target.value))}
-                      whileFocus={{ scale: 1.002 }}
-                    />
-                  </div>
-                </motion.div>
-
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
@@ -598,9 +574,9 @@ export default function CreationWizard() {
             </div>
           )}
 
-          {/* Step 3: Ronda (wave de datos del estudio) */}
+          {/* Step 3: Ronda (wave de datos del estudio) + Excel, en un solo paso */}
           {step === "round" && project && (
-            <div className="card p-4 space-y-2.5" onKeyDown={roundPanelKeyDown}>
+            <div className="space-y-3">
               <motion.button
                 onClick={() => goToStep("studio")}
                 whileHover={{ x: -2 }}
@@ -610,52 +586,63 @@ export default function CreationWizard() {
                 <ChevronLeft className="w-3.5 h-3.5" /> {newStudioName}
               </motion.button>
 
-              <p className="text-xs text-p-text-faint">
-                Estudio <span className="font-semibold text-p-text-muted">{newStudioName}</span>
-                {" "}({newStudioCodingType === "brands" ? "Marcas" : "Razones"})
-              </p>
+              <div className="card p-4 space-y-2.5">
+                <p className="text-xs text-p-text-faint">
+                  Estudio <span className="font-semibold text-p-text-muted">{newStudioName}</span>
+                  {" "}({newStudioCodingType === "brands" ? "Marcas" : "Razones"})
+                </p>
 
-              <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre de la ronda</div>
-              <motion.input
-                ref={roundRef}
-                autoFocus
-                className="input w-full text-sm"
-                value={rName}
-                onChange={(e) => setRName(e.target.value)}
-                whileFocus={{ scale: 1.002 }}
-              />
-              <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Número de ronda</div>
-              <motion.input
-                type="number"
-                min={1}
-                className="input w-full text-sm"
-                value={rRoundNumber}
-                onChange={(e) => setRRoundNumber(Number(e.target.value))}
-                whileFocus={{ scale: 1.002 }}
-              />
+                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre de la ronda</div>
+                <motion.input
+                  ref={roundRef}
+                  autoFocus
+                  disabled={!!studio}
+                  className="input w-full text-sm"
+                  value={rName}
+                  onChange={(e) => setRName(e.target.value)}
+                  whileFocus={{ scale: 1.002 }}
+                />
+                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Número de ronda</div>
+                <motion.input
+                  type="number"
+                  min={1}
+                  disabled={!!studio}
+                  className="input w-full text-sm"
+                  value={rRoundNumber}
+                  onChange={(e) => setRRoundNumber(Number(e.target.value))}
+                  whileFocus={{ scale: 1.002 }}
+                />
 
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                className="btn-primary text-sm py-2 w-full justify-center mt-1"
-                onClick={handleCreateRoundAndStudio}
-              >
-                Crear ronda y continuar <span className="opacity-60 font-normal">(Enter)</span>
-              </motion.button>
-            </div>
-          )}
-
-          {/* Step 4: Upload */}
-          {step === "upload" && studio && (
-            <div className="space-y-3">
-              <motion.button
-                onClick={() => goToStep("round")}
-                whileHover={{ x: -2 }}
-                whileTap={{ scale: 0.98 }}
-                className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text"
-              >
-                <ChevronLeft className="w-3.5 h-3.5" /> {rName}
-              </motion.button>
+                <motion.div className={newStudioCodingType === "brands" ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
+                  {newStudioCodingType === "brands" && (
+                    <div>
+                      <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</motion.label>
+                      <motion.input
+                        type="number"
+                        min={1}
+                        disabled={!!studio}
+                        className="input w-full text-sm mt-1"
+                        value={rThreshold}
+                        onChange={(e) => setRThreshold(Number(e.target.value))}
+                        whileFocus={{ scale: 1.002 }}
+                      />
+                    </div>
+                  )}
+                  <div>
+                    <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">% de auditoría</motion.label>
+                    <motion.input
+                      type="number"
+                      min={0}
+                      max={100}
+                      disabled={!!studio}
+                      className="input w-full text-sm mt-1"
+                      value={rAudit}
+                      onChange={(e) => setRAudit(Number(e.target.value))}
+                      whileFocus={{ scale: 1.002 }}
+                    />
+                  </div>
+                </motion.div>
+              </div>
 
               {!uploaded ? (
                 <div
