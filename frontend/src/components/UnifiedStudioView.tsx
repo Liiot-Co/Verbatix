@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { getPreliminary, getStudio, getVerbatims, processStudio } from "@/api/client";
 import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim, VerbatimCode } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
+import ResolutionSidebar from "./ResolutionSidebar";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 
@@ -38,10 +39,6 @@ const STATUS_LABELS: Record<CodingStatus, string> = {
   manually_coded: "Codificado a mano",
   unknown: "Desconocida",
 };
-
-function isTypingTarget(el: EventTarget | null): boolean {
-  return el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement;
-}
 
 export default function UnifiedStudioView() {
   const { studioId } = useParams<{ studioId: string }>();
@@ -139,9 +136,9 @@ export default function UnifiedStudioView() {
       { key: "f", meta: true,
         action: () => { searchRef.current?.focus(); searchRef.current?.select(); },
         description: "Enfocar búsqueda", category: "Navegación", allowInInput: false },
-      { key: "ArrowRight", meta: false, action: () => setPage((p) => Math.min(totalPages, p + 1)),
+      { key: "ArrowRight", meta: true, action: () => setPage((p) => Math.min(totalPages, p + 1)),
         description: "Página siguiente", category: "Navegación", allowInInput: false },
-      { key: "ArrowLeft", meta: false, action: () => setPage((p) => Math.max(1, p - 1)),
+      { key: "ArrowLeft", meta: true, action: () => setPage((p) => Math.max(1, p - 1)),
         description: "Página anterior", category: "Navegación", allowInInput: false },
       { key: "r", meta: true, action: () => window.location.reload(),
         description: "Recargar", category: "Acciones" },
@@ -158,16 +155,6 @@ export default function UnifiedStudioView() {
   }, [totalPages, showToast]);
 
   useKeyboardShortcuts("unified-studio");
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return;
-      if (e.key === "ArrowRight") setPage((p) => Math.min(totalPages, p + 1));
-      if (e.key === "ArrowLeft") setPage((p) => Math.max(1, p - 1));
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [totalPages]);
 
   if (loading && !studio) {
     return (
@@ -213,8 +200,11 @@ export default function UnifiedStudioView() {
     : "Sin codificar todavía.";
 
   return (
-    <div className="max-w-5xl mx-auto py-4 space-y-4">
+    <div className="max-w-[1400px] mx-auto py-4 space-y-4">
       <Breadcrumb items={[{ label: "Proyectos", to: "/" }, { label: studio.name }]} />
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_348px] gap-4 items-start">
+      <div className="space-y-4 min-w-0">
 
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="space-y-1">
@@ -428,7 +418,7 @@ export default function UnifiedStudioView() {
         <div className="flex items-center justify-between text-xs text-p-text-muted">
           <span>Página {page} de {totalPages} · {total} verbatims</span>
           <div className="flex items-center gap-1.5">
-            <kbd className="hidden sm:inline text-[10px] font-mono text-p-text-faint border border-p-border rounded px-1.5 py-0.5 mr-1">← →</kbd>
+            <kbd className="hidden sm:inline text-[10px] font-mono text-p-text-faint border border-p-border rounded px-1.5 py-0.5 mr-1">{modLabel()}← →</kbd>
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
@@ -453,6 +443,11 @@ export default function UnifiedStudioView() {
         </div>
       )}
 
+      </div>
+
+      <ResolutionSidebar studioId={studioId} onResolved={() => { loadData(); loadVerbatims(); }} />
+      </div>
+
       <motion.button
         type="button"
         onClick={() => setShowShortcuts(true)}
@@ -461,7 +456,7 @@ export default function UnifiedStudioView() {
         className="fixed bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 text-xs text-p-text-faint bg-p-surface/90 backdrop-blur-glass border border-p-border rounded-xl px-4 py-2 shadow-lg hidden sm:flex hover:text-p-text hover:border-p-accent/40 transition-colors"
       >
         <span className="flex items-center gap-1"><kbd className="kbd-hint">{modLabel()}F</kbd> Buscar</span>
-        <span className="flex items-center gap-1"><kbd className="kbd-hint">← →</kbd> Páginas</span>
+        <span className="flex items-center gap-1"><kbd className="kbd-hint">{modLabel()}← →</kbd> Páginas</span>
         <span className="flex items-center gap-1"><kbd className="kbd-hint">{modLabel()}K</kbd> Comandos</span>
         <span className="flex items-center gap-1"><kbd className="kbd-hint">?</kbd> Ver todos</span>
       </motion.button>
@@ -493,7 +488,7 @@ export default function UnifiedStudioView() {
                 <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Navegación</div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="flex justify-between"><span>{modLabel()}F</span><span className="text-p-text-muted">Buscar</span></div>
-                  <div className="flex justify-between"><span>← →</span><span className="text-p-text-muted">Páginas</span></div>
+                  <div className="flex justify-between"><span>{modLabel()}← →</span><span className="text-p-text-muted">Páginas</span></div>
                   <div className="flex justify-between"><span>Esc</span><span className="text-p-text-muted">Limpiar filtros</span></div>
                   <div className="flex justify-between"><span>{modLabel()}K</span><span className="text-p-text-muted">Comandos</span></div>
                 </div>

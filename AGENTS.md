@@ -127,6 +127,7 @@ project root/
 - TypeScript: PascalCase components, camelCase functions, strict types, no `any`
 - CSS: Tailwind utility classes + `@layer components` design system
 - State: Zustand store for global state
+- Frontend package manager is **bun**, not npm/npx — `bun install`, `bun run <script>`, `bunx <tool>`. Applies everywhere, including inside Docker containers (`docker compose exec frontend bun run dev`). `frontend/Dockerfile` (prod) already builds on `oven/bun:1`; `frontend/Dockerfile.dev` (the dev/hot-reload container) still uses `node:20-slim` + `npm install` and needs migrating to match — don't copy its `npm` usage into new instructions.
 
 ## Dead Code (Don't Touch — Needs Cleanup)
 
