@@ -140,9 +140,8 @@ export default function UnifiedStudioView() {
   useEffect(() => {
     if (!autoProcessing) return;
     const id = setInterval(() => {
-      loadData();
-      loadVerbatims();
-    }, 10000);
+      Promise.all([loadData(), loadVerbatims()]);
+    }, 8000);
     return () => clearInterval(id);
   }, [autoProcessing, loadData, loadVerbatims]);
 
@@ -348,6 +347,7 @@ export default function UnifiedStudioView() {
         loading={loading}
         verbatims={visible}
         search={search}
+        startIndex={(page - 1) * PAGE_SIZE}
       />
 
       {totalPages > 1 && (

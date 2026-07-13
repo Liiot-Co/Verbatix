@@ -39,14 +39,17 @@ interface VerbatimsTableProps {
   loading: boolean;
   verbatims: Verbatim[];
   search: string;
+  /** Row number of the first item on this page (0-based), e.g. (page - 1) * pageSize. */
+  startIndex?: number;
 }
 
-export function VerbatimsTable({ loading, verbatims, search }: VerbatimsTableProps) {
+export function VerbatimsTable({ loading, verbatims, search, startIndex = 0 }: VerbatimsTableProps) {
   return (
     <div className="card overflow-hidden">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-p-border text-left">
+            <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">#</th>
             <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Respondent</th>
             <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Verbatim</th>
             <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Código</th>
@@ -57,6 +60,7 @@ export function VerbatimsTable({ loading, verbatims, search }: VerbatimsTablePro
           {loading ? (
             Array.from({ length: 6 }).map((_, i) => (
               <tr key={`skeleton-${i}`} className="border-b border-p-border last:border-0">
+                <td className="px-4 py-2.5"><div className="skeleton h-3 w-6 rounded" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-10 rounded" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-3/4 rounded" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-24 rounded" /></td>
@@ -65,16 +69,17 @@ export function VerbatimsTable({ loading, verbatims, search }: VerbatimsTablePro
             ))
           ) : verbatims.length === 0 ? (
             <tr>
-              <td colSpan={4} className="px-4 py-8 text-center text-p-text-faint text-sm">
+              <td colSpan={5} className="px-4 py-8 text-center text-p-text-faint text-sm">
                 {search ? `Sin resultados para "${search}" en esta página.` : "Sin verbatims todavía."}
               </td>
             </tr>
           ) : (
-            verbatims.map((v) => (
+            verbatims.map((v, rowIndex) => (
               <tr
                 key={v.id}
                 className="border-b border-p-border last:border-0 hover:bg-p-bg-subtle/50 transition-colors duration-100"
               >
+                <td className="px-4 py-2.5 text-p-text-faint text-xs">{startIndex + rowIndex + 1}</td>
                 <td className="px-4 py-2.5 text-p-text-faint text-xs">{v.respondent_external_id ?? "—"}</td>
                 <td className="px-4 py-2.5 text-p-text max-w-sm">
                   <div className="tooltip-trigger w-full">

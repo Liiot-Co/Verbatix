@@ -63,7 +63,7 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
               order by version desc
               limit 1
             )
-            select c.id, c.code_number, c.label, n.name as net_name,
+            select c.id, c.code_number, c.label, n.name as net_name, c.system_type,
                    array(
                        select alias_sample from code_aliases a 
                        where a.code_id = c.id and a.alias_sample is not null
@@ -78,6 +78,10 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
         {"studio": studio_id},
     ).mappings().all()
     codes_by_number = {c["code_number"]: c["id"] for c in codes}
+    # system_type 'anomaly' (code 95, "Menciones confusas/Incorrectas") means the LLM itself
+    # isn't sure the mention belongs to this question — that's exactly the case that needs a
+    # human to confirm, so it must never auto-code no matter how confident the model claims to be.
+    anomaly_code_ids = {c["id"] for c in codes if c.get("system_type") == "anomaly"}
     codebook_payload = [
         {
             "code_number": c["code_number"], 
@@ -150,8 +154,9 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
             # No confidence in the response is treated as low confidence, not high — a case
             # the LLM won't rate shouldn't get auto-coded any more than one it rates poorly.
             below_threshold = confidence is None or confidence < settings.llm_confidence_threshold
+            is_anomaly = any(cid in anomaly_code_ids for cid in matched_code_ids)
 
-            if not matched_code_ids or below_threshold:
+            if not matched_code_ids or below_threshold or is_anomaly:
                 update_anomalies_groups.append({"run": run_id, "id": group_id})
                 update_anomalies_verbatims.append({"id": group_id})
                 anomalies += 1

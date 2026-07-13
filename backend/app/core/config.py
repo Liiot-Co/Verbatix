@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
-    classification_batch_size: int = 20
+    classification_batch_size: int = 50
     # Concurrent classify_batch calls against the LLM API. Batches are independent,
     # so this divides wall-clock time almost linearly (each call is ~20-25s of I/O).
     llm_parallel_requests: int = 5
