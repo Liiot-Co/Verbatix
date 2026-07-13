@@ -447,7 +447,10 @@ def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UU
             insert into codes (id, codebook_id, code_number, label, origin, is_system, created_by)
             values (:id, :cb, :n, :l, 'analyst_manual', false, :u)
         """),
-        {"id": code_id, "cb": codebook_id, "n": next_number, "l": label, "u": user_id},
+        # Store the normalized label (lowercase, no accents/punctuation), not whatever
+        # case the analyst typed — keeps codebook labels consistent regardless of who
+        # created them or how they capitalized the input.
+        {"id": code_id, "cb": codebook_id, "n": next_number, "l": norm_label, "u": user_id},
     )
     if net_id:
         db.execute(
@@ -458,7 +461,7 @@ def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UU
             """),
             {"id": uuid.uuid4(), "n": net_id, "c": code_id},
         )
-    return {"id": str(code_id), "code_number": next_number, "label": label, "is_new": True}
+    return {"id": str(code_id), "code_number": next_number, "label": norm_label, "is_new": True}
 
 
 def deactivate_group_codes(db: Session, group_id: uuid.UUID) -> None:
