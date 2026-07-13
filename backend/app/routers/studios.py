@@ -193,7 +193,30 @@ def get_studio(
         {"id": studio_id},
     ).mappings().first()
 
-    return {**row, "counters": dict(counters)}
+    # Bloque `audit`: el estado que consumen los badges y el dashboard futuro.
+    # 'not_started' = nadie inició auditoría (estudio "sin auditar").
+    audit_row = db.execute(
+        text("""
+            select status, reviewed_items, total_items, target_met
+            from audit_sessions
+            where studio_id = :id
+            order by created_at desc
+            limit 1
+        """),
+        {"id": studio_id},
+    ).mappings().first()
+    audit = {
+        "status": (
+            "not_started" if not audit_row
+            else "approved" if audit_row["status"] == "approved"
+            else "in_progress"
+        ),
+        "reviewed_items": audit_row["reviewed_items"] if audit_row else 0,
+        "total_items": audit_row["total_items"] if audit_row else 0,
+        "target_met": audit_row["target_met"] if audit_row else False,
+    }
+
+    return {**row, "counters": dict(counters), "audit": audit}
 
 
 @router.get("/studios/{studio_id}/mention-groups")

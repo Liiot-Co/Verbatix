@@ -8,6 +8,7 @@ import ProjectDetail from "@/components/ProjectDetail";
 import StudyDetail from "@/components/StudyDetail";
 import CreationWizard from "@/components/CreationWizard";
 import UnifiedStudioView from "@/components/UnifiedStudioView";
+import AuditView from "@/components/AuditView";
 import ToastStack from "@/components/ToastStack";
 import { CommandPalette } from "@/components/CommandPalette";
 
@@ -31,6 +32,7 @@ export default function App() {
                     <Route path="/studios/:studioId" element={<UnifiedStudioView />} />
                     <Route path="/studios/:studioId/preliminary" element={<UnifiedStudioView />} />
                     <Route path="/studios/:studioId/verbatims" element={<UnifiedStudioView />} />
+                    <Route path="/studios/:studioId/audit" element={<AuditView />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </main>

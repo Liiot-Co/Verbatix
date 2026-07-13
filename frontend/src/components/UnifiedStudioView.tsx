@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Keyboard, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { getPreliminary, getStudio, getVerbatims, processStudio } from "@/api/client";
-import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim } from "@/api/types";
+import { getPreliminary, getResolutionSummary, getStudio, getVerbatims, processStudio } from "@/api/client";
+import type { CodingStatus, PreliminarySummary, ResolutionSummary, StudioStatus, Verbatim } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 import ResolutionCenter from "./ResolutionCenter";
@@ -28,6 +28,7 @@ export default function UnifiedStudioView() {
 
   const [studio, setStudio] = useState<StudioStatus | null>(null);
   const [preliminary, setPreliminary] = useState<PreliminarySummary | null>(null);
+  const [resolution, setResolution] = useState<ResolutionSummary | null>(null);
   const [verbatims, setVerbatims] = useState<Verbatim[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -44,6 +45,7 @@ export default function UnifiedStudioView() {
     return Promise.all([
       getStudio(studioId).then(setStudio),
       getPreliminary(studioId).then(setPreliminary),
+      getResolutionSummary(studioId).then(setResolution),
     ]);
   }, [studioId]);
 
@@ -61,6 +63,7 @@ export default function UnifiedStudioView() {
     Promise.all([
       getStudio(studioId!).then(setStudio),
       getPreliminary(studioId!).then(setPreliminary),
+      getResolutionSummary(studioId!).then(setResolution),
     ]).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studioId]);
@@ -234,7 +237,10 @@ export default function UnifiedStudioView() {
           momentum={momentum}
           codedPct={codedPct}
           justFinished={justFinished}
+          studioId={studioId!}
           onOpenResolution={() => setFullscreenResolution(true)}
+          canClose={resolution?.can_close ?? false}
+          audit={studio.audit}
         />
       )}
 
