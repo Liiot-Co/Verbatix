@@ -45,9 +45,16 @@ def parse_verbatims(content: bytes, sheet: str) -> list[dict]:
     ws = wb[sheet]
     rows = list(ws.iter_rows(values_only=True))
     header_i = next(
-        i for i, r in enumerate(rows)
-        if r and any(str(c).strip().lower() == "verbatim" for c in r if c)
+        (
+            i for i, r in enumerate(rows)
+            if r and any(str(c).strip().lower() == "verbatim" for c in r if c)
+        ),
+        None,
     )
+    if header_i is None:
+        # Sin el default, el next() vacío lanza StopIteration, que dentro de una
+        # coroutine ASGI se convierte en un RuntimeError críptico (500).
+        raise ValueError(f"La hoja '{sheet}' no tiene una columna 'Verbatim'")
     header = [str(c).strip().lower() if c else "" for c in rows[header_i]]
 
     def col(*names):

@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
     classification_batch_size: int = 20
+    # Concurrent classify_batch calls against the LLM API. Batches are independent,
+    # so this divides wall-clock time almost linearly (each call is ~20-25s of I/O).
+    llm_parallel_requests: int = 5
     # Below this, an LLM classification goes to human review (anomaly) instead of
     # auto_coded, regardless of which code_numbers it returned.
     llm_confidence_threshold: float = 0.6

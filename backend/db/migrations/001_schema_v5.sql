@@ -224,7 +224,7 @@ create table mention_groups (
   status            text not null default 'pending_review'
                     check (status in ('auto_coded','below_threshold','anomaly','pending_review','resolved')),
   suggested_code_id uuid references codes(id),
-  created_by_run_id uuid references processing_runs(id),
+  created_by_run_id uuid references processing_runs(id) on delete set null,
   resolved_by       uuid references profiles(id),
   resolved_at       timestamptz,
   created_at        timestamptz not null default now(),
@@ -259,7 +259,7 @@ create table verbatim_codes (
                      check (source in ('engine_exact','engine_fuzzy','homologation','analyst_manual','audit_correction')),
   confidence_score   numeric(4,3),
   matched_alias      text,  -- alias del catálogo que matcheó (transparencia: por qué el fuzzy asignó este código)
-  processing_run_id  uuid references processing_runs(id),
+  processing_run_id  uuid references processing_runs(id) on delete set null,
   assigned_by        uuid references profiles(id),
   is_active          boolean not null default true,
   created_at         timestamptz not null default now(),
@@ -274,7 +274,7 @@ create index on verbatim_codes (verbatim_id) where is_active;
 create table audit_sessions (
   id                 uuid primary key default gen_random_uuid(),
   studio_id          uuid not null references studio(id) on delete cascade,
-  processing_run_id  uuid references processing_runs(id),
+  processing_run_id  uuid references processing_runs(id) on delete set null,
   target_percentage  numeric(5,2) not null,
   total_items        int not null default 0,
   reviewed_items     int not null default 0,

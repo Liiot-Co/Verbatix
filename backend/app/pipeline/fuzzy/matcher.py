@@ -11,7 +11,7 @@ from __future__ import annotations
 import polars as pl
 from rapidfuzz import fuzz, process
 
-from .models import CodeAlias, Cols
+from .models import SHORT_TEXT_EXACT_MAX_LEN, CodeAlias, Cols
 
 # WRatio es el scorer elegido tras comparar contra ratio/token_sort/token_set
 # sobre los datos reales: es el único que maneja bien tanto typos de token único
@@ -72,6 +72,14 @@ def match_against_catalog(
         }
     )
 
+    # Textos cortos solo pasan con match exacto: WRatio escala partial_ratio y
+    # un substring corto puntúa alto contra aliases largos ('uno' -> 'ninguno' 90).
     return df.join(best_df, on=Cols.NORMALIZED_TEXT, how="left").with_columns(
-        (pl.col(Cols.SCORE) >= threshold).alias("_is_match")
+        (
+            (pl.col(Cols.SCORE) >= threshold)
+            & (
+                (pl.col(Cols.NORMALIZED_TEXT).str.len_chars() > SHORT_TEXT_EXACT_MAX_LEN)
+                | (pl.col(Cols.SCORE) >= 100.0)
+            )
+        ).alias("_is_match")
     )

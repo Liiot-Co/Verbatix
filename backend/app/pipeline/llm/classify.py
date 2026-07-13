@@ -1,4 +1,7 @@
+import logging
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -6,10 +9,25 @@ from sqlalchemy.orm import Session
 from app.pipeline.llm.client import classify_batch
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
+_RETRY_DELAY_SECONDS = 2.0
+
 
 def _chunks(items: list, size: int):
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+def _classify_batch_with_retry(codebook: list[dict], payload: list[dict], coding_type: str) -> list[dict]:
+    """Un reintento ante fallo transitorio (red/timeout/JSON malformado) antes de
+    rendir el batch: sin esto, un blip puntual mandaba 20 grupos a revisión humana."""
+    try:
+        return classify_batch(codebook, payload, coding_type)
+    except Exception:
+        logger.warning("Batch LLM falló (%d verbatims); reintentando una vez", len(payload))
+        time.sleep(_RETRY_DELAY_SECONDS)
+        return classify_batch(codebook, payload, coding_type)
 
 
 def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
@@ -35,15 +53,23 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
         {"studio": studio_id},
     ).scalar()
 
+    # Solo el codebook más reciente: con varias versiones, traerlas todas duplica
+    # code_numbers y el dict de abajo se queda con el code_id de la versión vieja.
     codes = db.execute(
         text("""
+            with latest as (
+              select id from codebooks
+              where studio_id = :studio
+              order by version desc
+              limit 1
+            )
             select c.id, c.code_number, c.label, n.name as net_name
             from codes c
-            join codebooks b on b.id = c.codebook_id
+            join latest l on l.id = c.codebook_id
             left join net_codes nc on nc.code_id = c.id
             left join nets n on n.id = nc.net_id
-            where b.studio_id = :studio and c.is_active
-            order by b.version desc
+            where c.is_active
+            order by c.code_number
         """),
         {"studio": studio_id},
     ).mappings().all()
@@ -64,15 +90,46 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
     auto_coded = 0
     anomalies = 0
 
-    for batch in _chunks(groups, settings.classification_batch_size):
-        update_groups_params = []
-        insert_verbatim_codes_params = []
-        update_verbatims_params = []
-        update_anomalies_groups = []
-        update_anomalies_verbatims = []
+    update_groups_params = []
+    insert_verbatim_codes_params = []
+    update_verbatims_params = []
+    update_anomalies_groups = []
+    update_anomalies_verbatims = []
 
-        payload = [{"id": str(g["id"]), "text": g["sample_text"]} for g in batch]
-        results = classify_batch(codebook_payload, payload, coding_type)
+    # Los batches son independientes entre sí (cada uno lleva el codebook completo
+    # y sus propios grupos), así que van al LLM en paralelo: el cuello de botella
+    # es puro I/O de red (~20-25s por llamada). Los hilos SOLO hacen HTTP; toda la
+    # decisión y escritura a DB queda en este hilo (la Session no es thread-safe).
+    batches = list(_chunks(groups, settings.classification_batch_size))
+    with ThreadPoolExecutor(max_workers=settings.llm_parallel_requests) as pool:
+        futures = {
+            pool.submit(
+                _classify_batch_with_retry,
+                codebook_payload,
+                [{"id": str(g["id"]), "text": g["sample_text"]} for g in batch],
+                coding_type,
+            ): batch
+            for batch in batches
+        }
+        batch_results: list[tuple[list, list[dict] | None]] = []
+        for future in as_completed(futures):
+            try:
+                batch_results.append((futures[future], future.result()))
+            except Exception:
+                # Un batch que falla (aun tras el retry) no puede tumbar el run
+                # entero: sus grupos van a revisión humana (anomaly) y seguimos con
+                # el resto. Así el studio siempre llega a un estado terminal, nunca
+                # se queda "procesando" por un fallo del LLM.
+                logger.exception("Batch LLM falló; %d grupos van a revisión", len(futures[future]))
+                batch_results.append((futures[future], None))
+
+    for batch, results in batch_results:
+        if results is None:
+            for g in batch:
+                update_anomalies_groups.append({"run": run_id, "id": g["id"]})
+                update_anomalies_verbatims.append({"id": g["id"]})
+                anomalies += 1
+            continue
 
         for result in results:
             group = groups_by_id.get(result["verbatim_id"])
@@ -81,6 +138,8 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
             group_id = group["id"]
             matched_code_ids = [codes_by_number[n] for n in result["code_numbers"] if n in codes_by_number]
             confidence = result.get("confidence")
+            # No confidence in the response is treated as low confidence, not high — a case
+            # the LLM won't rate shouldn't get auto-coded any more than one it rates poorly.
             below_threshold = confidence is None or confidence < settings.llm_confidence_threshold
 
             if not matched_code_ids or below_threshold:
@@ -100,40 +159,40 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
             update_verbatims_params.append({"id": group_id})
             auto_coded += 1
 
-        if update_groups_params:
-            db.execute(
-                text("""
-                    update mention_groups
-                    set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
-                    where id = :id
-                """),
-                update_groups_params,
-            )
-            db.execute(
-                text("""
-                    insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, processing_run_id)
-                    select gen_random_uuid(), v.id, :code, :idx, 'engine_fuzzy', :run
-                    from verbatims v where v.mention_group_id = :group_id
-                    on conflict (verbatim_id, code_id) do nothing
-                """),
-                insert_verbatim_codes_params,
-            )
-            db.execute(
-                text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :id"),
-                update_verbatims_params,
-            )
+    if update_groups_params:
+        db.execute(
+            text("""
+                update mention_groups
+                set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
+                where id = :id
+            """),
+            update_groups_params,
+        )
+        db.execute(
+            text("""
+                insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, processing_run_id)
+                select gen_random_uuid(), v.id, :code, :idx, 'engine_fuzzy', :run
+                from verbatims v where v.mention_group_id = :group_id
+                on conflict (verbatim_id, code_id) do nothing
+            """),
+            insert_verbatim_codes_params,
+        )
+        db.execute(
+            text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :id"),
+            update_verbatims_params,
+        )
 
-        if update_anomalies_groups:
-            db.execute(
-                text("update mention_groups set status = 'anomaly', created_by_run_id = :run where id = :id"),
-                update_anomalies_groups,
-            )
-            db.execute(
-                text("update verbatims set coding_status = 'needs_review' where mention_group_id = :id"),
-                update_anomalies_verbatims,
-            )
+    if update_anomalies_groups:
+        db.execute(
+            text("update mention_groups set status = 'anomaly', created_by_run_id = :run where id = :id"),
+            update_anomalies_groups,
+        )
+        db.execute(
+            text("update verbatims set coding_status = 'needs_review' where mention_group_id = :id"),
+            update_anomalies_verbatims,
+        )
 
-        db.commit()
+    db.commit()
 
     db.execute(
         text("""

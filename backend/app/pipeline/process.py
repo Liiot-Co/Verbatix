@@ -42,7 +42,7 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
             text("select min_mentions_threshold from studio where id = :studio"),
             {"studio": studio_id},
         ).scalar()
-        catalog = discover_catalog_from_frequency(db, studio_id, min_mentions)
+        catalog = discover_catalog_from_frequency(db, studio_id, min_mentions, threshold)
 
     run_id = uuid.uuid4()
     db.execute(

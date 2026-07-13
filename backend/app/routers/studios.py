@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
@@ -19,6 +20,8 @@ from app.repositories import (
     insert_verbatims,
     seed_system_codes,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["rounds & studios"])
 
@@ -340,12 +343,39 @@ class ImportIn(BaseModel):
     column_map: dict[str, str] | None = None
 
 
+def _mark_studio_failed(db: Session, studio_id: uuid.UUID, message: str) -> None:
+    """Deja el studio y cualquier run colgado en un estado terminal 'failed'.
+
+    Sin esto, una excepción en el background task dejaba el studio en
+    'files_uploaded' y el run en 'running' para siempre — el frontend hace polling
+    infinito y el usuario ve "procesando" que nunca termina.
+    """
+    try:
+        db.execute(
+            text("""
+                update processing_runs set status = 'failed', finished_at = now(),
+                    error_message = :msg
+                where studio_id = :id and status = 'running'
+            """),
+            {"id": studio_id, "msg": message[:2000]},
+        )
+        db.execute(
+            text("update studio set status = 'failed', updated_at = now() where id = :id"),
+            {"id": studio_id},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
 def _process_studio_task(studio_id: uuid.UUID) -> None:
     db = SessionLocal()
     try:
         process_studio(db, studio_id)
-    except Exception:
+    except Exception as exc:
+        logger.exception("process_studio falló para studio %s", studio_id)
         db.rollback()
+        _mark_studio_failed(db, studio_id, str(exc))
     finally:
         db.close()
 
@@ -370,7 +400,11 @@ def import_file(
     bucket, _, path = meta["storage_path"].partition("/")
     content = storage.download(bucket, path)
 
-    rows = excel.parse_verbatims(content, payload.verbatims_sheet)
+    try:
+        rows = excel.parse_verbatims(content, payload.verbatims_sheet)
+    except (ValueError, KeyError) as exc:
+        # KeyError: la hoja no existe en el workbook; ValueError: no es de verbatims.
+        raise HTTPException(400, f"Hoja de verbatims inválida: {exc}") from exc
     n_inserted, df = insert_verbatims(db, studio_id, file_id, rows, studio["coding_type"])
 
     n_codes = n_aliases = 0

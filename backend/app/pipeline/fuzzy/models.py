@@ -26,6 +26,22 @@ SCORE_THRESHOLD: float = 80.0
 # positivo), así que se derivan enteras al siguiente módulo (LLM/embeddings).
 FUZZY_CODING_TYPE: str = "brands"
 
+# Textos de hasta este largo solo aceptan match exacto (score 100). WRatio
+# escala el partial_ratio y regala matches por substring en textos cortos:
+# sobre datos reales, 'uno' -> 'ninguno' daba 90 (falso positivo claro).
+SHORT_TEXT_EXACT_MAX_LEN: int = 3
+
+# Variantes canónicas (ya normalizadas) de las respuestas que corresponden a
+# códigos de sistema, por system_type. En el flujo sin codebook evitan que
+# "no se"/"ninguna" — casi siempre entre los textos más frecuentes — se
+# promuevan como marcas falsas: se vuelven aliases del código de sistema y el
+# fuzzy las codifica directo a 96/98/99.
+SYSTEM_ALIAS_VARIANTS: dict[str, tuple[str, ...]] = {
+    "no_answer": ("no sabe", "no se", "nose", "no sabria decir", "no conozco"),
+    "none": ("nada", "ninguna", "ninguno", "ni una", "niguna"),
+    "no_recall": ("no recuerda", "no recuerdo", "no me acuerdo", "no responde", "no contesta"),
+}
+
 
 # --------------------------------------------------------------------------- #
 # Nombres de columna (contrato con los módulos vecinos)

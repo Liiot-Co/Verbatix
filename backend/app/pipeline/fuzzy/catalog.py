@@ -6,12 +6,18 @@ from __future__ import annotations
 
 import uuid
 
+from rapidfuzz import fuzz, process as rf_process
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.pipeline.normalize import normalize
 
-from .models import CodeAlias
+from .models import (
+    SCORE_THRESHOLD,
+    SHORT_TEXT_EXACT_MAX_LEN,
+    SYSTEM_ALIAS_VARIANTS,
+    CodeAlias,
+)
 
 
 def load_catalog_aliases(db: Session, studio_id: uuid.UUID) -> list[CodeAlias]:
@@ -67,16 +73,49 @@ def load_catalog_aliases(db: Session, studio_id: uuid.UUID) -> list[CodeAlias]:
     return catalog
 
 
+def _brand_code_numbers(start: int):
+    """Genera code_numbers correlativos saltando el rango 95-99 (reservado
+    para códigos de sistema: colisionar ahí viola el unique del codebook)."""
+    n = start
+    while True:
+        if 95 <= n <= 99:
+            n = 100
+        yield n
+        n += 1
+
+
+def _best_match(text_value: str, aliases: list[str], threshold: float):
+    """extractOne con la misma guarda de texto corto que el matcher: un texto
+    de <= SHORT_TEXT_EXACT_MAX_LEN chars solo se acepta por match exacto."""
+    if not aliases:
+        return None
+    cutoff = 100.0 if len(text_value) <= SHORT_TEXT_EXACT_MAX_LEN else threshold
+    return rf_process.extractOne(text_value, aliases, scorer=fuzz.WRatio, score_cutoff=cutoff)
+
+
 def discover_catalog_from_frequency(
-    db: Session, studio_id: uuid.UUID, min_mentions: int
+    db: Session,
+    studio_id: uuid.UUID,
+    min_mentions: int,
+    threshold: float = SCORE_THRESHOLD,
 ) -> list[CodeAlias]:
     """Fallback cuando el studio no trae codebook: deriva las marcas 'semilla'
     de la frecuencia.
 
     Cada mention_group cuyo frequency_count alcanza el mínimo del studio se
     promueve a un code nuevo (origin engine_auto) y su texto normalizado queda
-    como alias. Con ese catálogo el fuzzy arrastra los typos poco frecuentes
-    hacia las semillas; lo que no se parezca a ninguna sigue al LLM (flujo normal).
+    como alias, con dos filtros de precisión:
+
+    - Respuestas de sistema ("no se", "ninguna"...) no se promueven como marcas:
+      se vuelven aliases del código de sistema (96/98/99) y el fuzzy las codifica
+      directo ahí. Sin esto, al ser de los textos más frecuentes, terminaban como
+      marcas falsas en el codebook.
+    - Un candidato que ya matchea (>= threshold) contra una semilla aceptada es
+      un typo de esa marca: se agrega como alias del code existente en vez de
+      crear un code duplicado.
+
+    Con ese catálogo el fuzzy arrastra los typos poco frecuentes hacia las
+    semillas; lo que no se parezca a ninguna sigue al LLM (flujo normal).
 
     Escribe codes/code_aliases pero no hace commit: el caller confirma junto con
     el resto del run. Idempotente por construcción — una vez creadas las semillas,
@@ -104,8 +143,42 @@ def discover_catalog_from_frequency(
     if not seeds:
         return []
 
-    # Numeración correlativa a partir del último code de marca no-system (los
-    # system ocupan 95-99), respetando cualquier código ya presente en el libro.
+    def _persist_alias(code_id, alias_normalized: str, alias_sample: str | None, occurrences: int | None) -> None:
+        db.execute(
+            text("""
+                insert into code_aliases (id, codebook_id, code_id, alias_normalized,
+                                          alias_sample, occurrences, origin)
+                values (:id, :cb, :code, :norm, :sample, :occ, 'engine_fuzzy')
+                on conflict (codebook_id, alias_normalized, code_id) do nothing
+            """),
+            {
+                "id": uuid.uuid4(), "cb": codebook_id, "code": code_id,
+                "norm": alias_normalized, "sample": alias_sample, "occ": occurrences,
+            },
+        )
+
+    catalog: list[CodeAlias] = []
+    alias_to_code: dict[str, str] = {}
+
+    # Aliases de los códigos de sistema del codebook (96/98/99): capturan las
+    # respuestas "no sabe"/"ninguna"/"no recuerda" y sus variantes.
+    system_rows = db.execute(
+        text("""
+            select id::text as code_id, system_type from codes
+            where codebook_id = :cb and is_system and system_type is not null
+        """),
+        {"cb": codebook_id},
+    ).mappings().all()
+    system_aliases: list[str] = []
+    for row in system_rows:
+        for variant in SYSTEM_ALIAS_VARIANTS.get(row["system_type"], ()):
+            _persist_alias(row["code_id"], variant, None, None)
+            catalog.append(CodeAlias(code_id=row["code_id"], alias_normalized=variant))
+            alias_to_code[variant] = row["code_id"]
+            system_aliases.append(variant)
+
+    # Numeración correlativa a partir del último code de marca no-system,
+    # respetando cualquier código ya presente en el libro.
     next_number = db.execute(
         text("""
             select coalesce(max(code_number), 0) + 1 from codes
@@ -113,33 +186,39 @@ def discover_catalog_from_frequency(
         """),
         {"cb": codebook_id},
     ).scalar()
+    numbers = _brand_code_numbers(next_number)
 
-    catalog: list[CodeAlias] = []
-    for offset, seed in enumerate(seeds):
-        code_id = uuid.uuid4()
-        label = seed["sample_text"] or seed["normalized_text"]
-        db.execute(
-            text("""
-                insert into codes (id, codebook_id, code_number, label, origin)
-                values (:id, :cb, :n, :label, 'engine_auto')
-            """),
-            {"id": code_id, "cb": codebook_id, "n": next_number + offset, "label": label},
-        )
-        db.execute(
-            text("""
-                insert into code_aliases (id, codebook_id, code_id, alias_normalized,
-                                          alias_sample, occurrences, origin)
-                values (:id, :cb, :code, :norm, :sample, :occ, 'engine_fuzzy')
-            """),
-            {
-                "id": uuid.uuid4(),
-                "cb": codebook_id,
-                "code": code_id,
-                "norm": seed["normalized_text"],
-                "sample": seed["sample_text"],
-                "occ": seed["frequency_count"],
-            },
-        )
-        catalog.append(CodeAlias(code_id=str(code_id), alias_normalized=seed["normalized_text"]))
+    seed_aliases: list[str] = []
+    for seed in seeds:
+        norm = seed["normalized_text"]
+
+        # Respuesta de sistema disfrazada de marca frecuente -> alias de 96/98/99.
+        sys_hit = _best_match(norm, system_aliases, threshold)
+        if sys_hit:
+            code_id = alias_to_code[sys_hit[0]]
+            _persist_alias(code_id, norm, seed["sample_text"], seed["frequency_count"])
+            catalog.append(CodeAlias(code_id=code_id, alias_normalized=norm))
+            continue
+
+        # Typo de una semilla ya aceptada -> alias del code existente.
+        seed_hit = _best_match(norm, seed_aliases, threshold)
+        if seed_hit:
+            code_id = alias_to_code[seed_hit[0]]
+        else:
+            code_id = str(uuid.uuid4())
+            db.execute(
+                text("""
+                    insert into codes (id, codebook_id, code_number, label, origin)
+                    values (:id, :cb, :n, :label, 'engine_auto')
+                """),
+                {
+                    "id": code_id, "cb": codebook_id, "n": next(numbers),
+                    "label": seed["sample_text"] or norm,
+                },
+            )
+        _persist_alias(code_id, norm, seed["sample_text"], seed["frequency_count"])
+        catalog.append(CodeAlias(code_id=code_id, alias_normalized=norm))
+        alias_to_code[norm] = code_id
+        seed_aliases.append(norm)
 
     return catalog

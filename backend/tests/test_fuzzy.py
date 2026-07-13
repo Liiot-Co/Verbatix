@@ -97,6 +97,22 @@ def test_empty_catalog_all_unmatched():
     assert res.unmatched.height == 1
 
 
+def test_short_text_requires_exact_match():
+    # WRatio escala partial_ratio: 'uno' contra 'ninguno' da 90 por substring.
+    # Un texto corto solo debe clasificar por match exacto.
+    df = _df(
+        [
+            {"respondent_external_id": "1", "question_key": "q1",
+             "normalized_text": "uno", "coding_type": "brands"},
+            {"respondent_external_id": "2", "question_key": "q1",
+             "normalized_text": "ninguno", "coding_type": "brands"},
+        ]
+    )
+    res = run_fuzzy_matching(df, [CodeAlias(code_id="c-98", alias_normalized="ninguno")])
+    classified = {r[Cols.NORMALIZED_TEXT] for r in res.classified.iter_rows(named=True)}
+    assert classified == {"ninguno"}  # exacto pasa; 'uno' va al LLM
+
+
 # --------------------------------------------------------------------------- #
 # Catálogo derivado de frecuencia (fallback sin codebook)
 # --------------------------------------------------------------------------- #
@@ -115,11 +131,14 @@ class _FreqResult:
 
 
 class _FreqSession:
-    """FakeSession que sirve el codebook, las semillas y captura los inserts."""
+    """FakeSession que sirve el codebook, las semillas, los códigos de sistema
+    y captura los inserts."""
 
-    def __init__(self, codebook_id, seeds):
+    def __init__(self, codebook_id, seeds, system_codes=None, next_number=1):
         self._codebook_id = codebook_id
         self._seeds = seeds
+        self._system_codes = system_codes or []
+        self._next_number = next_number
         self.inserted_codes = []
         self.inserted_aliases = []
 
@@ -129,8 +148,10 @@ class _FreqSession:
             return _FreqResult(scalar=self._codebook_id)
         if "from mention_groups" in sql:
             return _FreqResult(rows=self._seeds)
+        if "is_system and system_type is not null" in sql:
+            return _FreqResult(rows=self._system_codes)
         if "max(code_number)" in sql:
-            return _FreqResult(scalar=1)
+            return _FreqResult(scalar=self._next_number)
         if "insert into codes" in sql:
             self.inserted_codes.append(params)
         elif "insert into code_aliases" in sql:
@@ -165,3 +186,56 @@ def test_discover_catalog_empty_when_no_group_reaches_minimum():
 
     assert catalog == []
     assert db.inserted_codes == []
+
+
+def test_discover_catalog_routes_system_responses_to_system_codes():
+    # "no se" es de los textos más frecuentes: no debe volverse una marca falsa,
+    # sino alias del código de sistema 96 para que el fuzzy lo codifique ahí.
+    code_96 = str(uuid.uuid4())
+    seeds = [
+        {"normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 12},
+        {"normalized_text": "no se", "sample_text": "No se", "frequency_count": 10},
+    ]
+    db = _FreqSession(
+        codebook_id=uuid.uuid4(),
+        seeds=seeds,
+        system_codes=[{"code_id": code_96, "system_type": "no_answer"}],
+    )
+
+    catalog = discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=10)
+
+    # Solo 'bonle' se promueve a code nuevo; 'no se' apunta al code de sistema.
+    assert len(db.inserted_codes) == 1
+    assert db.inserted_codes[0]["label"] == "Bonle"
+    by_alias = {c.alias_normalized: c.code_id for c in catalog}
+    assert by_alias["no se"] == code_96
+    assert by_alias["no sabe"] == code_96  # variantes canónicas también en catálogo
+    assert by_alias["bonle"] == db.inserted_codes[0]["id"]
+
+
+def test_discover_catalog_clusters_typo_seeds_as_aliases():
+    seeds = [
+        {"normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 20},
+        {"normalized_text": "gloriaa", "sample_text": "GLORIAA", "frequency_count": 6},
+    ]
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
+
+    catalog = discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=5)
+
+    # 'gloriaa' es typo de 'gloria': un solo code, dos aliases al mismo code_id.
+    assert len(db.inserted_codes) == 1
+    by_alias = {c.alias_normalized: c.code_id for c in catalog}
+    assert by_alias["gloriaa"] == by_alias["gloria"]
+
+
+def test_discover_catalog_numbering_skips_system_range():
+    seeds = [
+        {"normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
+        {"normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 8},
+    ]
+    # El siguiente número libre cae en el rango de sistema (95-99): debe saltarlo.
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds, next_number=95)
+
+    discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=5)
+
+    assert [c["n"] for c in db.inserted_codes] == [100, 101]
