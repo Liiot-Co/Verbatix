@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.access import require_project, require_round, require_studio
 from app.core.auth import CurrentUser, current_user
 from app.core.database import SessionLocal, get_db
 from app.core import storage
@@ -40,12 +41,7 @@ def create_round(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    exists = db.execute(
-        text("select 1 from projects where id = :id"),
-        {"id": project_id},
-    ).scalar()
-    if not exists:
-        raise HTTPException(404, "Proyecto no encontrado")
+    require_project(db, project_id, user["id"])
 
     rid = uuid.uuid4()
     db.execute(
@@ -80,8 +76,13 @@ def delete_round(
     user: CurrentUser = Depends(current_user),
 ):
     deleted = db.execute(
-        text("delete from rounds where id = :id returning id"),
-        {"id": round_id},
+        text("""
+            delete from rounds r
+            using projects p
+            where r.id = :id and r.project_id = p.id and p.created_by = :u
+            returning r.id
+        """),
+        {"id": round_id, "u": user["id"]},
     ).scalar()
     if not deleted:
         raise HTTPException(404, "Ronda no encontrada")
@@ -106,12 +107,10 @@ def create_studio(
     if payload.coding_type not in ("brands", "reasons"):
         raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
 
-    exists = db.execute(
-        text("select 1 from rounds where id = :id"),
-        {"id": round_id},
-    ).scalar()
-    if not exists:
-        raise HTTPException(404, "Ronda no encontrada")
+    require_round(db, round_id, user["id"])
+
+    if payload.origin_mode == "homologated" and payload.source_studio_id:
+        require_studio(db, payload.source_studio_id, user["id"])
 
     studio_id = uuid.uuid4()
     db.execute(
@@ -160,8 +159,13 @@ def delete_studio(
     user: CurrentUser = Depends(current_user),
 ):
     deleted = db.execute(
-        text("delete from studio where id = :id returning id"),
-        {"id": studio_id},
+        text("""
+            delete from studio s
+            using rounds r, projects p
+            where s.id = :id and s.round_id = r.id and r.project_id = p.id and p.created_by = :u
+            returning s.id
+        """),
+        {"id": studio_id, "u": user["id"]},
     ).scalar()
     if not deleted:
         raise HTTPException(404, "Estudio no encontrado")
@@ -174,12 +178,7 @@ def get_studio(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    row = db.execute(
-        text("select * from studio where id = :id"),
-        {"id": studio_id},
-    ).mappings().first()
-    if not row:
-        raise HTTPException(404, "Estudio no existe")
+    row = require_studio(db, studio_id, user["id"])
 
     counters = db.execute(
         text("""
@@ -194,7 +193,7 @@ def get_studio(
         {"id": studio_id},
     ).mappings().first()
 
-    return {**dict(row), "counters": dict(counters)}
+    return {**row, "counters": dict(counters)}
 
 
 @router.get("/studios/{studio_id}/mention-groups")
@@ -203,6 +202,7 @@ def list_mention_groups(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     rows = db.execute(
         text("""
             select id, normalized_text, sample_text, frequency_count, status
@@ -234,6 +234,7 @@ def list_verbatims(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_studio(db, studio_id, user["id"])
     rows = db.execute(
         text("""
             select v.id, v.respondent_external_id, v.question_key, v.original_text,
@@ -290,13 +291,6 @@ def list_verbatims(
     }
 
 
-def _require_studio(db: Session, studio_id: uuid.UUID) -> dict:
-    row = db.execute(text("select * from studio where id = :id"), {"id": studio_id}).mappings().first()
-    if not row:
-        raise HTTPException(404, "Estudio no existe")
-    return dict(row)
-
-
 @router.post("/studios/{studio_id}/files", status_code=201)
 def upload_file(
     studio_id: uuid.UUID,
@@ -304,7 +298,7 @@ def upload_file(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    _require_studio(db, studio_id)
+    require_studio(db, studio_id, user["id"])
     content = file.file.read()
     checksum = hashlib.sha256(content).hexdigest()
 
@@ -389,7 +383,7 @@ def import_file(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    studio = _require_studio(db, studio_id)
+    studio = require_studio(db, studio_id, user["id"])
     meta = db.execute(
         text("select storage_path from imported_files where id = :id and studio_id = :studio"),
         {"id": file_id, "studio": studio_id},
@@ -457,7 +451,7 @@ def process(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    _require_studio(db, studio_id)
+    require_studio(db, studio_id, user["id"])
     try:
         result = process_studio(db, studio_id)
     except LookupError as exc:
@@ -471,7 +465,7 @@ def preliminary(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    _require_studio(db, studio_id)
+    require_studio(db, studio_id, user["id"])
     counts = db.execute(
         text("""
             select status, count(*) as n

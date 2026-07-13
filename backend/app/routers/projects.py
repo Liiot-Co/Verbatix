@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.access import require_project
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 
@@ -54,9 +55,11 @@ def list_projects(
                    count(r.id) as rounds_count
             from projects p
             left join rounds r on r.project_id = p.id
+            where p.created_by = :u
             group by p.id
             order by p.created_at desc
-        """)
+        """),
+        {"u": user["id"]},
     ).mappings().all()
     return [
         {
@@ -77,8 +80,8 @@ def delete_project(
     user: CurrentUser = Depends(current_user),
 ):
     deleted = db.execute(
-        text("delete from projects where id = :id returning id"),
-        {"id": project_id},
+        text("delete from projects where id = :id and created_by = :u returning id"),
+        {"id": project_id, "u": user["id"]},
     ).scalar()
     if not deleted:
         raise HTTPException(404, "Proyecto no encontrado")
@@ -91,12 +94,11 @@ def get_project(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_project(db, project_id, user["id"])
     project = db.execute(
         text("select id, external_code, name, created_at from projects where id = :id"),
         {"id": project_id},
     ).mappings().first()
-    if not project:
-        raise HTTPException(404, "Proyecto no encontrado")
 
     rounds = db.execute(
         text("""
