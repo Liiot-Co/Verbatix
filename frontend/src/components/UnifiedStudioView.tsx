@@ -322,9 +322,9 @@ export default function UnifiedStudioView() {
 
       </div>
 
-      {preliminary && !isProcessingNow && (
+      {preliminary && !isProcessingNow && !fullscreenResolution && (
         <div className="order-1 xl:order-none xl:sticky xl:top-4 h-auto xl:h-[calc(100vh-5rem)] relative">
-          <div 
+          <div
             className="hidden xl:flex absolute -left-4 top-0 w-4 h-full cursor-col-resize items-center justify-center z-10 opacity-0 hover:opacity-100 transition-opacity group"
             onMouseDown={startResizing}
             title="Ajustar ancho"
@@ -378,6 +378,15 @@ export default function UnifiedStudioView() {
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="flex justify-between"><span>{modLabel()}R</span><span className="text-p-text-muted">Recargar</span></div>
                   <div className="flex justify-between"><span>{modLabel()}E</span><span className="text-p-text-muted">Exportar</span></div>
+                </div>
+                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide mt-2">Centro de Resolución</div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="flex justify-between"><span>←↑↓→</span><span className="text-p-text-muted">Navegar códigos</span></div>
+                  <div className="flex justify-between"><span>↵</span><span className="text-p-text-muted">Asignar</span></div>
+                  <div className="flex justify-between"><span>d</span><span className="text-p-text-muted">Sin dato</span></div>
+                  <div className="flex justify-between"><span>n</span><span className="text-p-text-muted">Nueva marca</span></div>
+                  <div className="flex justify-between"><span>1-9</span><span className="text-p-text-muted">Código rápido</span></div>
+                  <div className="flex justify-between"><span>a-z</span><span className="text-p-text-muted">Filtrar códigos</span></div>
                 </div>
               </div>
               <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => setShowShortcuts(false)} className="btn-primary w-full mt-4 justify-center">

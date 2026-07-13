@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, CheckCircle2, Maximize2, Plus, Sparkles } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { AlertTriangle, Check, CheckCircle2, Maximize2, Plus, Sparkles, Volume2, VolumeX } from "lucide-react";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
+  ApiError,
   getMentionGroup,
   getResolutionQueue,
   getResolutionSummary,
@@ -11,7 +12,6 @@ import {
 } from "@/api/client";
 import type {
   MentionGroupDetail,
-  MentionGroupStatus,
   ResolutionQueueItem,
   ResolutionSummary,
   ResolveDecision,
@@ -19,17 +19,10 @@ import type {
 } from "@/api/types";
 import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { STATUS_CHIP } from "@/lib/resolutionStatus";
 
 const PAGE_SIZE = 50;
 const MAX_DOTS = 12;
-
-const STATUS_CHIP: Record<MentionGroupStatus, { label: string; className: string }> = {
-  anomaly: { label: "Confusa", className: "badge-error" },
-  below_threshold: { label: "Bajo umbral", className: "badge-warning" },
-  pending_review: { label: "Sin revisar", className: "badge-pending" },
-  auto_coded: { label: "Sugerido", className: "badge-auto" },
-  resolved: { label: "Resuelto", className: "badge-success" },
-};
 
 // Stable per-code color, same idea as the mockup's per-category hue.
 function codeColor(codeNumber: number): string {
@@ -75,12 +68,17 @@ export default function ResolutionSidebar({
   studioId,
   onResolved,
   onExpand,
+  focusGroupId,
+  onFocusHandled,
 }: {
   studioId: string;
   /** Called after each successful resolve — lets a parent (e.g. a queue list) refresh. */
   onResolved?: () => void;
   /** Shows a fullscreen-expand button in the header when provided. */
   onExpand?: () => void;
+  /** Brings a specific group to the front of the local queue (e.g. clicked from a passive list). */
+  focusGroupId?: string | null;
+  onFocusHandled?: () => void;
 }) {
   const showToast = useVerbatixStore((s) => s.showToast);
   const newCodeInputRef = useRef<HTMLInputElement>(null);
@@ -106,9 +104,7 @@ export default function ResolutionSidebar({
   const [navDiscardIndex, setNavDiscardIndex] = useState(0);
   const [newCodeLabel, setNewCodeLabel] = useState("");
   const [addAlias, setAddAlias] = useState(true);
-  // Zonas de foco tipo Excel: "header" = tarjeta de la mención (←/→ descartan/crean),
-  // "list" = grilla de marcas (las 4 flechas navegan). ↓ baja a la lista, ↑ desde la primera fila vuelve.
-  const [zone, setZone] = useState<"header" | "list">("header");
+  const [codeFilter, setCodeFilter] = useState("");
   const [gridCols, setGridCols] = useState(() => {
     const saved = localStorage.getItem("resolution-grid-cols");
     return saved ? parseInt(saved, 10) : 2;
@@ -117,7 +113,12 @@ export default function ResolutionSidebar({
     const saved = localStorage.getItem("resolution-auto-cols");
     return saved !== "false";
   });
+  const [soundMuted, setSoundMuted] = useState(() => localStorage.getItem("resolution-sound-muted") === "true");
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    localStorage.setItem("resolution-sound-muted", soundMuted ? "true" : "false");
+  }, [soundMuted]);
 
   useEffect(() => {
     localStorage.setItem("resolution-grid-cols", gridCols.toString());
@@ -147,12 +148,39 @@ export default function ResolutionSidebar({
 
   const currentCard = queue[0] ?? null;
 
+  useEffect(() => {
+    if (!focusGroupId) return;
+    setQueue((q) => {
+      const idx = q.findIndex((g) => g.id === focusGroupId);
+      if (idx <= 0) return q;
+      const target = q[idx]!;
+      return [target, ...q.slice(0, idx), ...q.slice(idx + 1)];
+    });
+    onFocusHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusGroupId]);
+
   const loadQueue = useCallback(() => {
     return getResolutionQueue(studioId, PAGE_SIZE, 0).then((res) => {
       setQueue(res.items);
       setTotal(res.total);
     });
   }, [studioId]);
+
+  // La cola local se agota mucho antes que el total del backend porque el fetch
+  // inicial trae una sola página: cuando queda poco en memoria pero el backend
+  // reporta más pendientes, se reconsulta offset 0 (los ya resueltos ya no vienen)
+  // y se agregan los que falten.
+  useEffect(() => {
+    if (loading || queue.length >= 10 || queue.length >= total) return;
+    getResolutionQueue(studioId, PAGE_SIZE, 0).then((res) => {
+      setQueue((q) => {
+        const ids = new Set(q.map((g) => g.id));
+        return [...q, ...res.items.filter((g) => !ids.has(g.id))];
+      });
+      setTotal(res.total);
+    });
+  }, [studioId, loading, queue.length, total]);
 
   const loadSummary = useCallback(() => {
     return getResolutionSummary(studioId).then(setSummary);
@@ -178,9 +206,18 @@ export default function ResolutionSidebar({
     setShowDiscardMenu(false);
     setShowNewCodeInput(false);
     setNewCodeLabel("");
-    setZone("header");
+    setCodeFilter("");
     getMentionGroup(currentCard.id).then(setDetail);
   }, [currentCard]);
+
+  const filteredCodes = useMemo(() => {
+    const q = codeFilter.trim().toLowerCase();
+    return q ? codes.filter((c) => c.label.toLowerCase().includes(q)) : codes;
+  }, [codes, codeFilter]);
+
+  useEffect(() => {
+    setNavCodeIndex(0);
+  }, [codeFilter]);
 
   // Pre-highlight the engine's suggested code when a new card comes up.
   useEffect(() => {
@@ -195,48 +232,100 @@ export default function ResolutionSidebar({
   // Como en Excel: el scroll de la grilla sigue a la celda seleccionada.
   useEffect(() => {
     gridRef.current?.children[navCodeIndex]?.scrollIntoView({ block: "nearest" });
-  }, [navCodeIndex, zone]);
+  }, [navCodeIndex]);
 
   const applyOptimisticRemoval = (groupId: string) => {
-    const snapshot = queue;
-    const next = snapshot.filter((g) => g.id !== groupId);
-    setQueue(next);
+    const removed = queue.find((g) => g.id === groupId);
+    setQueue((q) => q.filter((g) => g.id !== groupId));
     setTotal((t) => Math.max(0, t - 1));
     return () => {
-      setQueue(snapshot);
+      if (!removed) return;
+      setQueue((q) => (q.some((g) => g.id === groupId) ? q : [removed, ...q]));
       setTotal((t) => t + 1);
     };
   };
 
-  const resolve = useCallback(
-    async (groupId: string, decision: ResolveDecision) => {
-      const rollback = applyOptimisticRemoval(groupId);
-      setResolvedThisSession((n) => n + 1);
+  // El POST real se difiere ~4s para permitir "Deshacer" sin backend de unresolve:
+  // la tarjeta ya se quitó de forma optimista, así que cancelar el timer y
+  // restaurarla equivale a no haber resuelto nada.
+  const pendingRef = useRef<{
+    groupId: string;
+    decision: ResolveDecision;
+    timer: ReturnType<typeof setTimeout>;
+    rollback: () => void;
+  } | null>(null);
+
+  const sendResolve = useCallback(
+    async (groupId: string, decision: ResolveDecision, rollback: () => void) => {
       try {
         const result = await resolveMentionGroup(groupId, decision);
+        const parts: string[] = [];
+        if (decision.add_alias) parts.push("Alias aprendido");
         if (result.auto_resolved_groups && result.auto_resolved_groups.length > 0) {
           const autoIds = new Set(result.auto_resolved_groups.map((g) => g.id));
           setQueue((q) => q.filter((g) => !autoIds.has(g.id)));
           setTotal((t) => Math.max(0, t - result.auto_resolved_groups.length));
           setResolvedThisSession((n) => n + result.auto_resolved_groups.length);
-          const codeLabel = result.codes_assigned[0]?.label;
-          const texts = result.auto_resolved_groups.map((g) => `«${g.normalized_text}»`);
-          const shown = texts.slice(0, 3).join(", ") + (texts.length > 3 ? ` y ${texts.length - 3} más` : "");
-          showToast(
-            codeLabel ? `Auto-clasificados como «${codeLabel}»: ${shown}` : `Auto-clasificados: ${shown}`,
-            "success"
-          );
+          parts.push(`${result.auto_resolved_groups.length} grupo(s) auto-clasificados`);
         }
+        if (parts.length > 0) showToast(parts.join(" · "), "success");
         loadSummary();
         onResolved?.();
-      } catch {
+      } catch (err) {
         rollback();
         setResolvedThisSession((n) => Math.max(0, n - 1));
-        showToast("No se pudo resolver el grupo. Intenta de nuevo.", "error");
+        if (err instanceof ApiError && (err.status === 409 || err.status === 422)) {
+          showToast(err.message, "error");
+          if (err.status === 409) loadQueue();
+        } else {
+          showToast("No se pudo resolver el grupo. Intenta de nuevo.", "error");
+        }
       }
     },
+    [loadQueue, loadSummary, showToast, onResolved]
+  );
+
+  // Envía ya la acción pendiente (si hay una) — se llama antes de programar la
+  // siguiente resolución, al desmontar y en beforeunload, para no perder trabajo.
+  const flushPending = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingRef.current = null;
+    sendResolve(pending.groupId, pending.decision, pending.rollback);
+  }, [sendResolve]);
+
+  useEffect(() => {
+    window.addEventListener("beforeunload", flushPending);
+    return () => {
+      window.removeEventListener("beforeunload", flushPending);
+      flushPending();
+    };
+  }, [flushPending]);
+
+  const resolve = useCallback(
+    (groupId: string, decision: ResolveDecision) => {
+      flushPending();
+      const rollback = applyOptimisticRemoval(groupId);
+      setResolvedThisSession((n) => n + 1);
+      const timer = setTimeout(() => {
+        pendingRef.current = null;
+        sendResolve(groupId, decision, rollback);
+      }, 4000);
+      pendingRef.current = { groupId, decision, timer, rollback };
+      showToast("Resuelto", "success", {
+        label: "Deshacer",
+        onAction: () => {
+          if (pendingRef.current?.groupId !== groupId) return;
+          clearTimeout(pendingRef.current.timer);
+          pendingRef.current = null;
+          rollback();
+          setResolvedThisSession((n) => Math.max(0, n - 1));
+        },
+      });
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [queue, loadSummary, showToast, onResolved]
+    [queue, flushPending, sendResolve, showToast]
   );
 
   // Exit animation plays for 230ms while the (already-optimistic) resolve happens
@@ -245,7 +334,7 @@ export default function ResolutionSidebar({
     (direction: "up" | "down", groupId: string, decision: ResolveDecision) => {
       if (cardExiting || resolving) return;
       setResolving(true);
-      playSound(direction === "up" ? "discard" : "classify");
+      if (!soundMuted) playSound(direction === "up" ? "discard" : "classify");
       setCardExiting(direction);
       setCardVisible(false);
       resolve(groupId, decision);
@@ -256,7 +345,7 @@ export default function ResolutionSidebar({
         setTimeout(() => setCardVisible(true), 20);
       }, 230);
     },
-    [cardExiting, resolving, resolve]
+    [cardExiting, resolving, resolve, soundMuted]
   );
 
   const discardCurrent = useCallback(() => {
@@ -287,9 +376,9 @@ export default function ResolutionSidebar({
   );
 
   const assignHighlighted = useCallback(() => {
-    const code = codes[navCodeIndex];
+    const code = filteredCodes[navCodeIndex];
     if (code) assignCode(code.id);
-  }, [codes, navCodeIndex, assignCode]);
+  }, [filteredCodes, navCodeIndex, assignCode]);
 
   const createAndAssign = useCallback(
     (label: string) => {
@@ -332,45 +421,35 @@ export default function ResolutionSidebar({
         key: "ArrowLeft",
         action: () => {
           if (showDiscardMenu) return;
-          if (zone === "list") {
-            setNavCodeIndex((i) => (i % gridCols > 0 ? i - 1 : i));
-          } else {
-            discardCurrent();
-          }
+          setNavCodeIndex((i) => (i % gridCols > 0 ? i - 1 : i));
         },
-        description: "Descartar / Navegar izquierda",
-        category: "Acciones",
+        description: "Navegar izquierda",
+        category: "Navegación",
       },
-      { key: "d", action: discardCurrent, description: "Descartar", category: "Acciones" },
+      { key: "d", action: discardCurrent, description: "Sin dato (código de sistema)", category: "Acciones" },
       {
         key: "ArrowRight",
         action: () => {
           if (showDiscardMenu) {
             setShowDiscardMenu(false);
-          } else if (zone === "list") {
-            setNavCodeIndex((i) => (i % gridCols < gridCols - 1 && i + 1 < codes.length ? i + 1 : i));
-          } else {
-            openNewCodeInput();
+            return;
           }
+          setNavCodeIndex((i) => (i % gridCols < gridCols - 1 && i + 1 < filteredCodes.length ? i + 1 : i));
         },
-        description: "Nueva marca / Navegar derecha",
-        category: "Acciones",
+        description: "Navegar derecha",
+        category: "Navegación",
       },
       { key: "n", action: openNewCodeInput, description: "Nueva marca", category: "Acciones" },
       {
         key: "ArrowUp",
         action: () => {
           if (showDiscardMenu) {
-            setNavDiscardIndex(i => Math.max(0, i - 1));
-          } else if (zone === "list") {
-            if (navCodeIndex < gridCols) {
-              setZone("header");
-            } else {
-              setNavCodeIndex((i) => i - gridCols);
-            }
+            setNavDiscardIndex((i) => Math.max(0, i - 1));
+          } else {
+            setNavCodeIndex((i) => Math.max(0, i - gridCols));
           }
         },
-        description: "Navegar arriba / Volver a la mención",
+        description: "Navegar arriba",
         category: "Navegación",
       },
       {
@@ -378,13 +457,11 @@ export default function ResolutionSidebar({
         action: () => {
           if (showDiscardMenu) {
             setNavDiscardIndex(i => Math.min(systemCodes.length - 1, i + 1));
-          } else if (zone === "header") {
-            setZone("list");
           } else {
-            setNavCodeIndex((i) => Math.min(codes.length - 1, i + gridCols));
+            setNavCodeIndex((i) => Math.min(filteredCodes.length - 1, i + gridCols));
           }
         },
-        description: "Navegar abajo / Ir a marcas",
+        description: "Navegar abajo",
         category: "Navegación",
       },
       ...Array.from({ length: 9 }, (_, i) => ({
@@ -393,24 +470,45 @@ export default function ResolutionSidebar({
           if (showDiscardMenu) {
             if (systemCodes[i]) assignCode(systemCodes[i].id);
           } else {
-            if (codes[i]) assignCode(codes[i].id);
+            if (filteredCodes[i]) assignCode(filteredCodes[i].id);
           }
         },
         description: `Asignar código #${i + 1}`,
         category: "Códigos rápidos",
       })),
+      // Filtro por escritura: cualquier letra (menos "d"/"n", ya reservadas)
+      // agrega texto al filtro de la grilla. ponytail: sin soporte de mayúsculas
+      // acentuadas ni click-to-focus — basta con substring en minúsculas.
+      ..."abcefghijklmopqrstuvwxyz".split("").map((letter) => ({
+        key: letter,
+        action: () => {
+          if (showDiscardMenu) return;
+          setCodeFilter((f) => f + letter);
+        },
+        description: `Filtrar por "${letter}"`,
+        category: "Filtro",
+      })),
+      {
+        key: "Backspace",
+        action: () => {
+          if (showDiscardMenu) return;
+          setCodeFilter((f) => f.slice(0, -1));
+        },
+        description: "Borrar filtro",
+        category: "Filtro",
+      },
       {
         key: "Escape",
         action: () => {
           setShowDiscardMenu(false);
           setShowNewCodeInput(false);
-          setZone("header");
+          setCodeFilter("");
         },
         description: "Cerrar menús",
         category: "Acciones",
       },
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, filteredCodes, systemCodes, assignCode, showDiscardMenu, navCodeIndex, navDiscardIndex, gridCols]);
 
   useKeyboardShortcuts("resolution-sidebar");
 
@@ -423,14 +521,17 @@ export default function ResolutionSidebar({
     });
   }, [resolvedThisSession, queue.length]);
 
+  const reducedMotion = useReducedMotion();
+
   const cardMotion = useMemo(() => {
+    if (reducedMotion) return { opacity: cardVisible ? 1 : 0 };
     if (cardExiting === "up") return { opacity: 0, y: -80, rotate: -8 };
     if (cardExiting === "down") return { opacity: 0, y: 80, rotate: 5 };
     if (cardVisible) return { opacity: 1, y: 0, rotate: 0, scale: 1 };
     return { opacity: 0, y: 12, scale: 0.97 };
-  }, [cardExiting, cardVisible]);
+  }, [cardExiting, cardVisible, reducedMotion]);
 
-  const allResolved = !loading && queue.length === 0;
+  const allResolved = !loading && queue.length === 0 && total === 0;
 
   return (
     <div ref={sidebarRef} className="card overflow-hidden flex flex-col h-full">
@@ -438,6 +539,14 @@ export default function ResolutionSidebar({
         <div className="flex items-center justify-between text-sm font-bold text-p-text mb-2.5">
           <span>Centro de Resolución</span>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSoundMuted((m) => !m)}
+              className="text-p-text-faint hover:text-p-text transition-colors"
+              title={soundMuted ? "Activar sonido" : "Silenciar sonido"}
+              aria-label={soundMuted ? "Activar sonido" : "Silenciar sonido"}
+            >
+              {soundMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+            </button>
             {onExpand && (
               <button
                 onClick={onExpand}
@@ -486,19 +595,32 @@ export default function ResolutionSidebar({
             <motion.div
               animate={cardMotion}
               transition={{ duration: 0.23, ease: cardExiting ? "easeIn" : ([0.22, 1.4, 0.36, 1] as const) }}
-              className={[
-                "bg-gradient-to-br from-orange-50 via-white to-purple-50 border border-p-border rounded-2xl p-4 transition-shadow",
-                zone === "header" ? "ring-2 ring-p-accent/25" : "",
-              ].join(" ")}
+              className="bg-gradient-to-br from-orange-50 via-white to-purple-50 border border-p-border rounded-2xl p-4 transition-shadow ring-2 ring-p-accent/25"
             >
               <div className="flex items-center justify-between mb-2.5">
                 <span className="font-mono text-[10.5px] tracking-wide uppercase text-p-accent">
                   Revisar · mención #{resolvedThisSession + 1}
                 </span>
-                <span className={STATUS_CHIP[detail.status].className}>{STATUS_CHIP[detail.status].label}</span>
+                <span className={STATUS_CHIP[detail.status].className} title={STATUS_CHIP[detail.status].hint}>
+                  {STATUS_CHIP[detail.status].label}
+                </span>
               </div>
               <div className="font-extrabold text-lg tracking-tight text-p-text mb-1.5">{detail.normalized_text}</div>
               <div className="font-mono text-[11px] text-p-text-faint mb-3">{detail.frequency_count} menciones</div>
+
+              {detail.samples.length > 0 && (
+                <ul className="space-y-1 mb-3">
+                  {detail.samples.slice(0, 3).map((sample, i) => (
+                    <li
+                      key={i}
+                      className="text-xs text-p-text-muted italic truncate bg-white/50 rounded-md px-2 py-1"
+                      title={sample}
+                    >
+                      “{sample}”
+                    </li>
+                  ))}
+                </ul>
+              )}
 
               <div className="pt-2.5 border-t border-p-border/60">
                 {showNewCodeInput ? (
@@ -547,10 +669,11 @@ export default function ResolutionSidebar({
                       ref={discardBtnRef}
                       onClick={discardCurrent}
                       disabled={resolving}
+                      title="Asigna un código de sistema (NS/NC, Ninguna, Confusas...)"
                       className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg border border-p-border bg-p-bg-subtle text-sm text-p-text-muted hover:bg-p-surface transition-colors"
                     >
-                      <kbd className="kbd-hint">←</kbd>
-                      <span>Descartar</span>
+                      <kbd className="kbd-hint">d</kbd>
+                      <span>Sin dato</span>
                     </button>
                     
                     {/* Radial Discard Menu (Game-like Popover via Portal) */}
@@ -579,10 +702,14 @@ export default function ResolutionSidebar({
                                 return (
                                   <motion.button
                                     key={sc.id}
-                                    initial={{ opacity: 0, x: 0, y: 0, scale: 0.1 }}
+                                    initial={reducedMotion ? { opacity: 0, x: tx, y: ty, scale: 1 } : { opacity: 0, x: 0, y: 0, scale: 0.1 }}
                                     animate={{ opacity: 1, x: tx, y: ty, scale: 1 }}
-                                    exit={{ opacity: 0, x: 0, y: 0, scale: 0.1, transition: { duration: 0.15 } }}
-                                    transition={{ duration: 0.3, delay: i * 0.04, type: "spring", stiffness: 350, damping: 22 }}
+                                    exit={{ opacity: 0, transition: { duration: 0.1 } }}
+                                    transition={
+                                      reducedMotion
+                                        ? { duration: 0.12 }
+                                        : { duration: 0.3, delay: i * 0.04, type: "spring", stiffness: 350, damping: 22 }
+                                    }
                                     onClick={() => { assignCode(sc.id); setShowDiscardMenu(false); }}
                                     className={[
                                       "absolute -ml-[45px] -mt-[40px] flex flex-col items-center justify-center p-2 rounded-2xl border-2 shadow-xl bg-p-surface transition-colors cursor-pointer",
@@ -610,11 +737,21 @@ export default function ResolutionSidebar({
                     >
                       <Plus className="w-3.5 h-3.5" />
                       <span>Nueva</span>
-                      <kbd className="kbd-hint">→</kbd>
+                      <kbd className="kbd-hint">n</kbd>
                     </button>
                   </div>
                 )}
               </div>
+
+              <label className="flex items-center gap-2 text-xs text-p-text-muted mt-2.5 pt-2.5 border-t border-p-border/60">
+                <input
+                  type="checkbox"
+                  checked={addAlias}
+                  onChange={(e) => setAddAlias(e.target.checked)}
+                  className="rounded border-p-border"
+                />
+                Recordar como alias para futuras rondas
+              </label>
             </motion.div>
           </div>
 
@@ -645,14 +782,22 @@ export default function ResolutionSidebar({
                     </button>
                   ))}
                 </div>
-                <span className="text-[10px] text-p-text-faint ml-1 font-mono">{codes.length}</span>
+                <span className="text-[10px] text-p-text-faint ml-1 font-mono">
+                  {codeFilter ? `${filteredCodes.length}/${codes.length}` : codes.length}
+                </span>
               </div>
+              {codeFilter && (
+                <div className="flex items-center gap-1.5 mb-2 px-2 py-1 rounded-lg bg-p-bg-subtle text-xs text-p-text-muted">
+                  <span className="font-mono">Filtro: {codeFilter}</span>
+                  <span className="text-p-text-faint">· ⌫ borrar · Esc limpiar</span>
+                </div>
+              )}
               <div
                 ref={gridRef}
                 className="grid gap-1"
                 style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
               >
-                {codes.map((c, i) => {
+                {filteredCodes.map((c, i) => {
                   const isSuggested = detail.suggested_code?.id === c.id;
                   const isNavSel = i === navCodeIndex;
                   return (
@@ -661,7 +806,7 @@ export default function ResolutionSidebar({
                       onClick={() => assignCode(c.id)}
                       disabled={resolving}
                       className={[
-                        "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-all",
+                        "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-all",
                         isNavSel ? "border-2" : "border",
                         isNavSel ? "" : "border-p-border bg-p-surface",
                       ].join(" ")}
@@ -669,8 +814,7 @@ export default function ResolutionSidebar({
                         isNavSel
                           ? {
                               borderColor: codeColor(c.code_number),
-                              background: zone === "list" ? `${codeColor(c.code_number)}18` : undefined,
-                              opacity: zone === "list" ? 1 : 0.6,
+                              background: `${codeColor(c.code_number)}18`,
                             }
                           : undefined
                       }
@@ -678,21 +822,12 @@ export default function ResolutionSidebar({
                       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: codeColor(c.code_number) }} />
                       <span className="text-[13px] font-semibold text-p-text flex-1 min-w-0 truncate">{c.label}</span>
                       {isSuggested && <Sparkles className="w-3 h-3 text-p-accent shrink-0" />}
+                      {i < 9 && <kbd className="kbd-hint shrink-0">{i + 1}</kbd>}
                     </button>
                   );
                 })}
               </div>
             </div>
-
-            <label className="flex items-center gap-2 text-xs text-p-text-muted px-1">
-              <input
-                type="checkbox"
-                checked={addAlias}
-                onChange={(e) => setAddAlias(e.target.checked)}
-                className="rounded border-p-border"
-              />
-              Recordar como alias para futuras rondas
-            </label>
           </div>
         </>
       ) : (
@@ -704,30 +839,17 @@ export default function ResolutionSidebar({
       <div className="px-4 py-3 border-t border-p-border bg-p-surface shrink-0">
         {!allResolved && (
           <div className="flex justify-center gap-2.5 mb-2 flex-wrap">
-            {zone === "header" ? (
-              <>
-                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-                  <kbd className="kbd-hint">←</kbd>Descartar
-                </span>
-                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-                  <kbd className="kbd-hint">→</kbd>Nueva marca
-                </span>
-                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-                  <kbd className="kbd-hint">↓</kbd>Ir a marcas
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-                  <kbd className="kbd-hint">←↑↓→</kbd>Navegar
-                </span>
-                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-                  <kbd className="kbd-hint">↑</kbd>Volver a la mención
-                </span>
-              </>
-            )}
+            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+              <kbd className="kbd-hint">←↑↓→</kbd>Navegar
+            </span>
             <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
               <kbd className="kbd-hint">↵</kbd>Asignar
+            </span>
+            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+              <kbd className="kbd-hint">d</kbd>Sin dato
+            </span>
+            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+              <kbd className="kbd-hint">n</kbd>Nueva marca
             </span>
           </div>
         )}

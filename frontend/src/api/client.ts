@@ -29,6 +29,14 @@ import type {
 const BASE = "/api/v1";
 const AUTH_BASE = "/api/auth";
 
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 function getToken(): string | null {
   try {
     return localStorage.getItem("verbatix:token");
@@ -58,7 +66,15 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       localStorage.removeItem("verbatix:user");
       window.location.href = "/login";
     }
-    throw new Error(`API ${res.status}: ${text}`);
+    let message = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed.detail === "string") message = parsed.detail;
+      else if (parsed.detail) message = JSON.stringify(parsed.detail);
+    } catch {
+      // not JSON — keep raw text
+    }
+    throw new ApiError(res.status, message);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
