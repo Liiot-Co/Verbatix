@@ -9,6 +9,7 @@ import {
   resolveMentionGroup,
 } from "@/api/client";
 import type {
+  CodingType,
   MentionGroupDetail,
   MentionGroupStatus,
   ResolutionQueueItem,
@@ -73,12 +74,16 @@ function playSound(type: "classify" | "discard") {
  */
 export default function ResolutionSidebar({
   studioId,
+  codingType = "brands",
   onResolved,
 }: {
   studioId: string;
+  /** "brands" | "reasons" — drives whether copy says "marca" or "razón". */
+  codingType?: CodingType;
   /** Called after each successful resolve — lets a parent (e.g. a queue list) refresh. */
   onResolved?: () => void;
 }) {
+  const noun = codingType === "reasons" ? "razón" : "marca";
   const showToast = useVerbatixStore((s) => s.showToast);
   const newCodeInputRef = useRef<HTMLInputElement>(null);
 
@@ -236,8 +241,8 @@ export default function ResolutionSidebar({
       { key: "Enter", action: assignHighlighted, description: "Asignar código resaltado", category: "Acciones" },
       { key: "ArrowLeft", action: discardCurrent, description: "Descartar", category: "Acciones" },
       { key: "d", action: discardCurrent, description: "Descartar", category: "Acciones" },
-      { key: "ArrowRight", action: openNewCodeInput, description: "Nueva marca", category: "Acciones" },
-      { key: "n", action: openNewCodeInput, description: "Nueva marca", category: "Acciones" },
+      { key: "ArrowRight", action: openNewCodeInput, description: `Nueva ${noun}`, category: "Acciones" },
+      { key: "n", action: openNewCodeInput, description: `Nueva ${noun}`, category: "Acciones" },
       {
         key: "ArrowUp",
         action: () => setNavCodeIndex((i) => Math.max(0, i - GRID_COLS)),
@@ -257,7 +262,7 @@ export default function ResolutionSidebar({
         category: "Códigos rápidos",
       })),
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, assignCode]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, assignCode, noun]);
 
   useKeyboardShortcuts("resolution-sidebar");
 
@@ -280,7 +285,7 @@ export default function ResolutionSidebar({
   const allResolved = !loading && queue.length === 0;
 
   return (
-    <div className="card overflow-hidden flex flex-col" style={{ height: "70vh" }}>
+    <div className="card overflow-hidden flex flex-col h-[calc(100vh-7rem)]">
       <div className="px-4 pt-3.5 pb-2.5 bg-p-surface border-b border-p-border shrink-0">
         <div className="flex items-center justify-between text-sm font-bold text-p-text mb-2.5">
           <span>Centro de Resolución</span>
@@ -334,7 +339,7 @@ export default function ResolutionSidebar({
                 {showNewCodeInput ? (
                   <div className="flex flex-col gap-2">
                     <label className="font-mono text-[10.5px] tracking-wide uppercase text-blue-600">
-                      Nombre de nueva marca
+                      Nombre de nueva {noun}
                     </label>
                     <input
                       ref={newCodeInputRef}
@@ -387,7 +392,7 @@ export default function ResolutionSidebar({
                       className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 text-sm font-bold text-blue-700"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Nueva marca</span>
+                      <span>Nueva {noun}</span>
                       <kbd className="kbd-hint">→</kbd>
                     </button>
                   </div>
@@ -399,7 +404,7 @@ export default function ResolutionSidebar({
             <div className="bg-p-surface border border-p-border rounded-2xl p-3.5">
               <div className="flex items-center gap-1.5 mb-2">
                 <span className="font-mono text-[10.5px] tracking-wide uppercase text-p-text-faint whitespace-nowrap">
-                  Asignar a marca
+                  Asignar a {noun}
                 </span>
                 <div className="flex-1 h-px bg-p-border" />
                 <span className="font-mono text-[10px] text-p-text-faint">{codes.length}</span>
@@ -454,7 +459,7 @@ export default function ResolutionSidebar({
               <kbd className="kbd-hint">↑↓</kbd>Navegar
             </span>
             <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-              <kbd className="kbd-hint">→</kbd>Nueva marca
+              <kbd className="kbd-hint">→</kbd>Nueva {noun}
             </span>
             <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
               <kbd className="kbd-hint">↵</kbd>Asignar

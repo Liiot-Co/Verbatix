@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Ban, Sparkles } from "lucide-react";
-import { bulkResolve, getResolutionQueue, getResolutionSummary, getStudioCodes } from "@/api/client";
-import type { MentionGroupStatus, ResolutionQueueItem, ResolutionSummary, StudioCode } from "@/api/types";
+import { bulkResolve, getResolutionQueue, getResolutionSummary, getStudio, getStudioCodes } from "@/api/client";
+import type { CodingType, MentionGroupStatus, ResolutionQueueItem, ResolutionSummary, StudioCode } from "@/api/types";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
@@ -26,10 +26,12 @@ export default function ResolutionCenter() {
   const [summary, setSummary] = useState<ResolutionSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [codes, setCodes] = useState<StudioCode[]>([]);
+  const [codingType, setCodingType] = useState<CodingType>("brands");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
   const [bulkAssignCodeId, setBulkAssignCodeId] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
+  const noun = codingType === "reasons" ? "razón" : "marca";
 
   const loadQueue = useCallback(() => {
     if (!studioId) return;
@@ -40,6 +42,7 @@ export default function ResolutionCenter() {
       }),
       getResolutionSummary(studioId).then(setSummary),
       getStudioCodes(studioId).then(setCodes),
+      getStudio(studioId).then((s) => setCodingType(s.coding_type)),
     ]).finally(() => setLoading(false));
   }, [studioId]);
 
@@ -140,7 +143,7 @@ export default function ResolutionCenter() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_348px] gap-4 items-start">
         {/* Cola: contexto de lo que sigue (orden por impacto, ya viene ordenado del backend) */}
-        <div className="card overflow-hidden flex flex-col max-h-[70vh]">
+        <div className="card overflow-hidden flex flex-col h-[calc(100vh-7rem)]">
           <div className="px-4 py-2.5 border-b border-p-border text-xs font-semibold text-p-text-muted uppercase tracking-wide flex items-center justify-between gap-2">
             <span>Cola ({total})</span>
             {selectedCount > 0 && (
@@ -158,7 +161,7 @@ export default function ResolutionCenter() {
                 className="input text-xs py-1 max-w-[180px]"
                 disabled={bulkBusy}
               >
-                <option value="">Asignar a marca…</option>
+                <option value="">Asignar a {noun}…</option>
                 {codes.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.label}
@@ -242,7 +245,7 @@ export default function ResolutionCenter() {
           </div>
         </div>
 
-        <ResolutionSidebar studioId={studioId} onResolved={loadQueue} />
+        <ResolutionSidebar studioId={studioId} codingType={codingType} onResolved={loadQueue} />
       </div>
     </div>
   );

@@ -300,7 +300,7 @@ export default function UnifiedStudioView() {
 
       </div>
 
-      <ResolutionSidebar studioId={studioId} onResolved={() => { loadData(); loadVerbatims(); }} />
+      <ResolutionSidebar studioId={studioId} codingType={studio.coding_type} onResolved={() => { loadData(); loadVerbatims(); }} />
       </div>
 
       <motion.button
