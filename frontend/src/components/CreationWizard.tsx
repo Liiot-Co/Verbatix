@@ -376,9 +376,6 @@ export default function CreationWizard() {
         <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">
           {isNewRoundFlow ? "Nueva ronda" : project ? "Nuevo estudio" : "Nuevo proyecto"}
         </h1>
-        <p className="font-subtitle text-xs text-p-text-muted">
-          Proyecto → Estudio → Ronda y Excel
-        </p>
       </div>
 
       {/* Stepper */}
