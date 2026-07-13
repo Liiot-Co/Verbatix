@@ -27,6 +27,24 @@ _DOMAIN_INTRO = {
     ),
 }
 
+# 97 ("otras menciones") is a real catch-all, but for brands it must not swallow a nameable
+# brand — "nestle" belongs in its own code (Nestlé), decided by a human in el Centro de
+# Resolución, not buried under "otras menciones" where it's indistinguishable from noise.
+_CODE97_RULE = {
+    "brands": (
+        "- NO uses 97 para una marca real identificable que no tiene su propio código en el "
+        "codebook (p.ej. \"nestle\"): devuelve code_numbers como lista vacía [] para que quede "
+        "pendiente de revisión humana, donde se puede crear esa marca como código propio. 97 es "
+        "solo para respuestas válidas que de verdad no nombran ninguna marca identificable "
+        "(descripciones vagas, genéricas, o sin nombre propio reconocible)."
+    ),
+    "reasons": (
+        "- Usa 97 (otras menciones) solo cuando el texto SÍ corresponde al tema de la pregunta y es "
+        "una respuesta válida y clara, pero nombra algo específico que no tiene su propio código en "
+        "el codebook."
+    ),
+}
+
 
 def _build_prompt(codebook: list[dict], verbatims: list[dict], coding_type: str) -> str:
     codebook_lines = "\n".join(
@@ -35,6 +53,7 @@ def _build_prompt(codebook: list[dict], verbatims: list[dict], coding_type: str)
     )
     verbatim_lines = "\n".join(f"{v['id']}: {v['text']}" for v in verbatims)
     domain_intro = _DOMAIN_INTRO.get(coding_type, _DOMAIN_INTRO["reasons"])
+    code97_rule = _CODE97_RULE.get(coding_type, _CODE97_RULE["reasons"])
     return (
         f"Eres un clasificador de verbatims de encuestas de marketing. {domain_intro}\n\n"
         "No estás obligado a dar una respuesta afirmativa. Usa criterio, no adivines:\n"
@@ -45,9 +64,7 @@ def _build_prompt(codebook: list[dict], verbatims: list[dict], coding_type: str)
         "en absoluto al tema de la pregunta (p.ej. una razón de compra en una pregunta de marcas) "
         "-> 95; \"ninguna\"/\"nada\" -> 98; \"no responde\"/\"no recuerda\" -> 99. No son un cajón "
         "de sastre para casos difíciles de clasificar.\n"
-        "- Usa 97 (otras menciones) solo cuando el texto SÍ corresponde al tema de la pregunta y es "
-        "una respuesta válida y clara, pero nombra algo específico que no tiene su propio código en "
-        "el codebook (p.ej. una marca real pero no catalogada individualmente).\n"
+        f"{code97_rule}\n"
         "- Si el caso es genuinamente difícil o ambiguo y ninguna de las reglas anteriores aplica "
         "con confianza, devuelve code_numbers como lista vacía []. Eso está bien — significa que "
         "va a revisión humana en una fase posterior, en vez de forzar una respuesta incorrecta.\n\n"
