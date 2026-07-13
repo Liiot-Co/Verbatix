@@ -9,6 +9,7 @@ import { getPreliminary, getStudio, getVerbatims, processStudio } from "@/api/cl
 import type { CodingStatus, PreliminarySummary, StudioStatus, Verbatim, VerbatimCode } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
+import { studyKey } from "@/lib/projectTree";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 
@@ -93,7 +94,20 @@ export default function UnifiedStudioView() {
       .finally(() => setLoading(false));
   }, [studioId, page, statusFilter]);
 
-  const autoProcessing = studio?.status === "files_uploaded";
+  const autoProcessing = studio?.status === "processing" || studio?.status === "files_uploaded";
+  const wasProcessing = useRef(false);
+
+  useEffect(() => {
+    if (autoProcessing) {
+      wasProcessing.current = true;
+      return;
+    }
+    if (wasProcessing.current && studio?.status === "preliminary_ready") {
+      wasProcessing.current = false;
+      showToast("Procesamiento terminado", "success");
+      loadVerbatims();
+    }
+  }, [autoProcessing, studio?.status, showToast, loadVerbatims]);
 
   useEffect(() => {
     if (!autoProcessing) return;
@@ -108,11 +122,10 @@ export default function UnifiedStudioView() {
     if (!studioId) return;
     setProcessing(true);
     try {
-      const result = await processStudio(studioId);
-      showToast(
-        `${result.groups_classified} grupos codificados solos, ${result.anomalies} necesitan revisión`,
-        "success"
-      );
+      await processStudio(studioId);
+      showToast("Procesamiento encolado — el motor está trabajando", "info");
+      // Optimistic: flip local status so the live poll kicks in immediately.
+      setStudio((s) => (s ? { ...s, status: "processing" } : s));
       await Promise.all([loadData(), loadVerbatims()]);
     } catch {
       showToast("No se pudo procesar el estudio", "error");
@@ -201,7 +214,17 @@ export default function UnifiedStudioView() {
 
   return (
     <div className="max-w-[1400px] mx-auto py-4 space-y-4">
-      <Breadcrumb items={[{ label: "Proyectos", to: "/" }, { label: studio.name }]} />
+      <Breadcrumb
+        items={[
+          { label: "Proyectos", to: "/" },
+          { label: studio.project_name, to: `/projects/${studio.project_id}` },
+          {
+            label: studio.name,
+            to: `/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`,
+          },
+          { label: `R${studio.round_number} · ${studio.round_name}` },
+        ]}
+      />
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_348px] gap-4 items-start">
       <div className="space-y-4 min-w-0">

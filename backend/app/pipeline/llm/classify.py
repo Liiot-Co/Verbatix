@@ -63,6 +63,13 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
 
     auto_coded = 0
     anomalies = 0
+
+    update_groups_params = []
+    insert_verbatim_codes_params = []
+    update_verbatims_params = []
+    update_anomalies_groups = []
+    update_anomalies_verbatims = []
+
     for batch in _chunks(groups, settings.classification_batch_size):
         payload = [{"id": str(g["id"]), "text": g["sample_text"]} for g in batch]
         results = classify_batch(codebook_payload, payload, coding_type)
@@ -79,43 +86,56 @@ def classify_studio(db: Session, studio_id: uuid.UUID) -> dict:
             below_threshold = confidence is None or confidence < settings.llm_confidence_threshold
 
             if not matched_code_ids or below_threshold:
-                db.execute(
-                    text("update mention_groups set status = 'anomaly', created_by_run_id = :run where id = :id"),
-                    {"run": run_id, "id": group_id},
-                )
-                db.execute(
-                    text("update verbatims set coding_status = 'needs_review' where mention_group_id = :id"),
-                    {"id": group_id},
-                )
+                update_anomalies_groups.append({"run": run_id, "id": group_id})
+                update_anomalies_verbatims.append({"id": group_id})
                 anomalies += 1
                 continue
 
-            db.execute(
-                text("""
-                    update mention_groups
-                    set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
-                    where id = :id
-                """),
-                {"code": matched_code_ids[0], "run": run_id, "id": group_id},
-            )
+            update_groups_params.append({"code": matched_code_ids[0], "run": run_id, "id": group_id})
             for idx, code_id in enumerate(matched_code_ids, start=1):
-                # ponytail: 'engine_fuzzy' is the closest allowed source value for LLM-assigned
-                # codes under the current schema check constraint (no dedicated 'llm' value yet).
-                db.execute(
-                    text("""
-                        insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, processing_run_id)
-                        select gen_random_uuid(), v.id, :code, :idx, 'engine_fuzzy', :run
-                        from verbatims v where v.mention_group_id = :group_id
-                        on conflict (verbatim_id, code_id) do nothing
-                    """),
-                    {"code": code_id, "idx": idx, "run": run_id, "group_id": group_id},
-                )
-            db.execute(
-                text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :id"),
-                {"id": group_id},
-            )
+                insert_verbatim_codes_params.append({
+                    "code": code_id,
+                    "idx": idx,
+                    "run": run_id,
+                    "group_id": group_id
+                })
+            update_verbatims_params.append({"id": group_id})
             auto_coded += 1
-        db.commit()
+
+    if update_groups_params:
+        db.execute(
+            text("""
+                update mention_groups
+                set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
+                where id = :id
+            """),
+            update_groups_params,
+        )
+        db.execute(
+            text("""
+                insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, processing_run_id)
+                select gen_random_uuid(), v.id, :code, :idx, 'engine_fuzzy', :run
+                from verbatims v where v.mention_group_id = :group_id
+                on conflict (verbatim_id, code_id) do nothing
+            """),
+            insert_verbatim_codes_params,
+        )
+        db.execute(
+            text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :id"),
+            update_verbatims_params,
+        )
+
+    if update_anomalies_groups:
+        db.execute(
+            text("update mention_groups set status = 'anomaly', created_by_run_id = :run where id = :id"),
+            update_anomalies_groups,
+        )
+        db.execute(
+            text("update verbatims set coding_status = 'needs_review' where mention_group_id = :id"),
+            update_anomalies_verbatims,
+        )
+
+    db.commit()
 
     db.execute(
         text("""

@@ -26,12 +26,14 @@ import type {
   UploadedFile,
 } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
+import { nextRoundNumber, parseStudyKey } from "@/lib/projectTree";
 
-type WizardStep = "project" | "studio" | "upload";
+type WizardStep = "project" | "studio" | "round" | "upload";
 
 const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: "project", label: "Proyecto", icon: "📁" },
   { key: "studio", label: "Estudio", icon: "🏷️" },
+  { key: "round", label: "Ronda", icon: "🔄" },
   { key: "upload", label: "Excel", icon: "📊" },
 ];
 
@@ -95,6 +97,8 @@ const stepVariants = {
 export default function CreationWizard() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const studyParam = searchParams.get("study");
+  const isNewRoundFlow = Boolean(studyParam);
   const setActiveProjectId = useVerbatixStore((s) => s.setActiveProjectId);
   const showToast = useVerbatixStore((s) => s.showToast);
 
@@ -102,16 +106,15 @@ export default function CreationWizard() {
   const prevStepIndexRef = useRef(0);
   const [direction, setDirection] = useState(1);
 
-  // Step 1: proyecto + ronda inicial
+  // Step 1: proyecto
   type WizardProject = Pick<ProjectDetail, "id" | "name" | "external_code">;
   const [project, setProject] = useState<WizardProject | null>(null);
+  const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
   const [newExternalCode, setNewExternalCode] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
-  const [rName, setRName] = useState("Ronda 1 - 2026");
-  const [rRoundNumber, setRRoundNumber] = useState(1);
-  const [round, setRound] = useState<Round | null>(null);
 
-  // Step 3: estudio (marcas/razones, belongs to the round)
+  // Step 2: estudio (definición lógica — Marcas / Razones)
+  const [round, setRound] = useState<Round | null>(null);
   const [studio, setStudio] = useState<Studio | null>(null);
   const [newStudioName, setNewStudioName] = useState("Marcas");
   const [newStudioCodingType, setNewStudioCodingType] = useState<CodingType>("brands");
@@ -120,6 +123,10 @@ export default function CreationWizard() {
   const [sSourceId, setSSourceId] = useState<string>("");
   const [sThreshold, setSThreshold] = useState(3);
   const [sAudit, setSAudit] = useState(10);
+
+  // Step 3: ronda (wave de datos dentro del estudio)
+  const [rName, setRName] = useState("Ronda 1 - 2026");
+  const [rRoundNumber, setRRoundNumber] = useState(1);
 
   // Step 4: excel
   const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
@@ -131,26 +138,35 @@ export default function CreationWizard() {
 
   const projectRef = useRef<HTMLInputElement>(null);
   const studioRef = useRef<HTMLInputElement>(null);
+  const roundRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Deep-link support: /wizard?projectId=... pre-fills project info and goes
-  // to studio step if &roundId=... is also given; otherwise stays on project
-  // step so the user can create a new round for the existing project.
+  // Deep-link: /wizard?projectId=... (nuevo estudio) o &study=... (nueva ronda)
   useEffect(() => {
     const projectId = searchParams.get("projectId");
     if (!projectId) return;
     getProject(projectId).then((detail) => {
       setProject(detail);
+      setProjectDetail(detail);
       setActiveProjectId(detail.id);
       setNewExternalCode(detail.external_code);
       setNewProjectName(detail.name);
 
-      const roundId = searchParams.get("roundId");
-      const preselected = roundId ? detail.rounds.find((r) => r.id === roundId) : undefined;
-      if (preselected) {
-        setRound({ id: preselected.id, project_id: detail.id, name: preselected.name, round_number: preselected.round_number, status: preselected.status });
-        goToStep("studio");
+      const nextNum = nextRoundNumber(detail.rounds);
+      setRRoundNumber(nextNum);
+      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
+
+      const studyParam = searchParams.get("study");
+      if (studyParam) {
+        const parsed = parseStudyKey(studyParam);
+        if (parsed) {
+          setNewStudioName(parsed.name);
+          setNewStudioCodingType(parsed.coding_type);
+          goToStep("round");
+          return;
+        }
       }
+      goToStep("studio");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -161,15 +177,15 @@ export default function CreationWizard() {
   const [homologationCandidates, setHomologationCandidates] = useState<StudioSummary[]>([]);
 
   useEffect(() => {
-    if (step !== "studio" || !project) return;
+    if (step !== "studio" && step !== "round" || !project) return;
     getProject(project.id).then((detail) => {
+      setProjectDetail(detail);
       const candidates = detail.rounds
-        .filter((r) => r.id !== round?.id)
         .flatMap((r) => r.studios)
         .filter((s) => s.coding_type === newStudioCodingType);
       setHomologationCandidates(candidates);
     });
-  }, [step, project, round, newStudioCodingType]);
+  }, [step, project, newStudioCodingType]);
 
   const goToStep = (next: WizardStep) => {
     const nextIndex = STEPS.findIndex((s) => s.key === next);
@@ -179,29 +195,41 @@ export default function CreationWizard() {
   };
 
   const handleCreateProject = async () => {
-    if (!newExternalCode.trim() || !newProjectName.trim() || !rName.trim()) return;
+    if (!newExternalCode.trim() || !newProjectName.trim()) return;
     try {
       if (!project) {
         const created = await createProject(newExternalCode.trim(), newProjectName.trim());
         setProject(created);
         setActiveProjectId(created.id);
+        setProjectDetail({ ...created, rounds: [], created_at: new Date().toISOString() });
       }
-      const createdRound = await createRound(project!.id, {
+      playSuccess();
+      goToStep("studio");
+    } catch {
+      showToast("Error al crear el proyecto", "error");
+    }
+  };
+
+  const handleContinueFromStudio = () => {
+    if (!newStudioName.trim()) return;
+    if (projectDetail) {
+      const nextNum = nextRoundNumber(projectDetail.rounds);
+      setRRoundNumber(nextNum);
+      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
+    }
+    playSuccess();
+    goToStep("round");
+  };
+
+  const handleCreateRoundAndStudio = async () => {
+    if (!project || !rName.trim() || !newStudioName.trim()) return;
+    try {
+      const createdRound = await createRound(project.id, {
         name: rName.trim(),
         round_number: rRoundNumber,
       });
       setRound(createdRound);
-      playSuccess();
-      goToStep("studio");
-    } catch {
-      showToast("Error al crear el proyecto o la ronda", "error");
-    }
-  };
-
-  const handleCreateStudio = async () => {
-    if (!round || !newStudioName.trim()) return;
-    try {
-      const created = await createStudio(round.id, {
+      const created = await createStudio(createdRound.id, {
         name: newStudioName.trim(),
         coding_type: newStudioCodingType,
         survey_question: newStudioQuestion.trim() || undefined,
@@ -217,7 +245,7 @@ export default function CreationWizard() {
       playSuccess();
       goToStep("upload");
     } catch {
-      showToast("Ya existe un estudio con ese nombre en esta ronda", "error");
+      showToast("Error al crear la ronda o el estudio", "error");
     }
   };
 
@@ -286,14 +314,15 @@ export default function CreationWizard() {
   if (studio) crumbs.push({ label: studio.name });
 
   const projectPanelKeyDown = useEnterToSubmit(handleCreateProject);
-  const studioPanelKeyDown = useEnterToSubmit(handleCreateStudio);
+  const studioPanelKeyDown = useEnterToSubmit(handleContinueFromStudio);
+  const roundPanelKeyDown = useEnterToSubmit(handleCreateRoundAndStudio);
 
-  // Global Escape handling
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (step === "upload" && !uploaded) return goToStep("round");
+      if (step === "round") return goToStep("studio");
       if (step === "studio") return goToStep("project");
-      if (step === "upload" && !uploaded) return goToStep("studio");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -319,6 +348,7 @@ export default function CreationWizard() {
     setTimeout(() => {
       if (step === "project") projectRef.current?.focus();
       if (step === "studio") studioRef.current?.focus();
+      if (step === "round") roundRef.current?.focus();
       if (step === "upload" && !uploaded) searchRef.current?.focus();
     }, 100);
   }, [step, uploaded]);
@@ -339,7 +369,12 @@ export default function CreationWizard() {
 
       <div className="space-y-1"
       >
-        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">Nuevo proyecto</h1>
+        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">
+          {isNewRoundFlow ? "Nueva ronda" : project ? "Nuevo estudio" : "Nuevo proyecto"}
+        </h1>
+        <p className="font-subtitle text-xs text-p-text-muted">
+          Proyecto → Estudio → Ronda → Excel
+        </p>
       </div>
 
       {/* Stepper */}
@@ -405,7 +440,7 @@ export default function CreationWizard() {
           exit="exit"
           transition={{ duration: 0.25, ease: [0.19, 1, 0.22, 1] as const }}
         >
-          {/* Step 1: Project + Ronda inicial */}
+          {/* Step 1: Proyecto */}
           {step === "project" && (
             <div className="card p-4 space-y-2.5" onKeyDown={projectPanelKeyDown}>
               <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Código externo</div>
@@ -426,25 +461,6 @@ export default function CreationWizard() {
                 onChange={(e) => setNewProjectName(e.target.value)}
                 whileFocus={{ scale: 1.002 }}
               />
-              <div className="border-t border-p-border pt-2.5 mt-1">
-                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide mb-2">Primera ronda</div>
-                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre</div>
-                <motion.input
-                  className="input w-full text-sm mt-1"
-                  value={rName}
-                  onChange={(e) => setRName(e.target.value)}
-                  whileFocus={{ scale: 1.002 }}
-                />
-                <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide mt-2">Número de ronda</div>
-                <motion.input
-                  type="number"
-                  min={1}
-                  className="input w-full text-sm mt-1"
-                  value={rRoundNumber}
-                  onChange={(e) => setRRoundNumber(Number(e.target.value))}
-                  whileFocus={{ scale: 1.002 }}
-                />
-              </div>
               <div className="flex gap-1.5 pt-1">
                 <motion.button
                   whileHover={{ scale: 1.02 }}
@@ -452,14 +468,14 @@ export default function CreationWizard() {
                   className="btn-primary text-sm py-2 flex-1 justify-center"
                   onClick={handleCreateProject}
                 >
-                  Crear y continuar
+                  {project ? "Continuar" : "Crear proyecto"}
                 </motion.button>
               </div>
             </div>
           )}
 
-          {/* Step 2: Studio (marcas/razones, belongs to the round) */}
-          {step === "studio" && round && (
+          {/* Step 2: Estudio (Marcas / Razones) */}
+          {step === "studio" && project && (
             <div
               className="card p-4 space-y-2.5"
               onKeyDown={studioPanelKeyDown}
@@ -470,7 +486,7 @@ export default function CreationWizard() {
                 whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
               >
-                <ChevronLeft className="w-3.5 h-3.5" /> {round.name}
+                <ChevronLeft className="w-3.5 h-3.5" /> {project.name}
               </motion.button>
 
               <motion.div className="space-y-4">
@@ -574,24 +590,71 @@ export default function CreationWizard() {
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   className="btn-primary text-sm py-2 w-full justify-center mt-1"
-                  onClick={handleCreateStudio}
+                  onClick={handleContinueFromStudio}
                 >
-                  Crear estudio <span className="opacity-60 font-normal">(Enter)</span>
+                  Continuar a ronda <span className="opacity-60 font-normal">(Enter)</span>
                 </motion.button>
               </motion.div>
             </div>
           )}
 
-          {/* Step 3: Upload */}
-          {step === "upload" && studio && (
-            <div className="space-y-3">
+          {/* Step 3: Ronda (wave de datos del estudio) */}
+          {step === "round" && project && (
+            <div className="card p-4 space-y-2.5" onKeyDown={roundPanelKeyDown}>
               <motion.button
                 onClick={() => goToStep("studio")}
                 whileHover={{ x: -2 }}
                 whileTap={{ scale: 0.98 }}
+                className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" /> {newStudioName}
+              </motion.button>
+
+              <p className="text-xs text-p-text-faint">
+                Estudio <span className="font-semibold text-p-text-muted">{newStudioName}</span>
+                {" "}({newStudioCodingType === "brands" ? "Marcas" : "Razones"})
+              </p>
+
+              <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre de la ronda</div>
+              <motion.input
+                ref={roundRef}
+                autoFocus
+                className="input w-full text-sm"
+                value={rName}
+                onChange={(e) => setRName(e.target.value)}
+                whileFocus={{ scale: 1.002 }}
+              />
+              <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Número de ronda</div>
+              <motion.input
+                type="number"
+                min={1}
+                className="input w-full text-sm"
+                value={rRoundNumber}
+                onChange={(e) => setRRoundNumber(Number(e.target.value))}
+                whileFocus={{ scale: 1.002 }}
+              />
+
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                className="btn-primary text-sm py-2 w-full justify-center mt-1"
+                onClick={handleCreateRoundAndStudio}
+              >
+                Crear ronda y continuar <span className="opacity-60 font-normal">(Enter)</span>
+              </motion.button>
+            </div>
+          )}
+
+          {/* Step 4: Upload */}
+          {step === "upload" && studio && (
+            <div className="space-y-3">
+              <motion.button
+                onClick={() => goToStep("round")}
+                whileHover={{ x: -2 }}
+                whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text"
               >
-                <ChevronLeft className="w-3.5 h-3.5" /> {studio.name}
+                <ChevronLeft className="w-3.5 h-3.5" /> {rName}
               </motion.button>
 
               {!uploaded ? (

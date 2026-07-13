@@ -14,22 +14,16 @@ import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.pipeline.fuzzy import load_catalog_aliases, run_fuzzy_matching
+from app.pipeline.fuzzy import (
+    discover_catalog_from_frequency,
+    load_catalog_aliases,
+    run_fuzzy_matching,
+)
 from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD
 from app.pipeline.llm import classify_studio
 
 
 def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict:
-    run_id = uuid.uuid4()
-    db.execute(
-        text("""
-            insert into processing_runs (id, studio_id, run_type, algorithm, min_mentions_threshold, status, started_at)
-            values (:id, :studio, 'initial', 'fuzzy_dictionary', :thr, 'running', now())
-        """),
-        {"id": run_id, "studio": studio_id, "thr": None},
-    )
-    db.commit()
-
     groups = db.execute(
         text("""
             select id, normalized_text from mention_groups
@@ -38,7 +32,32 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
         {"studio": studio_id},
     ).mappings().all()
 
+    # El catálogo sale del codebook cuando existe. Si el studio no trae libro de
+    # códigos, se deriva de la frecuencia: las marcas que superan el mínimo de
+    # menciones se vuelven semillas y el fuzzy arrastra sus typos hacia ellas.
     catalog = load_catalog_aliases(db, studio_id)
+    min_mentions = None
+    if not catalog:
+        min_mentions = db.execute(
+            text("select min_mentions_threshold from studio where id = :studio"),
+            {"studio": studio_id},
+        ).scalar()
+        catalog = discover_catalog_from_frequency(db, studio_id, min_mentions)
+
+    run_id = uuid.uuid4()
+    db.execute(
+        text("""
+            insert into processing_runs (id, studio_id, run_type, algorithm, min_mentions_threshold, status, started_at)
+            values (:id, :studio, 'initial', :algo, :thr, 'running', now())
+        """),
+        {
+            "id": run_id,
+            "studio": studio_id,
+            "algo": "fuzzy_frequency" if min_mentions is not None else "fuzzy_dictionary",
+            "thr": min_mentions,
+        },
+    )
+    db.commit()
 
     matched_by_group: dict[str, dict] = {}
     if groups and catalog:
@@ -53,42 +72,51 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
 
     auto_coded = 0
     anomalies = 0
+
+    update_groups_params = []
+    insert_verbatim_codes_params = []
+    update_verbatims_params = []
+
     for g in groups:
         gid = g["id"]
         match = matched_by_group.get(str(gid))
         if match:
-            db.execute(
-                text("""
-                    update mention_groups
-                    set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
-                    where id = :id
-                """),
-                {"code": match[Cols.CODE_ID], "run": run_id, "id": gid},
-            )
-            db.execute(
-                text("""
-                    insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias, processing_run_id)
-                    select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', :score, :alias, :run
-                    from verbatims v where v.mention_group_id = :gid
-                    on conflict (verbatim_id, code_id) do nothing
-                """),
-                {
-                    "code": match[Cols.CODE_ID],
-                    "score": match[Cols.SCORE] / 100,
-                    "alias": match[Cols.MATCHED_ALIAS],
-                    "run": run_id,
-                    "gid": gid,
-                },
-            )
-            db.execute(
-                text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :gid"),
-                {"gid": gid},
-            )
+            update_groups_params.append({"code": match[Cols.CODE_ID], "run": run_id, "id": gid})
+            insert_verbatim_codes_params.append({
+                "code": match[Cols.CODE_ID],
+                "score": match[Cols.SCORE] / 100,
+                "alias": match[Cols.MATCHED_ALIAS],
+                "run": run_id,
+                "gid": gid,
+            })
+            update_verbatims_params.append({"gid": gid})
             auto_coded += 1
         else:
-            # Leave status = 'pending_review' (its default) instead of marking 'anomaly' —
-            # process_studio runs the LLM pass on these next, before giving up on them.
             anomalies += 1
+
+    if update_groups_params:
+        db.execute(
+            text("""
+                update mention_groups
+                set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
+                where id = :id
+            """),
+            update_groups_params,
+        )
+        db.execute(
+            text("""
+                insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias, processing_run_id)
+                select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', :score, :alias, :run
+                from verbatims v where v.mention_group_id = :gid
+                on conflict (verbatim_id, code_id) do nothing
+            """),
+            insert_verbatim_codes_params,
+        )
+        db.execute(
+            text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :gid"),
+            update_verbatims_params,
+        )
+    
     db.commit()
 
     db.execute(
