@@ -492,6 +492,24 @@ export default function CreationWizard() {
 
               <motion.div className="space-y-4">
                 <div>
+                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo de codificación</motion.label>
+                  <ToggleGroup
+                    options={[
+                      { value: "brands" as CodingType, label: "Marcas" },
+                      { value: "reasons" as CodingType, label: "Razones" },
+                    ]}
+                    value={newStudioCodingType}
+                    onChange={(t) => {
+                      setNewStudioCodingType(t);
+                      // El nombre sigue al tipo mientras el usuario no lo haya personalizado.
+                      if (newStudioName === "Marcas" || newStudioName === "Razones") {
+                        setNewStudioName(t === "brands" ? "Marcas" : "Razones");
+                      }
+                    }}
+                  />
+                </div>
+
+                <div>
                   <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre</motion.label>
                   <motion.input
                     ref={studioRef}
@@ -500,18 +518,6 @@ export default function CreationWizard() {
                     value={newStudioName}
                     onChange={(e) => setNewStudioName(e.target.value)}
                     whileFocus={{ scale: 1.002 }}
-                  />
-                </div>
-
-                <div>
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo de codificación</motion.label>
-                  <ToggleGroup
-                    options={[
-                      { value: "brands" as CodingType, label: "Marcas" },
-                      { value: "reasons" as CodingType, label: "Razones" },
-                    ]}
-                    value={newStudioCodingType}
-                    onChange={setNewStudioCodingType}
                   />
                 </div>
 
