@@ -115,8 +115,11 @@ export default function CreationWizard() {
   // Step 2: estudio (definición lógica — Marcas / Razones)
   const [round, setRound] = useState<Round | null>(null);
   const [studio, setStudio] = useState<Studio | null>(null);
-  const [newStudioName, setNewStudioName] = useState("Marcas");
+  const [newStudioName, setNewStudioName] = useState("");
   const [newStudioCodingType, setNewStudioCodingType] = useState<CodingType>("brands");
+  // El placeholder deriva del tipo y hace de nombre por defecto si el campo queda vacío.
+  const defaultStudioName = newStudioCodingType === "brands" ? "Marcas" : "Razones";
+  const studioName = newStudioName.trim() || defaultStudioName;
   const [newStudioQuestion, setNewStudioQuestion] = useState("");
   const [sOriginMode, setSOriginMode] = useState<OriginMode>("from_scratch");
   const [sSourceId, setSSourceId] = useState<string>("");
@@ -210,7 +213,6 @@ export default function CreationWizard() {
   };
 
   const handleContinueFromStudio = () => {
-    if (!newStudioName.trim()) return;
     if (projectDetail) {
       const nextNum = nextRoundNumber(projectDetail.rounds);
       setRRoundNumber(nextNum);
@@ -225,7 +227,7 @@ export default function CreationWizard() {
   // el archivo, ambos viven en el mismo panel.
   const ensureStudio = async (): Promise<Studio | null> => {
     if (studio) return studio;
-    if (!project || !rName.trim() || !newStudioName.trim()) return null;
+    if (!project || !rName.trim()) return null;
     try {
       const createdRound = await createRound(project.id, {
         name: rName.trim(),
@@ -235,7 +237,7 @@ export default function CreationWizard() {
       });
       setRound(createdRound);
       const created = await createStudio(createdRound.id, {
-        name: newStudioName.trim(),
+        name: studioName,
         coding_type: newStudioCodingType,
         survey_question: newStudioQuestion.trim() || undefined,
         origin_mode: sOriginMode,
@@ -499,13 +501,7 @@ export default function CreationWizard() {
                       { value: "reasons" as CodingType, label: "Razones" },
                     ]}
                     value={newStudioCodingType}
-                    onChange={(t) => {
-                      setNewStudioCodingType(t);
-                      // El nombre sigue al tipo mientras el usuario no lo haya personalizado.
-                      if (newStudioName === "Marcas" || newStudioName === "Razones") {
-                        setNewStudioName(t === "brands" ? "Marcas" : "Razones");
-                      }
-                    }}
+                    onChange={setNewStudioCodingType}
                   />
                 </div>
 
@@ -515,6 +511,7 @@ export default function CreationWizard() {
                     ref={studioRef}
                     autoFocus
                     className="input w-full text-sm mt-1"
+                    placeholder={defaultStudioName}
                     value={newStudioName}
                     onChange={(e) => setNewStudioName(e.target.value)}
                     whileFocus={{ scale: 1.002 }}
@@ -586,12 +583,12 @@ export default function CreationWizard() {
                 whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
               >
-                <ChevronLeft className="w-3.5 h-3.5" /> {newStudioName}
+                <ChevronLeft className="w-3.5 h-3.5" /> {studioName}
               </motion.button>
 
               <div className="card p-4 space-y-2.5">
                 <p className="text-xs text-p-text-faint">
-                  Estudio <span className="font-semibold text-p-text-muted">{newStudioName}</span>
+                  Estudio <span className="font-semibold text-p-text-muted">{studioName}</span>
                   {" "}({newStudioCodingType === "brands" ? "Marcas" : "Razones"})
                 </p>
 
