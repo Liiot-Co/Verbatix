@@ -110,6 +110,9 @@ export default function ResolutionSidebar({
   const [newCodeLabel, setNewCodeLabel] = useState("");
   const [addAlias, setAddAlias] = useState(true);
   const [codeFilter, setCodeFilter] = useState("");
+  // Zonas de foco tipo Excel: "header" = tarjeta de la mención (←/→ descartan/crean),
+  // "list" = grilla de códigos (las 4 flechas navegan). ↓ baja a la lista, ↑ desde la primera fila vuelve.
+  const [zone, setZone] = useState<"header" | "list">("header");
   const [gridCols, setGridCols] = useState(() => {
     const saved = localStorage.getItem("resolution-grid-cols");
     return saved ? parseInt(saved, 10) : 2;
@@ -217,6 +220,7 @@ export default function ResolutionSidebar({
     setShowNewCodeInput(false);
     setNewCodeLabel("");
     setCodeFilter("");
+    setZone("header");
     getMentionGroup(currentCard.id).then(setDetail);
   }, [currentCard]);
 
@@ -242,7 +246,7 @@ export default function ResolutionSidebar({
   // Como en Excel: el scroll de la grilla sigue a la celda seleccionada.
   useEffect(() => {
     gridRef.current?.children[navCodeIndex]?.scrollIntoView({ block: "nearest" });
-  }, [navCodeIndex]);
+  }, [navCodeIndex, zone]);
 
   const applyOptimisticRemoval = (groupId: string) => {
     const removed = queue.find((g) => g.id === groupId);
@@ -431,10 +435,14 @@ export default function ResolutionSidebar({
         key: "ArrowLeft",
         action: () => {
           if (showDiscardMenu) return;
-          setNavCodeIndex((i) => (i % gridCols > 0 ? i - 1 : i));
+          if (zone === "list") {
+            setNavCodeIndex((i) => (i % gridCols > 0 ? i - 1 : i));
+          } else {
+            discardCurrent();
+          }
         },
-        description: "Navegar izquierda",
-        category: "Navegación",
+        description: "Descartar / Navegar izquierda",
+        category: "Acciones",
       },
       { key: "d", action: discardCurrent, description: "Sin dato (código de sistema)", category: "Acciones" },
       {
@@ -444,7 +452,11 @@ export default function ResolutionSidebar({
             setShowDiscardMenu(false);
             return;
           }
-          setNavCodeIndex((i) => (i % gridCols < gridCols - 1 && i + 1 < filteredCodes.length ? i + 1 : i));
+          if (zone === "list") {
+            setNavCodeIndex((i) => (i % gridCols < gridCols - 1 && i + 1 < filteredCodes.length ? i + 1 : i));
+          } else {
+            openNewCodeInput();
+          }
         },
         description: `${newCodeHint} / Navegar derecha`,
         category: "Acciones",
@@ -455,11 +467,15 @@ export default function ResolutionSidebar({
         action: () => {
           if (showDiscardMenu) {
             setNavDiscardIndex((i) => Math.max(0, i - 1));
-          } else {
-            setNavCodeIndex((i) => Math.max(0, i - gridCols));
+          } else if (zone === "list") {
+            if (navCodeIndex < gridCols) {
+              setZone("header");
+            } else {
+              setNavCodeIndex((i) => i - gridCols);
+            }
           }
         },
-        description: "Navegar arriba",
+        description: "Navegar arriba / Volver a la mención",
         category: "Navegación",
       },
       {
@@ -467,6 +483,8 @@ export default function ResolutionSidebar({
         action: () => {
           if (showDiscardMenu) {
             setNavDiscardIndex(i => Math.min(systemCodes.length - 1, i + 1));
+          } else if (zone === "header") {
+            setZone("list");
           } else {
             setNavCodeIndex((i) => Math.min(filteredCodes.length - 1, i + gridCols));
           }
@@ -486,13 +504,13 @@ export default function ResolutionSidebar({
         description: `Asignar código #${i + 1}`,
         category: "Códigos rápidos",
       })),
-      // Filtro por escritura: cualquier letra (menos "d"/"n", ya reservadas)
-      // agrega texto al filtro de la grilla. ponytail: sin soporte de mayúsculas
-      // acentuadas ni click-to-focus — basta con substring en minúsculas.
+      // Filtro por escritura: solo con el foco en la grilla (zone "list"), cualquier
+      // letra (menos "d"/"n", ya reservadas) agrega texto al filtro. ponytail: sin
+      // soporte de mayúsculas acentuadas ni click-to-focus — basta con substring en minúsculas.
       ..."abcefghijklmopqrstuvwxyz".split("").map((letter) => ({
         key: letter,
         action: () => {
-          if (showDiscardMenu) return;
+          if (showDiscardMenu || zone !== "list") return;
           setCodeFilter((f) => f + letter);
         },
         description: `Filtrar por "${letter}"`,
@@ -501,7 +519,7 @@ export default function ResolutionSidebar({
       {
         key: "Backspace",
         action: () => {
-          if (showDiscardMenu) return;
+          if (showDiscardMenu || zone !== "list") return;
           setCodeFilter((f) => f.slice(0, -1));
         },
         description: "Borrar filtro",
@@ -513,12 +531,13 @@ export default function ResolutionSidebar({
           setShowDiscardMenu(false);
           setShowNewCodeInput(false);
           setCodeFilter("");
+          setZone("header");
         },
         description: "Cerrar menús",
         category: "Acciones",
       },
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols, newCodeHint, codingType]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, filteredCodes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols, newCodeHint, codingType]);
 
   useKeyboardShortcuts("resolution-sidebar");
 
@@ -611,7 +630,10 @@ export default function ResolutionSidebar({
             <motion.div
               animate={cardMotion}
               transition={{ duration: 0.23, ease: cardExiting ? "easeIn" : ([0.22, 1.4, 0.36, 1] as const) }}
-              className="bg-gradient-to-br from-orange-50 via-white to-purple-50 border border-p-border rounded-2xl p-4 transition-shadow ring-2 ring-p-accent/25"
+              className={[
+                "bg-gradient-to-br from-orange-50 via-white to-purple-50 border border-p-border rounded-2xl p-4 transition-shadow",
+                zone === "header" ? "ring-2 ring-p-accent/25" : "",
+              ].join(" ")}
             >
               <div className="flex items-center justify-between mb-2.5">
                 <span className="font-mono text-[10.5px] tracking-wide uppercase text-p-accent">
@@ -830,7 +852,8 @@ export default function ResolutionSidebar({
                         isNavSel
                           ? {
                               borderColor: codeColor(c.code_number),
-                              background: `${codeColor(c.code_number)}18`,
+                              background: zone === "list" ? `${codeColor(c.code_number)}18` : undefined,
+                              opacity: zone === "list" ? 1 : 0.6,
                             }
                           : undefined
                       }
@@ -858,7 +881,7 @@ export default function ResolutionSidebar({
             {zone === "header" ? (
               <>
                 <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-                  <kbd className="kbd-hint">←</kbd>Descartar
+                  <kbd className="kbd-hint">←</kbd>Sin dato
                 </span>
                 <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
                   <kbd className="kbd-hint">→</kbd>{newCodeHint}
@@ -879,12 +902,6 @@ export default function ResolutionSidebar({
             )}
             <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
               <kbd className="kbd-hint">↵</kbd>Asignar
-            </span>
-            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-              <kbd className="kbd-hint">d</kbd>Sin dato
-            </span>
-            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-              <kbd className="kbd-hint">n</kbd>Nueva marca
             </span>
           </div>
         )}
