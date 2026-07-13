@@ -57,3 +57,40 @@ def require_mention_group(db: Session, group_id: uuid.UUID, user_id) -> dict:
     if not row:
         raise HTTPException(404, "Grupo no encontrado")
     return dict(row)
+
+
+def require_audit_code_review(db: Session, review_id: uuid.UUID, user_id) -> dict:
+    row = db.execute(
+        text("""
+            select acr.id, ases.studio_id
+            from audit_code_reviews acr
+            join audit_sessions ases on ases.id = acr.audit_session_id
+            join studio s on s.id = ases.studio_id
+            join rounds r on r.id = s.round_id
+            join projects p on p.id = r.project_id
+            where acr.id = :id and p.created_by = :u
+        """),
+        {"id": review_id, "u": user_id},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(404, "Sección de auditoría no encontrada")
+    return dict(row)
+
+
+def require_audit_item(db: Session, item_id: uuid.UUID, user_id) -> dict:
+    row = db.execute(
+        text("""
+            select i.id, ases.studio_id
+            from audit_items i
+            join audit_code_reviews acr on acr.id = i.audit_code_review_id
+            join audit_sessions ases on ases.id = acr.audit_session_id
+            join studio s on s.id = ases.studio_id
+            join rounds r on r.id = s.round_id
+            join projects p on p.id = r.project_id
+            where i.id = :id and p.created_by = :u
+        """),
+        {"id": item_id, "u": user_id},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(404, "Item de auditoría no encontrado")
+    return dict(row)

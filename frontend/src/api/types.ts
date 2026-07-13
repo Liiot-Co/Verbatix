@@ -87,8 +87,18 @@ export interface StudioNavContext {
   project_external_code: string | null;
 }
 
+// Bloque `audit` de GET /studios/{id}: el estado que leen los badges y el
+// dashboard futuro. 'not_started' = estudio "sin auditar".
+export interface StudioAudit {
+  status: "not_started" | "in_progress" | "approved";
+  reviewed_items: number;
+  total_items: number;
+  target_met: boolean;
+}
+
 export interface StudioStatus extends Studio, StudioNavContext {
   counters: StudioCounters;
+  audit: StudioAudit;
 }
 
 export interface DetectedSheet {
@@ -297,3 +307,103 @@ export interface BulkResolveResult {
   resolved: ResolveResult[];
   failed: { group_id: string; error: string }[];
 }
+
+/* ── Auditoría (Fase 5) ── */
+
+export type AuditItemStatus = "pending" | "correct" | "reassigned";
+export type AuditSessionStatus = "pending" | "in_progress" | "approved";
+export type AuditCodeReviewStatus = "pending" | "approved" | "with_corrections";
+
+// GET/POST /studios/{id}/audit/session — resumen de la última sesión.
+export interface AuditSessionSummary {
+  id: string;
+  studio_id: string;
+  processing_run_id: string | null;
+  target_percentage: number;
+  total_items: number;
+  reviewed_items: number;
+  target_met: boolean;
+  status: AuditSessionStatus;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_at: string | null;
+  progress_pct: number;
+  items_pending: number;
+  items_correct: number;
+  items_reassigned: number;
+  // Hubo un run del motor posterior al muestreo: la sesión quedó desactualizada
+  // y la UI ofrece re-muestrear (POST session con resample: true).
+  is_stale: boolean;
+}
+
+// GET /studios/{id}/audit/codes — la capa de agrupación por código de la muestra.
+export interface AuditCodeReview {
+  id: string;
+  code: { id: string; code_number: number; label: string; net: string | null };
+  items_count: number;
+  reviewed_count: number;
+  corrections_count: number;
+  status: AuditCodeReviewStatus;
+}
+
+export interface AuditItemCode {
+  code_id: string;
+  code_number: number;
+  label: string;
+  source: VerbatimCode["source"];
+}
+
+// GET /audit-code-reviews/{id}/items — un verbatim muestreado dentro de un código.
+export interface AuditItem {
+  id: string;
+  verbatim_id: string;
+  original_text: string;
+  normalized_text: string | null;
+  coding_status: CodingStatus;
+  codes_snapshot: AuditItemCode[];
+  current_codes: AuditItemCode[];
+  status: AuditItemStatus;
+  comment: string | null;
+  reviewed_at: string | null;
+}
+
+export interface AuditItemList {
+  total: number;
+  items: AuditItem[];
+}
+
+// Solo correcciones por item — lo "correcto" se da al aprobar la SECCIÓN
+// (approveAuditSection), no marcando verbatim por verbatim.
+export interface AuditReviewDecision {
+  action: "reassign" | "remove";
+  code_ids?: string[];
+  new_code?: NewCodeInput | null;
+  comment?: string | null;
+  expected_status?: AuditItemStatus | null;
+}
+
+export interface AuditReviewResult {
+  item_id: string;
+  status: AuditItemStatus;
+  already_reviewed: boolean;
+  new_code: { id: string; code_number: number; label: string; is_new: boolean } | null;
+  summary: AuditSessionSummary;
+}
+
+export interface AuditPatchResult {
+  item_id: string;
+  status: AuditItemStatus;
+  comment: string | null;
+}
+
+// POST /audit-code-reviews/{id}/approve — cierra una sección: los items sin
+// corregir quedan 'correct' y el code review pasa a approved/with_corrections.
+export interface AuditSectionApproveResult {
+  review_id: string;
+  status: AuditCodeReviewStatus;
+  items_marked: number;
+  already_approved: boolean;
+  summary: AuditSessionSummary;
+}
+
+export type AuditApproveResult = AuditSessionSummary & { already_approved: boolean };

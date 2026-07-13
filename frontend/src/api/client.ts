@@ -1,4 +1,12 @@
 import type {
+  AuditApproveResult,
+  AuditCodeReview,
+  AuditItemList,
+  AuditPatchResult,
+  AuditReviewDecision,
+  AuditSectionApproveResult,
+  AuditReviewResult,
+  AuditSessionSummary,
   BulkResolveResult,
   ColumnMap,
   ImportResult,
@@ -283,4 +291,74 @@ export async function bulkResolve(
     headers: jsonHeaders,
     body: JSON.stringify({ group_ids: groupIds, decision }),
   });
+}
+
+/* ── Auditoría (Fase 5) ── */
+
+// Crea o reanuda (idempotente) la sesión; con resample=true re-muestrea una
+// sesión desactualizada por un reproceso del motor (crea sesión nueva).
+export async function createAuditSession(
+  studioId: string,
+  resample = false
+): Promise<AuditSessionSummary> {
+  return request<AuditSessionSummary>(`/studios/${studioId}/audit/session`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ resample }),
+  });
+}
+
+export async function getAuditSession(studioId: string): Promise<AuditSessionSummary> {
+  return request<AuditSessionSummary>(`/studios/${studioId}/audit/session`);
+}
+
+export async function getAuditCodes(studioId: string): Promise<AuditCodeReview[]> {
+  return request<AuditCodeReview[]>(`/studios/${studioId}/audit/codes`);
+}
+
+export async function getAuditItems(
+  reviewId: string,
+  limit = 100,
+  offset = 0
+): Promise<AuditItemList> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return request<AuditItemList>(`/audit-code-reviews/${reviewId}/items?${qs.toString()}`);
+}
+
+export async function reviewAuditItem(
+  itemId: string,
+  decision: AuditReviewDecision
+): Promise<AuditReviewResult> {
+  return request<AuditReviewResult>(`/audit-items/${itemId}/review`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(decision),
+  });
+}
+
+export async function patchAuditItem(
+  itemId: string,
+  input: { comment?: string | null }
+): Promise<AuditPatchResult> {
+  return request<AuditPatchResult>(`/audit-items/${itemId}`, {
+    method: "PATCH",
+    headers: jsonHeaders,
+    body: JSON.stringify(input),
+  });
+}
+
+// Aprueba una sección (un código de la muestra): da por correctos los items
+// que el analista no corrigió.
+export async function approveAuditSection(reviewId: string): Promise<AuditSectionApproveResult> {
+  return request<AuditSectionApproveResult>(`/audit-code-reviews/${reviewId}/approve`, {
+    method: "POST",
+  });
+}
+
+export async function deleteAuditItem(itemId: string): Promise<AuditReviewResult> {
+  return request<AuditReviewResult>(`/audit-items/${itemId}`, { method: "DELETE" });
+}
+
+export async function approveAudit(studioId: string): Promise<AuditApproveResult> {
+  return request<AuditApproveResult>(`/studios/${studioId}/audit/approve`, { method: "POST" });
 }

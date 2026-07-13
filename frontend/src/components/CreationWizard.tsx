@@ -26,7 +26,7 @@ import type {
   UploadedFile,
 } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { nextRoundNumber, parseStudyKey } from "@/lib/projectTree";
+import { codingTypeLabel, nextRoundNumber, parseStudyKey } from "@/lib/projectTree";
 
 type WizardStep = "project" | "studio" | "round";
 
@@ -501,7 +501,15 @@ export default function CreationWizard() {
                       { value: "reasons" as CodingType, label: "Razones" },
                     ]}
                     value={newStudioCodingType}
-                    onChange={setNewStudioCodingType}
+                    onChange={(type) => {
+                      setNewStudioCodingType(type);
+                      // Si el nombre sigue siendo el default del tipo, alinearlo al nuevo.
+                      setNewStudioName((prev) =>
+                        prev === "" || prev === "Marcas" || prev === "Razones"
+                          ? codingTypeLabel(type)
+                          : prev
+                      );
+                    }}
                   />
                 </div>
 

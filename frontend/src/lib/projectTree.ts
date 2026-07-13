@@ -17,6 +17,25 @@ export interface StudyGroup {
   rounds: StudyRoundEntry[];
 }
 
+/** Label de tipo para UI: "Marcas" | "Razones". */
+export function codingTypeLabel(codingType: CodingType): string {
+  return codingType === "brands" ? "Marcas" : "Razones";
+}
+
+/**
+ * Nombre a mostrar: si el estudio quedó con el default "Marcas"/"Razones"
+ * desalineado del tipo real, prioriza el coding_type.
+ */
+export function studyDisplayName(name: string, codingType: CodingType): string {
+  if (name === "Marcas" || name === "Razones") return codingTypeLabel(codingType);
+  return name;
+}
+
+/** Sustantivo singular para copy del centro de resolución / auditoría. */
+export function codingTypeNoun(codingType: CodingType): string {
+  return codingType === "reasons" ? "razón" : "marca";
+}
+
 export function studyKey(codingType: CodingType, name: string): string {
   return `${codingType}--${encodeURIComponent(name.trim())}`;
 }
@@ -73,5 +92,21 @@ export function nextRoundNumber(rounds: RoundSummary[]): number {
 }
 
 export function findStudyGroup(project: ProjectDetail, key: string): StudyGroup | undefined {
-  return groupProjectByStudies(project).find((g) => g.key === key);
+  const groups = groupProjectByStudies(project);
+  const exact = groups.find((g) => g.key === key);
+  if (exact) return exact;
+
+  // useParams puede devolver el segmento ya decodificado (%20 → espacio),
+  // mientras groupProjectByStudies guarda la key con encodeURIComponent.
+  const parsed = parseStudyKey(key);
+  if (!parsed) return undefined;
+  return groups.find(
+    (g) => g.coding_type === parsed.coding_type && g.name === parsed.name
+  );
+}
+
+/** Ruta de la fase actual de una ronda: auditoría si está en audit_pending. */
+export function studioPhasePath(studioId: string, status: string): string {
+  if (status === "audit_pending") return `/studios/${studioId}/audit`;
+  return `/studios/${studioId}`;
 }

@@ -7,6 +7,7 @@ interface StudioSummaryCardsProps {
   momentum: string;
   codedPct: number;
   justFinished: boolean;
+  /** Abre el Centro de Resolución en fullscreen. */
   onOpenResolution: () => void;
 }
 

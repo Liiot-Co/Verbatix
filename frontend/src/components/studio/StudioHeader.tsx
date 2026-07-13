@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { motion } from "framer-motion";
 import type { StudioStatus } from "@/api/types";
+import { studyDisplayName } from "@/lib/projectTree";
 import { studioStatusLabel } from "@/lib/studioStatus";
 
 interface StudioHeaderProps {
@@ -18,12 +19,14 @@ export function StudioHeader({
   isProcessingNow,
   onProcess,
 }: StudioHeaderProps) {
+  const title = studyDisplayName(studio.name, studio.coding_type);
+
   return (
     <div className="flex items-start justify-between gap-4 flex-wrap">
       <div className="space-y-1">
-        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">{studio.name}</h1>
+        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">{title}</h1>
         <p className="font-subtitle text-sm text-p-text-muted">
-          {studio.coding_type === "brands" ? "Marcas" : "Razones"} · {studio.counters.verbatims_total} verbatims · estado: {studioStatusLabel(studio.status)}
+          {studio.counters.verbatims_total} verbatims · estado: {studioStatusLabel(studio.status)}
         </p>
       </div>
       <div className="flex items-center gap-2">
