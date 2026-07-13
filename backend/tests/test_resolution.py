@@ -174,3 +174,49 @@ def test_wrong_studio_raises_lookup_error():
         Mocks(stack, group)
         with pytest.raises(LookupError):
             resolve_group(FakeSession(), STUDIO_ID, GROUP_ID, {"action": "discard"}, user_id=USER_ID)
+
+
+def test_auto_resolve_matches_below_threshold_and_returns_texts():
+    """«pia monte» (below_threshold) se auto-clasifica al resolver «piamonte» manualmente,
+    y la respuesta trae id + texto para el feedback del frontend."""
+    from app.pipeline.resolution import _auto_resolve_similar_pending_groups
+
+    class FakeRowsResult:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return self.rows
+
+    class FakeDb:
+        def __init__(self, rows):
+            self.rows = rows
+            self.sql = ""
+
+        def execute(self, stmt, params=None):
+            self.sql = str(stmt)
+            return FakeRowsResult(self.rows)
+
+    pid = uuid.uuid4()
+    code_id = uuid.uuid4()
+    rows = [
+        {"id": pid, "normalized_text": "pia monte", "status": "below_threshold"},
+        {"id": uuid.uuid4(), "normalized_text": "coca cola", "status": "pending_review"},
+    ]
+    with ExitStack() as stack:
+        stack.enter_context(patch("app.pipeline.resolution.deactivate_group_codes"))
+        assign = stack.enter_context(patch("app.pipeline.resolution.assign_codes_to_group"))
+        stack.enter_context(patch("app.pipeline.resolution.mark_group_resolved"))
+        log = stack.enter_context(patch("app.pipeline.resolution.log_action"))
+        db = FakeDb(rows)
+        result = _auto_resolve_similar_pending_groups(
+            db, STUDIO_ID, code_id, {"normalized_text": "piamonte"}, USER_ID
+        )
+
+    assert "below_threshold" in db.sql
+    assert result == [{"id": str(pid), "normalized_text": "pia monte"}]
+    assign.assert_called_once()
+    assert log.call_args.kwargs["old_value"] == {"status": "below_threshold"}

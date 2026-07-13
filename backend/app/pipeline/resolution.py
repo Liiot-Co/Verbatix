@@ -130,8 +130,11 @@ def _auto_resolve_similar_pending_groups(db, studio_id, code_id, reference_group
     if not new_alias:
         return []
         
+    # below_threshold incluido: menciones insuficientes de la misma marca ("pia monte")
+    # se consolidan al clasificar una manualmente ("Piamonte").
     pending = db.execute(
-        text("SELECT id, normalized_text FROM mention_groups WHERE studio_id = :sid AND status = 'pending_review'"),
+        text("""SELECT id, normalized_text, status FROM mention_groups
+                WHERE studio_id = :sid AND status IN ('pending_review', 'below_threshold')"""),
         {"sid": studio_id}
     ).mappings().all()
     
@@ -154,9 +157,9 @@ def _auto_resolve_similar_pending_groups(db, studio_id, code_id, reference_group
             
             log_action(
                 db, user_id, studio_id, "mention_group", pid, "resolve:approve:auto_fuzzy",
-                old_value={"status": "pending_review"},
+                old_value={"status": p_group["status"]},
                 new_value={"status": "resolved", "code_ids": [str(code_id)], "score": score, "matched_alias": new_alias},
             )
-            auto_resolved.append(str(pid))
+            auto_resolved.append({"id": str(pid), "normalized_text": text_norm})
             
     return auto_resolved

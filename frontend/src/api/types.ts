@@ -290,7 +290,7 @@ export interface ResolveResult {
   codes_assigned: StudioCode[];
   verbatims_updated: number;
   new_code: { id: string; code_number: number; label: string; is_new: boolean } | null;
-  auto_resolved_groups: string[];
+  auto_resolved_groups: { id: string; normalized_text: string }[];
 }
 
 export interface BulkResolveResult {

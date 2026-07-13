@@ -86,6 +86,7 @@ export default function ResolutionSidebar({
   const showToast = useVerbatixStore((s) => s.showToast);
   const newCodeInputRef = useRef<HTMLInputElement>(null);
   const discardBtnRef = useRef<HTMLButtonElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
 
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
@@ -106,6 +107,9 @@ export default function ResolutionSidebar({
   const [navDiscardIndex, setNavDiscardIndex] = useState(0);
   const [newCodeLabel, setNewCodeLabel] = useState("");
   const [addAlias, setAddAlias] = useState(true);
+  // Zonas de foco tipo Excel: "header" = tarjeta de la mención (←/→ descartan/crean),
+  // "list" = grilla de marcas (las 4 flechas navegan). ↓ baja a la lista, ↑ desde la primera fila vuelve.
+  const [zone, setZone] = useState<"header" | "list">("header");
 
   const currentCard = queue[0] ?? null;
 
@@ -140,6 +144,7 @@ export default function ResolutionSidebar({
     setShowDiscardMenu(false);
     setShowNewCodeInput(false);
     setNewCodeLabel("");
+    setZone("header");
     getMentionGroup(currentCard.id).then(setDetail);
   }, [currentCard]);
 
@@ -152,6 +157,11 @@ export default function ResolutionSidebar({
     const idx = codes.findIndex((c) => c.id === detail.suggested_code!.id);
     setNavCodeIndex(idx >= 0 ? idx : 0);
   }, [detail, codes]);
+
+  // Como en Excel: el scroll de la grilla sigue a la celda seleccionada.
+  useEffect(() => {
+    gridRef.current?.children[navCodeIndex]?.scrollIntoView({ block: "nearest" });
+  }, [navCodeIndex, zone]);
 
   const applyOptimisticRemoval = (groupId: string) => {
     const snapshot = queue;
@@ -171,10 +181,17 @@ export default function ResolutionSidebar({
       try {
         const result = await resolveMentionGroup(groupId, decision);
         if (result.auto_resolved_groups && result.auto_resolved_groups.length > 0) {
-          setQueue((q) => q.filter((g) => !result.auto_resolved_groups.includes(g.id)));
+          const autoIds = new Set(result.auto_resolved_groups.map((g) => g.id));
+          setQueue((q) => q.filter((g) => !autoIds.has(g.id)));
           setTotal((t) => Math.max(0, t - result.auto_resolved_groups.length));
           setResolvedThisSession((n) => n + result.auto_resolved_groups.length);
-          showToast(`¡Se han auto-clasificado ${result.auto_resolved_groups.length} registros similares!`, "success");
+          const codeLabel = result.codes_assigned[0]?.label;
+          const texts = result.auto_resolved_groups.map((g) => `«${g.normalized_text}»`);
+          const shown = texts.slice(0, 3).join(", ") + (texts.length > 3 ? ` y ${texts.length - 3} más` : "");
+          showToast(
+            codeLabel ? `Auto-clasificados como «${codeLabel}»: ${shown}` : `Auto-clasificados: ${shown}`,
+            "success"
+          );
         }
         loadSummary();
         onResolved?.();
@@ -277,28 +294,33 @@ export default function ResolutionSidebar({
         description: "Asignar código", 
         category: "Acciones" 
       },
-      { 
-        key: "ArrowLeft", 
+      {
+        key: "ArrowLeft",
         action: () => {
-          if (!showDiscardMenu) {
+          if (showDiscardMenu) return;
+          if (zone === "list") {
+            setNavCodeIndex((i) => (i % GRID_COLS > 0 ? i - 1 : i));
+          } else {
             discardCurrent();
           }
-        }, 
-        description: "Descartar (Abrir menú)", 
-        category: "Acciones" 
+        },
+        description: "Descartar / Navegar izquierda",
+        category: "Acciones",
       },
       { key: "d", action: discardCurrent, description: "Descartar", category: "Acciones" },
-      { 
-        key: "ArrowRight", 
+      {
+        key: "ArrowRight",
         action: () => {
           if (showDiscardMenu) {
             setShowDiscardMenu(false);
+          } else if (zone === "list") {
+            setNavCodeIndex((i) => (i % GRID_COLS < GRID_COLS - 1 && i + 1 < codes.length ? i + 1 : i));
           } else {
             openNewCodeInput();
           }
-        }, 
-        description: "Nueva marca / Cerrar menú", 
-        category: "Acciones" 
+        },
+        description: "Nueva marca / Navegar derecha",
+        category: "Acciones",
       },
       { key: "n", action: openNewCodeInput, description: "Nueva marca", category: "Acciones" },
       {
@@ -306,11 +328,15 @@ export default function ResolutionSidebar({
         action: () => {
           if (showDiscardMenu) {
             setNavDiscardIndex(i => Math.max(0, i - 1));
-          } else {
-            setNavCodeIndex((i) => Math.max(0, i - GRID_COLS));
+          } else if (zone === "list") {
+            if (navCodeIndex < GRID_COLS) {
+              setZone("header");
+            } else {
+              setNavCodeIndex((i) => i - GRID_COLS);
+            }
           }
         },
-        description: "Navegar arriba",
+        description: "Navegar arriba / Volver a la mención",
         category: "Navegación",
       },
       {
@@ -318,11 +344,13 @@ export default function ResolutionSidebar({
         action: () => {
           if (showDiscardMenu) {
             setNavDiscardIndex(i => Math.min(systemCodes.length - 1, i + 1));
+          } else if (zone === "header") {
+            setZone("list");
           } else {
             setNavCodeIndex((i) => Math.min(codes.length - 1, i + GRID_COLS));
           }
         },
-        description: "Navegar abajo",
+        description: "Navegar abajo / Ir a marcas",
         category: "Navegación",
       },
       ...Array.from({ length: 9 }, (_, i) => ({
@@ -342,12 +370,13 @@ export default function ResolutionSidebar({
         action: () => {
           setShowDiscardMenu(false);
           setShowNewCodeInput(false);
+          setZone("header");
         },
         description: "Cerrar menús",
         category: "Acciones",
       },
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, systemCodes, assignCode, showDiscardMenu]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, codes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex]);
 
   useKeyboardShortcuts("resolution-sidebar");
 
@@ -423,7 +452,10 @@ export default function ResolutionSidebar({
             <motion.div
               animate={cardMotion}
               transition={{ duration: 0.23, ease: cardExiting ? "easeIn" : ([0.22, 1.4, 0.36, 1] as const) }}
-              className="bg-gradient-to-br from-orange-50 via-white to-purple-50 border border-p-border rounded-2xl p-4"
+              className={[
+                "bg-gradient-to-br from-orange-50 via-white to-purple-50 border border-p-border rounded-2xl p-4 transition-shadow",
+                zone === "header" ? "ring-2 ring-p-accent/25" : "",
+              ].join(" ")}
             >
               <div className="flex items-center justify-between mb-2.5">
                 <span className="font-mono text-[10.5px] tracking-wide uppercase text-p-accent">
@@ -458,13 +490,6 @@ export default function ResolutionSidebar({
                     />
                     <div className="flex gap-1.5">
                       <button
-                        onClick={() => createAndAssign(newCodeLabel)}
-                        disabled={resolving}
-                        className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-green-200 bg-green-50 text-sm font-bold text-green-700"
-                      >
-                        <Plus className="w-3.5 h-3.5" /> Crear <kbd className="kbd-hint ml-1">↵</kbd>
-                      </button>
-                      <button
                         onClick={() => {
                           setShowNewCodeInput(false);
                           setNewCodeLabel("");
@@ -472,6 +497,13 @@ export default function ResolutionSidebar({
                         className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-lg border border-p-border bg-p-bg-subtle text-sm text-p-text-muted"
                       >
                         <kbd className="kbd-hint mr-1">Esc</kbd> Cancelar
+                      </button>
+                      <button
+                        onClick={() => createAndAssign(newCodeLabel)}
+                        disabled={resolving}
+                        className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-green-200 bg-green-50 text-sm font-bold text-green-700"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Crear <kbd className="kbd-hint ml-1">↵</kbd>
                       </button>
                     </div>
                   </div>
@@ -543,7 +575,7 @@ export default function ResolutionSidebar({
                       className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 text-sm font-bold text-blue-700 hover:bg-blue-100 transition-colors"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Nueva marca</span>
+                      <span>Nueva</span>
                       <kbd className="kbd-hint">→</kbd>
                     </button>
                   </div>
@@ -562,7 +594,7 @@ export default function ResolutionSidebar({
                 <div className="flex-1 h-px bg-p-border" />
                 <span className="font-mono text-[10px] text-p-text-faint">{codes.length}</span>
               </div>
-              <div className="grid grid-cols-2 gap-1">
+              <div ref={gridRef} className="grid grid-cols-2 gap-1">
                 {codes.map((c, i) => {
                   const isSuggested = detail.suggested_code?.id === c.id;
                   const isNavSel = i === navCodeIndex;
@@ -576,7 +608,15 @@ export default function ResolutionSidebar({
                         isNavSel ? "border-2" : "border",
                         isNavSel ? "" : "border-p-border bg-p-surface",
                       ].join(" ")}
-                      style={isNavSel ? { borderColor: codeColor(c.code_number), background: `${codeColor(c.code_number)}18` } : undefined}
+                      style={
+                        isNavSel
+                          ? {
+                              borderColor: codeColor(c.code_number),
+                              background: zone === "list" ? `${codeColor(c.code_number)}18` : undefined,
+                              opacity: zone === "list" ? 1 : 0.6,
+                            }
+                          : undefined
+                      }
                     >
                       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: codeColor(c.code_number) }} />
                       <span className="text-[13px] font-semibold text-p-text flex-1 min-w-0 truncate">{c.label}</span>
@@ -607,15 +647,28 @@ export default function ResolutionSidebar({
       <div className="px-4 py-3 border-t border-p-border bg-p-surface shrink-0">
         {!allResolved && (
           <div className="flex justify-center gap-2.5 mb-2 flex-wrap">
-            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-              <kbd className="kbd-hint">←</kbd>Descartar
-            </span>
-            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-              <kbd className="kbd-hint">↑↓</kbd>Navegar
-            </span>
-            <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
-              <kbd className="kbd-hint">→</kbd>Nueva marca
-            </span>
+            {zone === "header" ? (
+              <>
+                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+                  <kbd className="kbd-hint">←</kbd>Descartar
+                </span>
+                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+                  <kbd className="kbd-hint">→</kbd>Nueva marca
+                </span>
+                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+                  <kbd className="kbd-hint">↓</kbd>Ir a marcas
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+                  <kbd className="kbd-hint">←↑↓→</kbd>Navegar
+                </span>
+                <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
+                  <kbd className="kbd-hint">↑</kbd>Volver a la mención
+                </span>
+              </>
+            )}
             <span className="font-mono text-[10px] text-p-text-faint flex items-center gap-1">
               <kbd className="kbd-hint">↵</kbd>Asignar
             </span>
