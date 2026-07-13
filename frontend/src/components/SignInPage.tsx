@@ -24,8 +24,10 @@ export default function SignInPage() {
       const res = await login({ email: email.trim(), password });
       setAuth(res.access_token, { id: res.user.id, email: res.user.email, name: null, role: "analyst", is_active: true, created_at: "" });
       navigate("/");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error al iniciar sesión");
+    } catch {
+      // El error crudo del backend/Supabase viene en inglés y como texto técnico
+      // (JSON, códigos internos) — no es apto para mostrar tal cual.
+      setError("No se pudo iniciar sesión. Revisa tu correo y contraseña.");
     } finally {
       setLoading(false);
     }
@@ -72,7 +74,7 @@ export default function SignInPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="form-label" htmlFor="email">Email</label>
+              <label className="form-label" htmlFor="email">Correo electrónico</label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-p-text-faint pointer-events-none" />
                 <input

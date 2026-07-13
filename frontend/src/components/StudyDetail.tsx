@@ -5,16 +5,8 @@ import { deleteStudio, getProject } from "@/api/client";
 import type { ProjectDetail as ProjectDetailType } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import { findStudyGroup, parseStudyKey } from "@/lib/projectTree";
+import { STUDIO_STATUS_TONE, studioStatusLabel } from "@/lib/studioStatus";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
-
-const STATUS_TONE: Record<string, string> = {
-  created: "text-p-text-faint bg-p-bg-subtle border-p-border",
-  files_uploaded: "text-p-accent bg-p-accent-soft border-p-accent/20",
-  processing: "text-p-accent bg-p-accent-soft border-p-accent/20",
-  preliminary_ready: "text-p-accent bg-p-accent-soft border-p-accent/20",
-  draft: "text-p-text-faint bg-p-bg-subtle border-p-border",
-  completed: "text-p-success bg-p-success/10 border-p-success/20",
-};
 
 export default function StudyDetail() {
   const { projectId, studyKey } = useParams<{ projectId: string; studyKey: string }>();
@@ -129,10 +121,10 @@ export default function StudyDetail() {
               <span
                 className={[
                   "shrink-0 text-[10px] font-semibold tracking-wide uppercase px-2.5 py-1 rounded-full border",
-                  STATUS_TONE[entry.studio.status] ?? STATUS_TONE.created,
+                  STUDIO_STATUS_TONE[entry.studio.status] ?? STUDIO_STATUS_TONE.created,
                 ].join(" ")}
               >
-                {entry.studio.status}
+                {studioStatusLabel(entry.studio.status)}
               </span>
               <ArrowRight className="w-4 h-4 text-p-text-faint group-hover:translate-x-0.5 transition-transform shrink-0" />
               <button
