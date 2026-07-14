@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Sparkles, X } from "lucide-react";
-import { bulkResolve, getResolutionQueue, getResolutionSummary, getStudioCodes } from "@/api/client";
-import type { ResolutionQueueItem, ResolutionSummary, StudioCode } from "@/api/types";
+import { bulkResolve, getResolutionQueue, getResolutionSummary, getRoundCodes } from "@/api/client";
+import type { ResolutionQueueItem, ResolutionSummary, RoundCode } from "@/api/types";
 import ResolutionSidebar from "./ResolutionSidebar";
 import { PhaseCompleteChoice } from "./PhaseCompleteChoice";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
@@ -12,13 +12,13 @@ import { STATUS_CHIP } from "@/lib/resolutionStatus";
 const PAGE_SIZE = 50;
 
 /** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
-export default function ResolutionCenter({ studioId, onClose }: { studioId: string; onClose: () => void }) {
+export default function ResolutionCenter({ roundId, onClose }: { roundId: string; onClose: () => void }) {
   const showToast = useVerbatixStore((s) => s.showToast);
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<ResolutionSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [codes, setCodes] = useState<StudioCode[]>([]);
+  const [codes, setCodes] = useState<RoundCode[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
   const [bulkAssigning, setBulkAssigning] = useState(false);
@@ -26,21 +26,21 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
   const loadQueue = useCallback(() => {
-    if (!studioId) return;
+    if (!roundId) return;
     Promise.all([
-      getResolutionQueue(studioId, PAGE_SIZE, 0).then((res) => {
+      getResolutionQueue(roundId, PAGE_SIZE, 0).then((res) => {
         setQueue(res.items);
         setTotal(res.total);
       }),
-      getResolutionSummary(studioId).then(setSummary),
+      getResolutionSummary(roundId).then(setSummary),
     ]).finally(() => setLoading(false));
-  }, [studioId]);
+  }, [roundId]);
 
   useEffect(() => {
     setLoading(true);
     loadQueue();
-    getStudioCodes(studioId, false).then(setCodes);
-  }, [loadQueue, studioId]);
+    getRoundCodes(roundId, false).then(setCodes);
+  }, [loadQueue, roundId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -78,7 +78,7 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
       if (selected.size === 0) return;
       setBulkAssigning(true);
       try {
-        const result = await bulkResolve(studioId, Array.from(selected), {
+        const result = await bulkResolve(roundId, Array.from(selected), {
           action: "approve",
           code_ids: [codeId],
           new_code: null,
@@ -103,7 +103,7 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
         setBulkAssigning(false);
       }
     },
-    [selected, studioId, showToast, loadQueue]
+    [selected, roundId, showToast, loadQueue]
   );
 
   return createPortal(
@@ -222,7 +222,7 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
             <div className="w-1 h-12 bg-p-text-muted/30 group-hover:bg-p-accent rounded-full transition-colors" />
           </div>
           <ResolutionSidebar
-            studioId={studioId}
+            roundId={roundId}
             onResolved={loadQueue}
             focusGroupId={focusGroupId}
             onFocusHandled={() => setFocusGroupId(null)}
@@ -233,7 +233,7 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
       {summary?.can_close && (
         <div className="px-6 pb-4 shrink-0">
           <PhaseCompleteChoice
-            studioId={studioId}
+            roundId={roundId}
             variant="inline"
             onDismiss={onClose}
           />

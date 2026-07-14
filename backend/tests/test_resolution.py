@@ -12,7 +12,7 @@ import pytest
 
 from app.pipeline.resolution import BelowThresholdError, ResolutionConflict, resolve_group
 
-STUDIO_ID = uuid.uuid4()
+ROUND_ID = uuid.uuid4()
 GROUP_ID = uuid.uuid4()
 CODEBOOK_ID = uuid.uuid4()
 USER_ID = uuid.uuid4()
@@ -34,7 +34,7 @@ class FakeResult:
 
 
 class FakeSession:
-    """Answers the two ad-hoc queries resolve_group runs itself: the studio's
+    """Answers the two ad-hoc queries resolve_group runs itself: the round's
     min_mentions_threshold, and the discard code lookup by code_number."""
 
     def __init__(self, threshold=3, discard_code_id=None):
@@ -58,9 +58,9 @@ class FakeSession:
         pass
 
 
-def _group(status="pending_review", frequency_count=10, studio_id=STUDIO_ID):
+def _group(status="pending_review", frequency_count=10, round_id=ROUND_ID):
     return {
-        "id": str(GROUP_ID), "studio_id": str(studio_id), "normalized_text": "alpina",
+        "id": str(GROUP_ID), "round_id": str(round_id), "normalized_text": "alpina",
         "sample_text": "Alpina", "frequency_count": frequency_count, "status": status,
         "verbatims_count": frequency_count, "samples": ["Alpina"], "suggested_code": None,
     }
@@ -83,7 +83,7 @@ class Mocks:
         self.log_action = stack.enter_context(patch("app.pipeline.resolution.log_action"))
         self.add_alias = stack.enter_context(patch("app.pipeline.resolution.add_alias_from_group"))
         self.create_code = stack.enter_context(patch("app.pipeline.resolution.create_code"))
-        stack.enter_context(patch("app.pipeline.resolution.list_studio_codes", return_value=existing_codes or []))
+        stack.enter_context(patch("app.pipeline.resolution.list_round_codes", return_value=existing_codes or []))
 
 
 def test_already_resolved_is_idempotent_and_untouched():
@@ -91,7 +91,7 @@ def test_already_resolved_is_idempotent_and_untouched():
     with ExitStack() as stack:
         mocks = Mocks(stack, group)
         result = resolve_group(
-            FakeSession(), STUDIO_ID, GROUP_ID, {"action": "approve", "code_ids": []}, user_id=USER_ID
+            FakeSession(), ROUND_ID, GROUP_ID, {"action": "approve", "code_ids": []}, user_id=USER_ID
         )
 
     assert result["already_resolved"] is True
@@ -107,7 +107,7 @@ def test_concurrent_edit_raises_conflict_when_state_diverged():
         Mocks(stack, group)
         with pytest.raises(ResolutionConflict):
             resolve_group(
-                FakeSession(), STUDIO_ID, GROUP_ID, {"action": "discard"},
+                FakeSession(), ROUND_ID, GROUP_ID, {"action": "discard"},
                 user_id=USER_ID, expected_status="pending_review",
             )
 
@@ -118,7 +118,7 @@ def test_new_code_below_min_mentions_threshold_fails():
         mocks = Mocks(stack, group)
         with pytest.raises(BelowThresholdError):
             resolve_group(
-                FakeSession(threshold=3), STUDIO_ID, GROUP_ID,
+                FakeSession(threshold=3), ROUND_ID, GROUP_ID,
                 {"action": "approve", "code_ids": [], "new_code": {"label": "Nueva marca"}},
                 user_id=USER_ID,
             )
@@ -131,7 +131,7 @@ def test_multi_code_preserves_selection_order_for_output_index():
     with ExitStack() as stack:
         mocks = Mocks(stack, group)
         resolve_group(
-            FakeSession(), STUDIO_ID, GROUP_ID,
+            FakeSession(), ROUND_ID, GROUP_ID,
             {"action": "approve", "code_ids": [str(code_a), str(code_b)]},
             user_id=USER_ID,
         )
@@ -148,7 +148,7 @@ def test_reassignment_deactivates_before_reassigning():
         mocks.deactivate.side_effect = lambda *a, **k: call_order.append("deactivate")
         mocks.assign.side_effect = lambda *a, **k: call_order.append("assign") or group["verbatims_count"]
         resolve_group(
-            FakeSession(), STUDIO_ID, GROUP_ID,
+            FakeSession(), ROUND_ID, GROUP_ID,
             {"action": "approve", "code_ids": [str(uuid.uuid4())]}, user_id=USER_ID,
         )
 
@@ -161,19 +161,19 @@ def test_discard_uses_configured_discard_code():
     with ExitStack() as stack:
         mocks = Mocks(stack, group)
         resolve_group(
-            FakeSession(discard_code_id=discard_id), STUDIO_ID, GROUP_ID,
+            FakeSession(discard_code_id=discard_id), ROUND_ID, GROUP_ID,
             {"action": "discard"}, user_id=USER_ID,
         )
 
     assert mocks.assign.call_args.args[2] == [discard_id]
 
 
-def test_wrong_studio_raises_lookup_error():
-    group = _group(studio_id=uuid.uuid4())
+def test_wrong_round_raises_lookup_error():
+    group = _group(round_id=uuid.uuid4())
     with ExitStack() as stack:
         Mocks(stack, group)
         with pytest.raises(LookupError):
-            resolve_group(FakeSession(), STUDIO_ID, GROUP_ID, {"action": "discard"}, user_id=USER_ID)
+            resolve_group(FakeSession(), ROUND_ID, GROUP_ID, {"action": "discard"}, user_id=USER_ID)
 
 
 def test_auto_resolve_matches_below_threshold_and_returns_texts():
@@ -213,7 +213,7 @@ def test_auto_resolve_matches_below_threshold_and_returns_texts():
         log = stack.enter_context(patch("app.pipeline.resolution.log_action"))
         db = FakeDb(rows)
         result = _auto_resolve_similar_pending_groups(
-            db, STUDIO_ID, code_id, {"normalized_text": "piamonte"}, USER_ID
+            db, ROUND_ID, code_id, {"normalized_text": "piamonte"}, USER_ID
         )
 
     assert "below_threshold" in db.sql

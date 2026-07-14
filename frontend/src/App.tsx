@@ -28,13 +28,13 @@ export default function App() {
                   <Routes>
                     <Route path="/" element={<ProjectDashboard />} />
                     <Route path="/projects/:projectId" element={<ProjectDetail />} />
-                    <Route path="/projects/:projectId/studies/:studyKey" element={<StudyDetail />} />
+                    <Route path="/projects/:projectId/studies/:studyId" element={<StudyDetail />} />
                     <Route path="/wizard" element={<CreationWizard />} />
-                    <Route path="/studios/:studioId" element={<UnifiedStudioView />} />
-                    <Route path="/studios/:studioId/preliminary" element={<UnifiedStudioView />} />
-                    <Route path="/studios/:studioId/verbatims" element={<UnifiedStudioView />} />
-                    <Route path="/studios/:studioId/audit" element={<AuditView />} />
-                    <Route path="/studios/:studioId/report" element={<ReportView />} />
+                    <Route path="/rounds/:roundId" element={<UnifiedStudioView />} />
+                    <Route path="/rounds/:roundId/preliminary" element={<UnifiedStudioView />} />
+                    <Route path="/rounds/:roundId/verbatims" element={<UnifiedStudioView />} />
+                    <Route path="/rounds/:roundId/audit" element={<AuditView />} />
+                    <Route path="/rounds/:roundId/report" element={<ReportView />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </main>

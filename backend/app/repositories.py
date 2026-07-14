@@ -17,14 +17,14 @@ SYSTEM_CODES = [
 ]
 
 
-def create_codebook(db: Session, studio_id: uuid.UUID, parent_codebook_id=None) -> uuid.UUID:
+def create_codebook(db: Session, round_id: uuid.UUID, parent_codebook_id=None) -> uuid.UUID:
     cb_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into codebooks (id, studio_id, version, parent_codebook_id, status)
-            values (:id, :studio, 1, :parent, 'draft')
+            insert into codebooks (id, round_id, version, parent_codebook_id, status)
+            values (:id, :round, 1, :parent, 'draft')
         """),
-        {"id": cb_id, "studio": studio_id, "parent": parent_codebook_id},
+        {"id": cb_id, "round": round_id, "parent": parent_codebook_id},
     )
     return cb_id
 
@@ -41,10 +41,10 @@ def seed_system_codes(db: Session, codebook_id: uuid.UUID) -> None:
         )
 
 
-def clone_codebook(db: Session, source_studio_id: uuid.UUID, target_codebook_id: uuid.UUID) -> dict:
+def clone_codebook(db: Session, source_round_id: uuid.UUID, target_codebook_id: uuid.UUID) -> dict:
     src = db.execute(
-        text("select id from codebooks where studio_id = :studio order by version desc limit 1"),
-        {"studio": source_studio_id},
+        text("select id from codebooks where round_id = :round order by version desc limit 1"),
+        {"round": source_round_id},
     ).scalar()
     if not src:
         return {"codes": 0, "aliases": 0, "nets": 0}
@@ -170,7 +170,7 @@ def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict
 
 def insert_verbatims(
     db: Session,
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     file_id: uuid.UUID,
     rows: list[dict],
     coding_type: str,
@@ -194,11 +194,11 @@ def insert_verbatims(
         input_code = (src or {}).get("input_code_number")
         result = db.execute(
             text("""
-                insert into verbatims (id, studio_id, imported_file_id, respondent_external_id,
+                insert into verbatims (id, round_id, imported_file_id, respondent_external_id,
                                        question_key, original_text, normalized_text, input_code_number,
                                        coding_status)
-                values (:id, :studio, :f, :resp, :q, :txt, :norm, :inp, 'pending')
-                on conflict (studio_id, respondent_external_id, question_key) do update set
+                values (:id, :round, :f, :resp, :q, :txt, :norm, :inp, 'pending')
+                on conflict (round_id, respondent_external_id, question_key) do update set
                   normalized_text = excluded.normalized_text,
                   original_text = excluded.original_text,
                   imported_file_id = excluded.imported_file_id
@@ -206,7 +206,7 @@ def insert_verbatims(
             """),
             {
                 "id": uuid.uuid4(),
-                "studio": studio_id,
+                "round": round_id,
                 "f": file_id,
                 "resp": row["respondent_external_id"],
                 "q": row.get("question_key"),
@@ -220,21 +220,21 @@ def insert_verbatims(
     return n, df
 
 
-def build_mention_groups(db: Session, studio_id: uuid.UUID) -> int:
+def build_mention_groups(db: Session, round_id: uuid.UUID) -> int:
     """Agrupa verbatims ya normalizados por texto exacto (dedup para el paso 2)."""
     db.execute(
         text("""
-            insert into mention_groups (id, studio_id, normalized_text, sample_text,
+            insert into mention_groups (id, round_id, normalized_text, sample_text,
                                         frequency_count, status)
-            select gen_random_uuid(), :studio, v.normalized_text, min(v.original_text),
+            select gen_random_uuid(), :round, v.normalized_text, min(v.original_text),
                    count(*), 'pending_review'
             from verbatims v
-            where v.studio_id = :studio and v.normalized_text <> ''
+            where v.round_id = :round and v.normalized_text <> ''
             group by v.normalized_text
-            on conflict (studio_id, normalized_text)
+            on conflict (round_id, normalized_text)
             do update set frequency_count = excluded.frequency_count
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     )
 
     db.execute(
@@ -242,16 +242,16 @@ def build_mention_groups(db: Session, studio_id: uuid.UUID) -> int:
             update verbatims v
             set mention_group_id = g.id
             from mention_groups g
-            where g.studio_id = :studio
-              and v.studio_id = :studio
+            where g.round_id = :round
+              and v.round_id = :round
               and v.normalized_text = g.normalized_text
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     )
 
     return db.execute(
-        text("select count(*) from mention_groups where studio_id = :studio"),
-        {"studio": studio_id},
+        text("select count(*) from mention_groups where round_id = :round"),
+        {"round": round_id},
     ).scalar()
 
 
@@ -259,15 +259,15 @@ def build_mention_groups(db: Session, studio_id: uuid.UUID) -> int:
 # Centro de Resolución (Fase 4)
 # =====================================================================
 
-def _current_codebook_id(db: Session, studio_id: uuid.UUID) -> uuid.UUID | None:
+def _current_codebook_id(db: Session, round_id: uuid.UUID) -> uuid.UUID | None:
     return db.execute(
-        text("select id from codebooks where studio_id = :studio order by version desc limit 1"),
-        {"studio": studio_id},
+        text("select id from codebooks where round_id = :round order by version desc limit 1"),
+        {"round": round_id},
     ).scalar()
 
 
 def get_resolution_queue(
-    db: Session, studio_id: uuid.UUID, statuses: list[str], limit: int, offset: int
+    db: Session, round_id: uuid.UUID, statuses: list[str], limit: int, offset: int
 ) -> tuple[list[dict], int]:
     """Grupos pendientes ordenados por frecuencia (impacto). `statuses` filtra mention_groups.status."""
     rows = db.execute(
@@ -277,19 +277,19 @@ def get_resolution_queue(
                    c.label as suggested_code_label
             from mention_groups g
             left join codes c on c.id = g.suggested_code_id
-            where g.studio_id = :studio and g.status = any(:statuses)
+            where g.round_id = :round and g.status = any(:statuses)
             order by g.frequency_count desc, g.normalized_text
             limit :lim offset :off
         """),
-        {"studio": studio_id, "statuses": statuses, "lim": limit, "off": offset},
+        {"round": round_id, "statuses": statuses, "lim": limit, "off": offset},
     ).mappings().all()
 
     total = db.execute(
         text("""
             select count(*) from mention_groups
-            where studio_id = :studio and status = any(:statuses)
+            where round_id = :round and status = any(:statuses)
         """),
-        {"studio": studio_id, "statuses": statuses},
+        {"round": round_id, "statuses": statuses},
     ).scalar()
 
     items = [
@@ -314,10 +314,10 @@ def get_resolution_queue(
     return items, total
 
 
-def get_resolution_summary(db: Session, studio_id: uuid.UUID) -> dict:
+def get_resolution_summary(db: Session, round_id: uuid.UUID) -> dict:
     counts = db.execute(
-        text("select status, count(*) as n from mention_groups where studio_id = :studio group by status"),
-        {"studio": studio_id},
+        text("select status, count(*) as n from mention_groups where round_id = :round group by status"),
+        {"round": round_id},
     ).mappings().all()
     by_status = {r["status"]: r["n"] for r in counts}
     pending = by_status.get("anomaly", 0) + by_status.get("below_threshold", 0) + by_status.get("pending_review", 0)
@@ -336,7 +336,7 @@ def get_resolution_summary(db: Session, studio_id: uuid.UUID) -> dict:
 def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) -> dict | None:
     group = db.execute(
         text("""
-            select g.id, g.studio_id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
+            select g.id, g.round_id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
                    c.id as suggested_code_id, c.code_number as suggested_code_number,
                    c.label as suggested_code_label
             from mention_groups g
@@ -365,7 +365,7 @@ def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) ->
 
     return {
         "id": str(group["id"]),
-        "studio_id": str(group["studio_id"]),
+        "round_id": str(group["round_id"]),
         "normalized_text": group["normalized_text"],
         "sample_text": group["sample_text"],
         "frequency_count": group["frequency_count"],
@@ -384,8 +384,8 @@ def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) ->
     }
 
 
-def list_studio_codes(db: Session, studio_id: uuid.UUID, include_system: bool = False) -> list[dict]:
-    cb_id = _current_codebook_id(db, studio_id)
+def list_round_codes(db: Session, round_id: uuid.UUID, include_system: bool = False) -> list[dict]:
+    cb_id = _current_codebook_id(db, round_id)
     if not cb_id:
         return []
     rows = db.execute(
@@ -536,7 +536,7 @@ def add_alias_from_group(db: Session, codebook_id: uuid.UUID, code_id: uuid.UUID
 def _serialize_audit_session(row) -> dict:
     return {
         "id": str(row["id"]),
-        "studio_id": str(row["studio_id"]),
+        "round_id": str(row["round_id"]),
         "processing_run_id": str(row["processing_run_id"]) if row["processing_run_id"] else None,
         "target_percentage": float(row["target_percentage"]),
         "total_items": row["total_items"],
@@ -549,31 +549,31 @@ def _serialize_audit_session(row) -> dict:
     }
 
 
-def get_audit_session(db: Session, studio_id: uuid.UUID) -> dict | None:
-    """Última sesión de auditoría del estudio (puede haber más de una tras un reproceso)."""
+def get_audit_session(db: Session, round_id: uuid.UUID) -> dict | None:
+    """Última sesión de auditoría de la ronda (puede haber más de una tras un reproceso)."""
     row = db.execute(
         text("""
-            select id, studio_id, processing_run_id, target_percentage, total_items,
+            select id, round_id, processing_run_id, target_percentage, total_items,
                    reviewed_items, target_met, status, approved_by, approved_at, created_at
             from audit_sessions
-            where studio_id = :studio
+            where round_id = :round
             order by created_at desc
             limit 1
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).mappings().first()
     return _serialize_audit_session(row) if row else None
 
 
-def get_latest_processing_run(db: Session, studio_id: uuid.UUID) -> dict | None:
+def get_latest_processing_run(db: Session, round_id: uuid.UUID) -> dict | None:
     row = db.execute(
         text("""
             select id, random_seed from processing_runs
-            where studio_id = :studio
+            where round_id = :round
             order by created_at desc
             limit 1
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).mappings().first()
     return {"id": str(row["id"]), "random_seed": row["random_seed"]} if row else None
 
@@ -585,20 +585,16 @@ def set_run_random_seed(db: Session, run_id: uuid.UUID, seed: int) -> None:
     )
 
 
-def get_round_audit_percentage(db: Session, studio_id: uuid.UUID) -> float | None:
-    """El % de auditoría vive en la ronda (migración 003), no en el estudio."""
+def get_round_audit_percentage(db: Session, round_id: uuid.UUID) -> float | None:
+    """El % de auditoría vive directo en la ronda."""
     pct = db.execute(
-        text("""
-            select r.audit_percentage from rounds r
-            join studio s on s.round_id = r.id
-            where s.id = :studio
-        """),
-        {"studio": studio_id},
+        text("select audit_percentage from rounds where id = :round"),
+        {"round": round_id},
     ).scalar()
     return float(pct) if pct is not None else None
 
 
-def get_coded_population(db: Session, studio_id: uuid.UUID) -> list[dict]:
+def get_coded_population(db: Session, round_id: uuid.UUID) -> list[dict]:
     """La población auditable: un registro por verbatim con ≥1 código activo
     (lo que irá al Excel), con la foto de sus códigos ordenados por output_index."""
     rows = db.execute(
@@ -613,17 +609,17 @@ def get_coded_population(db: Session, studio_id: uuid.UUID) -> list[dict]:
             from verbatims v
             join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             join codes c on c.id = vc.code_id
-            where v.studio_id = :studio
+            where v.round_id = :round
             group by v.id
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).mappings().all()
     return [{"verbatim_id": str(r["verbatim_id"]), "codes": r["codes"]} for r in rows]
 
 
 def create_audit_session(
     db: Session,
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     processing_run_id: str | None,
     target_percentage: float,
     total_items: int,
@@ -631,13 +627,13 @@ def create_audit_session(
     session_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into audit_sessions (id, studio_id, processing_run_id, target_percentage,
+            insert into audit_sessions (id, round_id, processing_run_id, target_percentage,
                                         total_items, reviewed_items, target_met, status)
-            values (:id, :studio, :run, :pct, :total, 0, :met, 'in_progress')
+            values (:id, :round, :run, :pct, :total, 0, :met, 'in_progress')
         """),
         # target_met arranca en true solo si la muestra es vacía (pct 0 o nada
         # codificado): la auditoría queda trivialmente satisfecha y se puede aprobar.
-        {"id": session_id, "studio": studio_id, "run": processing_run_id,
+        {"id": session_id, "round": round_id, "run": processing_run_id,
          "pct": target_percentage, "total": total_items, "met": total_items == 0},
     )
     return str(session_id)
@@ -668,10 +664,10 @@ def create_audit_item(db: Session, review_id: str, verbatim_id: str, codes_snaps
     return str(item_id)
 
 
-def get_audit_summary(db: Session, studio_id: uuid.UUID) -> dict | None:
+def get_audit_summary(db: Session, round_id: uuid.UUID) -> dict | None:
     """Resumen de la última sesión: progreso, contadores por estado de item y si la
     sesión quedó desactualizada por un reproceso posterior del motor."""
-    session = get_audit_session(db, studio_id)
+    session = get_audit_session(db, round_id)
     if not session:
         return None
 
@@ -687,7 +683,7 @@ def get_audit_summary(db: Session, studio_id: uuid.UUID) -> dict | None:
     ).mappings().all()
     by_status = {r["status"]: r["n"] for r in counts}
 
-    latest_run = get_latest_processing_run(db, studio_id)
+    latest_run = get_latest_processing_run(db, round_id)
     total = session["total_items"]
     reviewed = session["reviewed_items"]
     return {
@@ -789,13 +785,13 @@ def list_audit_items(db: Session, review_id: uuid.UUID, limit: int, offset: int)
 
 
 def get_audit_item(db: Session, item_id: uuid.UUID) -> dict | None:
-    """Item + contexto de su review/sesión/estudio (lo que las mutaciones necesitan validar)."""
+    """Item + contexto de su review/sesión/ronda (lo que las mutaciones necesitan validar)."""
     row = db.execute(
         text("""
             select i.id, i.status, i.comment, i.verbatim_id, i.codes_snapshot,
                    r.id as review_id, r.corrections_count,
                    s.id as session_id, s.status as session_status,
-                   s.total_items, s.reviewed_items, s.studio_id
+                   s.total_items, s.reviewed_items, s.round_id
             from audit_items i
             join audit_code_reviews r on r.id = i.audit_code_review_id
             join audit_sessions s on s.id = r.audit_session_id
@@ -817,7 +813,7 @@ def get_audit_item(db: Session, item_id: uuid.UUID) -> dict | None:
         "session_status": row["session_status"],
         "total_items": row["total_items"],
         "reviewed_items": row["reviewed_items"],
-        "studio_id": str(row["studio_id"]),
+        "round_id": str(row["round_id"]),
     }
 
 
@@ -826,7 +822,7 @@ def get_audit_code_review(db: Session, review_id: uuid.UUID) -> dict | None:
     row = db.execute(
         text("""
             select r.id, r.status, r.items_count, r.corrections_count,
-                   s.id as session_id, s.status as session_status, s.studio_id,
+                   s.id as session_id, s.status as session_status, s.round_id,
                    (select count(*) from audit_items i
                      where i.audit_code_review_id = r.id and i.status = 'pending') as pending_items
             from audit_code_reviews r
@@ -845,7 +841,7 @@ def get_audit_code_review(db: Session, review_id: uuid.UUID) -> dict | None:
         "pending_items": row["pending_items"],
         "session_id": str(row["session_id"]),
         "session_status": row["session_status"],
-        "studio_id": str(row["studio_id"]),
+        "round_id": str(row["round_id"]),
     }
 
 
@@ -977,17 +973,17 @@ def finalize_audit_session(db: Session, session_id: str, user_id) -> None:
     )
 
 
-def set_studio_status(db: Session, studio_id: uuid.UUID, status: str) -> None:
+def set_round_status(db: Session, round_id: uuid.UUID, status: str) -> None:
     db.execute(
-        text("update studio set status = :st, updated_at = now() where id = :id"),
-        {"st": status, "id": studio_id},
+        text("update rounds set status = :st, updated_at = now() where id = :id"),
+        {"st": status, "id": round_id},
     )
 
 
 def log_action(
     db: Session,
     user_id,
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     entity_name: str,
     entity_id: uuid.UUID,
     action: str,
@@ -996,14 +992,14 @@ def log_action(
 ) -> None:
     db.execute(
         text("""
-            insert into audit_logs (id, user_id, studio_id, entity_name, entity_id, action, old_value, new_value)
-            values (:id, :u, :studio, :entity, :eid, :action,
+            insert into audit_logs (id, user_id, round_id, entity_name, entity_id, action, old_value, new_value)
+            values (:id, :u, :round, :entity, :eid, :action,
                     cast(:old as jsonb), cast(:new as jsonb))
         """),
         {
             "id": uuid.uuid4(),
             "u": user_id,
-            "studio": studio_id,
+            "round": round_id,
             "entity": entity_name,
             "eid": entity_id,
             "action": action,
@@ -1017,21 +1013,21 @@ def log_action(
 # Reporte final + export Libro de Códigos (Fase 5)
 # =====================================================================
 
-def get_studio_report(db: Session, studio_id: uuid.UUID) -> dict:
+def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
     """Métricas del reporte: totales, % auto/manual (coding_status) y frecuencia por código."""
     total = db.execute(
-        text("select count(*) from verbatims where studio_id = :studio"),
-        {"studio": studio_id},
+        text("select count(*) from verbatims where round_id = :round"),
+        {"round": round_id},
     ).scalar() or 0
 
     status_rows = db.execute(
         text("""
             select coding_status, count(*) as n
             from verbatims
-            where studio_id = :studio
+            where round_id = :round
             group by coding_status
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).mappings().all()
     by_status = {r["coding_status"]: r["n"] for r in status_rows}
     auto = by_status.get("auto_coded", 0)
@@ -1040,11 +1036,11 @@ def get_studio_report(db: Session, studio_id: uuid.UUID) -> dict:
     processed_at = db.execute(
         text("""
             select finished_at from processing_runs
-            where studio_id = :studio and status = 'completed'
+            where round_id = :round and status = 'completed'
             order by finished_at desc nulls last
             limit 1
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).scalar()
 
     code_rows = db.execute(
@@ -1057,11 +1053,11 @@ def get_studio_report(db: Session, studio_id: uuid.UUID) -> dict:
             left join nets n on n.id = nc.net_id
             left join verbatim_codes vc on vc.code_id = c.id and vc.is_active
             left join verbatims v on v.id = vc.verbatim_id
-            where cb.studio_id = :studio and c.is_active and not c.is_system
+            where cb.round_id = :round and c.is_active and not c.is_system
             group by c.id, c.code_number, c.label, n.name
             order by frequency desc, c.code_number
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).mappings().all()
 
     codes = []
@@ -1099,25 +1095,26 @@ def get_studio_report(db: Session, studio_id: uuid.UUID) -> dict:
     }
 
 
-def get_codebook_export_data(db: Session, studio_id: uuid.UUID) -> dict:
+def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
     """Datos para armar el Excel del Libro de Códigos (LC + Verbatims)."""
-    studio_row = db.execute(
+    round_row = db.execute(
         text("""
-            select s.*, r.round_number, p.external_code as project_external_code
-            from studio s
-            join rounds r on r.id = s.round_id
-            join projects p on p.id = r.project_id
-            where s.id = :id
+            select r.*, st.coding_type, st.survey_question, st.name as study_name,
+                   p.external_code as project_external_code
+            from rounds r
+            join studio st on st.id = r.studio_id
+            join projects p on p.id = st.project_id
+            where r.id = :id
         """),
-        {"id": studio_id},
+        {"id": round_id},
     ).mappings().first()
-    if not studio_row:
+    if not round_row:
         return {}
 
-    cb_id = _current_codebook_id(db, studio_id)
+    cb_id = _current_codebook_id(db, round_id)
     total_verbatims = db.execute(
-        text("select count(*) from verbatims where studio_id = :studio"),
-        {"studio": studio_id},
+        text("select count(*) from verbatims where round_id = :round"),
+        {"round": round_id},
     ).scalar() or 0
 
     freq_rows = db.execute(
@@ -1127,10 +1124,10 @@ def get_codebook_export_data(db: Session, studio_id: uuid.UUID) -> dict:
             join codebooks cb on cb.id = c.codebook_id
             left join verbatim_codes vc on vc.code_id = c.id and vc.is_active
             left join verbatims v on v.id = vc.verbatim_id
-            where cb.studio_id = :studio and c.is_active
+            where cb.round_id = :round and c.is_active
             group by c.id
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).mappings().all()
     freq_by_id = {r["id"]: r["frequency"] for r in freq_rows}
 
@@ -1189,7 +1186,7 @@ def get_codebook_export_data(db: Session, studio_id: uuid.UUID) -> dict:
     def _by_frequency_desc(c: dict):
         return (-c["frequency"], c["code_number"])
 
-    fallback_net = f"NETO {studio_row['name'].upper()}"
+    fallback_net = f"NETO {round_row['study_name'].upper()}"
     if net_rows:
         nets = []
         for net in net_rows:
@@ -1228,11 +1225,11 @@ def get_codebook_export_data(db: Session, studio_id: uuid.UUID) -> dict:
             from verbatims v
             left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             left join codes c on c.id = vc.code_id
-            where v.studio_id = :studio
+            where v.round_id = :round
             group by v.id, v.respondent_external_id, v.question_key, v.original_text
             order by v.created_at
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).mappings().all()
 
     max_output = db.execute(
@@ -1240,9 +1237,9 @@ def get_codebook_export_data(db: Session, studio_id: uuid.UUID) -> dict:
             select coalesce(max(vc.output_index), 0)
             from verbatim_codes vc
             join verbatims v on v.id = vc.verbatim_id
-            where v.studio_id = :studio and vc.is_active
+            where v.round_id = :round and vc.is_active
         """),
-        {"studio": studio_id},
+        {"round": round_id},
     ).scalar() or 0
 
     verbatims = []
@@ -1258,11 +1255,11 @@ def get_codebook_export_data(db: Session, studio_id: uuid.UUID) -> dict:
         })
 
     return {
-        "project_external_code": studio_row["project_external_code"],
-        "round_number": studio_row["round_number"],
-        "survey_question": studio_row["survey_question"],
-        "coding_type": studio_row["coding_type"],
-        "studio_name": studio_row["name"],
+        "project_external_code": round_row["project_external_code"],
+        "round_number": round_row["round_number"],
+        "survey_question": round_row["survey_question"],
+        "coding_type": round_row["coding_type"],
+        "study_name": round_row["study_name"],
         "total_verbatims": total_verbatims,
         "nets": nets,
         "verbatims": verbatims,

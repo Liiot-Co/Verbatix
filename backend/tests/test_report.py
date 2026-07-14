@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from openpyxl import load_workbook
 
 from app.pipeline.export import build_codebook_excel, build_export_zip
-from app.repositories import get_studio_report
+from app.repositories import get_round_report
 
-STUDIO_ID = uuid.uuid4()
+ROUND_ID = uuid.uuid4()
 CODE_A = uuid.uuid4()
 CODE_B = uuid.uuid4()
 
@@ -35,7 +35,7 @@ class FakeResult:
 
 
 class FakeSession:
-    """Responde las queries de get_studio_report con datos controlados."""
+    """Responde las queries de get_round_report con datos controlados."""
 
     def __init__(self):
         self.total = 100
@@ -68,7 +68,7 @@ class FakeSession:
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
-        if "count(*) from verbatims where studio_id" in sql and "group by" not in sql:
+        if "count(*) from verbatims where round_id" in sql and "group by" not in sql:
             return FakeResult(scalar=self.total)
         if "group by coding_status" in sql:
             return FakeResult(mappings_list=self.status_rows)
@@ -82,8 +82,8 @@ class FakeSession:
         return FakeResult()
 
 
-def test_get_studio_report_auto_manual_pct():
-    report = get_studio_report(FakeSession(), STUDIO_ID)
+def test_get_round_report_auto_manual_pct():
+    report = get_round_report(FakeSession(), ROUND_ID)
 
     assert report["verbatims_total"] == 100
     assert report["auto_coded"] == 70
@@ -104,7 +104,7 @@ def test_build_codebook_excel_valid_without_nets():
         "round_number": 1,
         "survey_question": "¿Qué marca de queso consume?",
         "coding_type": "brands",
-        "studio_name": "Marcas",
+        "study_name": "Marcas",
         "total_verbatims": 4,
         "max_output_index": 2,
         "nets": [{
@@ -180,7 +180,7 @@ def test_code_entry_content_filters_null_aliases():
         "round_number": 1,
         "survey_question": "¿Qué marca de queso consume?",
         "coding_type": "brands",
-        "studio_name": "Marcas",
+        "study_name": "Marcas",
         "total_verbatims": 2,
         "max_output_index": 1,
         "nets": [{

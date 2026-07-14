@@ -45,58 +45,62 @@ class Project(Base):
 
     # Relationships
     creator = relationship("Profile", back_populates="projects")
-    rounds = relationship("Round", back_populates="project", cascade="all, delete-orphan")
+    studios = relationship("Studio", back_populates="project", cascade="all, delete-orphan")
+
+
+class Studio(Base):
+    """El Estudio (Marcas / Razones): entidad persistente dentro de un proyecto,
+    fija a través de las rondas. Cada Ronda es una ola de datos independiente."""
+
+    __tablename__ = "studio"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String, nullable=False)  # 'Marcas' | 'Razones'
+    coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
+    survey_question = Column(Text, nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    project = relationship("Project", back_populates="studios")
+    rounds = relationship("Round", back_populates="studio", cascade="all, delete-orphan")
+
+    __table_args__ = (UniqueConstraint("project_id", "name", name="studio_project_id_name_key"),)
 
 
 class Round(Base):
     __tablename__ = "rounds"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
     round_number = Column(Integer, nullable=False)
-    status = Column(String, nullable=False, default="draft")
+    status = Column(String, nullable=False, default="created")
     min_mentions_threshold = Column(Integer, nullable=False, default=3)
     audit_percentage = Column(Numeric(5, 2), nullable=False, default=10.00)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
-    # Relationships
-    project = relationship("Project", back_populates="rounds")
-    creator = relationship("Profile", back_populates="rounds")
-    studios = relationship("Studio", back_populates="round", cascade="all, delete-orphan")
-
-    __table_args__ = (UniqueConstraint("project_id", "round_number", name="rounds_project_id_round_number_key"),)
-
-
-class Studio(Base):
-    __tablename__ = "studio"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
-    name = Column(String, nullable=False)
-    coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
-    survey_question = Column(Text, nullable=True)
     origin_mode = Column(String, nullable=False, default="from_scratch")  # 'from_scratch' | 'homologated'
-    source_studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id"), nullable=True)
-    status = Column(String, nullable=False, default="created")
+    source_round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    round = relationship("Round", back_populates="studios")
-    imported_files = relationship("ImportedFile", back_populates="studio", cascade="all, delete-orphan")
-    verbatims = relationship("Verbatim", back_populates="studio", cascade="all, delete-orphan")
-    mention_groups = relationship("MentionGroup", back_populates="studio", cascade="all, delete-orphan")
+    studio = relationship("Studio", back_populates="rounds")
+    creator = relationship("Profile", back_populates="rounds")
+    imported_files = relationship("ImportedFile", back_populates="round", cascade="all, delete-orphan")
+    verbatims = relationship("Verbatim", back_populates="round", cascade="all, delete-orphan")
+    mention_groups = relationship("MentionGroup", back_populates="round", cascade="all, delete-orphan")
 
-    __table_args__ = (UniqueConstraint("round_id", "name", name="studio_round_id_name_key"),)
+    __table_args__ = (UniqueConstraint("studio_id", "round_number", name="rounds_studio_id_round_number_key"),)
 
 
 class ImportedFile(Base):
     __tablename__ = "imported_files"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id", ondelete="CASCADE"), nullable=False)
+    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
     file_type = Column(String, nullable=False)  # 'verbatims_xlsx' | 'codebook_xlsx' | 'combined_xlsx'
     sheet_name = Column(String, nullable=True)
     original_filename = Column(String, nullable=False)
@@ -109,7 +113,7 @@ class ImportedFile(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
-    studio = relationship("Studio", back_populates="imported_files")
+    round = relationship("Round", back_populates="imported_files")
     verbatims = relationship("Verbatim", back_populates="imported_file")
 
 
@@ -117,7 +121,7 @@ class Codebook(Base):
     __tablename__ = "codebooks"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id", ondelete="CASCADE"), nullable=False)
+    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
     version = Column(Integer, nullable=False, default=1)
     parent_codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id"), nullable=True)
     imported_from_file_id = Column(UUID(as_uuid=True), ForeignKey("imported_files.id"), nullable=True)
@@ -126,7 +130,7 @@ class Codebook(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
-    __table_args__ = (UniqueConstraint("studio_id", "version", name="codebooks_studio_id_version_key"),)
+    __table_args__ = (UniqueConstraint("round_id", "version", name="codebooks_round_id_version_key"),)
 
 
 class Code(Base):
@@ -193,7 +197,7 @@ class ProcessingRun(Base):
     __tablename__ = "processing_runs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id", ondelete="CASCADE"), nullable=False)
+    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
     run_type = Column(String, nullable=False)  # 'initial' | 'homologation' | 'reprocess'
     algorithm = Column(String, nullable=True)
     min_mentions_threshold = Column(Integer, nullable=True)
@@ -217,7 +221,7 @@ class MentionGroup(Base):
     __tablename__ = "mention_groups"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id", ondelete="CASCADE"), nullable=False)
+    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
     normalized_text = Column(String, nullable=False)
     sample_text = Column(String, nullable=True)
     frequency_count = Column(Integer, nullable=False, default=0)
@@ -229,17 +233,17 @@ class MentionGroup(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
-    studio = relationship("Studio", back_populates="mention_groups")
+    round = relationship("Round", back_populates="mention_groups")
     verbatims = relationship("Verbatim", back_populates="mention_group")
 
-    __table_args__ = (UniqueConstraint("studio_id", "normalized_text", name="mention_groups_studio_id_normalized_text_key"),)
+    __table_args__ = (UniqueConstraint("round_id", "normalized_text", name="mention_groups_round_id_normalized_text_key"),)
 
 
 class Verbatim(Base):
     __tablename__ = "verbatims"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id", ondelete="CASCADE"), nullable=False)
+    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
     mention_group_id = Column(UUID(as_uuid=True), ForeignKey("mention_groups.id"), nullable=True)
     imported_file_id = Column(UUID(as_uuid=True), ForeignKey("imported_files.id"), nullable=True)
     respondent_external_id = Column(String, nullable=False)
@@ -251,13 +255,13 @@ class Verbatim(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
-    studio = relationship("Studio", back_populates="verbatims")
+    round = relationship("Round", back_populates="verbatims")
     mention_group = relationship("MentionGroup", back_populates="verbatims")
     imported_file = relationship("ImportedFile", back_populates="verbatims")
     codes = relationship("VerbatimCode", back_populates="verbatim", cascade="all, delete-orphan")
 
     __table_args__ = (
-        UniqueConstraint("studio_id", "respondent_external_id", "question_key", name="verbatims_studio_id_respondent_external_id_question_key_key"),
+        UniqueConstraint("round_id", "respondent_external_id", "question_key", name="verbatims_round_id_respondent_external_id_question_key_key"),
     )
 
 

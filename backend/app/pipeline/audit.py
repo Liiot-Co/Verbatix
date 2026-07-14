@@ -1,4 +1,4 @@
-"""Fase 5 — Auditoría. Orquesta la auditoría de un estudio en transacciones:
+"""Fase 5 — Auditoría. Orquesta la auditoría de una ronda en transacciones:
 materializa una muestra global reproducible de lo codificado, registra las
 revisiones del analista (correcto / reasignar / eliminar) y aprueba el cierre.
 
@@ -38,7 +38,7 @@ from app.repositories import (
     refresh_audit_session_progress,
     set_code_review_result,
     set_run_random_seed,
-    set_studio_status,
+    set_round_status,
     set_verbatim_coding_status,
     update_audit_item_review,
 )
@@ -71,8 +71,8 @@ def select_sample(population: list[dict], pct: float, seed: int) -> list[dict]:
     return sorted(population, key=sample_key)[:n]
 
 
-def start_audit_session(db: Session, studio_id: uuid.UUID, *, user_id, resample: bool = False) -> dict:
-    """Crea o reanuda (idempotente) la sesión de auditoría del estudio.
+def start_audit_session(db: Session, round_id: uuid.UUID, *, user_id, resample: bool = False) -> dict:
+    """Crea o reanuda (idempotente) la sesión de auditoría de la ronda.
 
     Reabrir no re-muestrea ni pierde progreso. Con resample=True y una sesión
     desactualizada (hubo un run del motor posterior al muestreo) se crea una
@@ -80,39 +80,39 @@ def start_audit_session(db: Session, studio_id: uuid.UUID, *, user_id, resample:
     se borra en silencio.
     """
     exists = db.execute(
-        text("select 1 from studio where id = :id"), {"id": studio_id}
+        text("select 1 from rounds where id = :id"), {"id": round_id}
     ).scalar()
     if not exists:
-        raise LookupError("Estudio no existe")
+        raise LookupError("Ronda no existe")
 
-    existing = get_audit_summary(db, studio_id)
+    existing = get_audit_summary(db, round_id)
     if existing and not (resample and existing["is_stale"] and existing["status"] != "approved"):
         return existing
 
-    summary = get_resolution_summary(db, studio_id)
+    summary = get_resolution_summary(db, round_id)
     if not summary["can_close"]:
         raise AuditPrecondition(
             f"Hay {summary['pending']} grupos sin resolver en el Centro de Resolución"
         )
 
-    pct = get_round_audit_percentage(db, studio_id)
+    pct = get_round_audit_percentage(db, round_id)
     if pct is None:
-        raise LookupError("El estudio no tiene ronda con % de auditoría")
+        raise LookupError("La ronda no tiene % de auditoría configurado")
 
     # Semilla reproducible: la del último run; si el motor no la persistió, se
     # genera una acá y se guarda para que re-muestrear dé siempre lo mismo.
-    run = get_latest_processing_run(db, studio_id)
+    run = get_latest_processing_run(db, round_id)
     seed = run["random_seed"] if run else None
     if seed is None:
         seed = random.randint(1, 2**31 - 1)
         if run:
             set_run_random_seed(db, uuid.UUID(run["id"]), seed)
 
-    population = get_coded_population(db, studio_id)
+    population = get_coded_population(db, round_id)
     sample = select_sample(population, pct, seed)
 
     session_id = create_audit_session(
-        db, studio_id, run["id"] if run else None, pct, len(sample)
+        db, round_id, run["id"] if run else None, pct, len(sample)
     )
 
     # La muestra es global; los audit_code_reviews son la capa de agrupación para
@@ -129,9 +129,9 @@ def start_audit_session(db: Session, studio_id: uuid.UUID, *, user_id, resample:
         for item in items:
             create_audit_item(db, review_id, item["verbatim_id"], item["codes"])
 
-    set_studio_status(db, studio_id, "audit_pending")
+    set_round_status(db, round_id, "audit_pending")
     log_action(
-        db, user_id, studio_id, "audit_session", uuid.UUID(session_id), "audit:start",
+        db, user_id, round_id, "audit_session", uuid.UUID(session_id), "audit:start",
         new_value={
             "target_percentage": pct, "total_items": len(sample),
             "population": len(population), "random_seed": seed,
@@ -139,7 +139,7 @@ def start_audit_session(db: Session, studio_id: uuid.UUID, *, user_id, resample:
         },
     )
     db.commit()
-    return get_audit_summary(db, studio_id)
+    return get_audit_summary(db, round_id)
 
 
 def review_item(
@@ -177,9 +177,9 @@ def review_item(
         code_ids = [uuid.UUID(c) for c in (decision.get("code_ids") or [])]
         new_code = decision.get("new_code")
         if new_code:
-            cb_id = _current_codebook_id(db, uuid.UUID(item["studio_id"]))
+            cb_id = _current_codebook_id(db, uuid.UUID(item["round_id"]))
             if not cb_id:
-                raise LookupError("Estudio no tiene codebook")
+                raise LookupError("Ronda no tiene codebook")
             new_code_result = create_code(db, cb_id, new_code["label"], new_code.get("net_id"), user_id)
             code_ids.append(uuid.UUID(new_code_result["id"]))
         if not code_ids:
@@ -209,7 +209,7 @@ def review_item(
 
     progress = refresh_audit_session_progress(db, item["session_id"])
     log_action(
-        db, user_id, uuid.UUID(item["studio_id"]), "audit_item", item_id, f"audit:{action}",
+        db, user_id, uuid.UUID(item["round_id"]), "audit_item", item_id, f"audit:{action}",
         old_value={"status": item["status"], "codes_snapshot": item["codes_snapshot"]},
         new_value={
             "status": new_status,
@@ -225,7 +225,7 @@ def review_item(
         "status": new_status,
         "already_reviewed": False,
         "new_code": new_code_result,
-        "summary": {**get_audit_summary(db, item["studio_id"]), **progress},
+        "summary": {**get_audit_summary(db, item["round_id"]), **progress},
     }
 
 
@@ -246,7 +246,7 @@ def update_item(
 
     update_audit_item_review(db, item_id, item["status"], comment, user_id)
     log_action(
-        db, user_id, uuid.UUID(item["studio_id"]), "audit_item", item_id, "audit:edit",
+        db, user_id, uuid.UUID(item["round_id"]), "audit_item", item_id, "audit:edit",
         old_value={"comment": item["comment"]},
         new_value={"comment": comment},
     )
@@ -269,14 +269,14 @@ def approve_code_review(db: Session, review_id: uuid.UUID, *, user_id) -> dict:
         return {
             "review_id": review["id"], "status": review["status"],
             "items_marked": 0, "already_approved": True,
-            "summary": get_audit_summary(db, review["studio_id"]),
+            "summary": get_audit_summary(db, review["round_id"]),
         }
 
     marked = mark_review_items_correct(db, review_id, user_id)
     status = set_code_review_result(db, review_id, user_id)
     progress = refresh_audit_session_progress(db, review["session_id"])
     log_action(
-        db, user_id, uuid.UUID(review["studio_id"]), "audit_code_review", review_id,
+        db, user_id, uuid.UUID(review["round_id"]), "audit_code_review", review_id,
         "audit:approve_section",
         old_value={"status": review["status"], "pending_items": review["pending_items"]},
         new_value={"status": status, "items_marked": marked},
@@ -288,18 +288,18 @@ def approve_code_review(db: Session, review_id: uuid.UUID, *, user_id) -> dict:
         "status": status,
         "items_marked": marked,
         "already_approved": False,
-        "summary": {**get_audit_summary(db, review["studio_id"]), **progress},
+        "summary": {**get_audit_summary(db, review["round_id"]), **progress},
     }
 
 
-def approve_session(db: Session, studio_id: uuid.UUID, *, user_id) -> dict:
-    """Cierra la auditoría: exige target_met (o muestra vacía) y deja el estudio
+def approve_session(db: Session, round_id: uuid.UUID, *, user_id) -> dict:
+    """Cierra la auditoría: exige target_met (o muestra vacía) y deja la ronda
     en 'audit_approved' — el estado que el dashboard futuro leerá como "Auditado"."""
-    session = get_audit_session(db, studio_id)
+    session = get_audit_session(db, round_id)
     if not session:
-        raise LookupError("El estudio no tiene sesión de auditoría")
+        raise LookupError("La ronda no tiene sesión de auditoría")
     if session["status"] == "approved":
-        return {**get_audit_summary(db, studio_id), "already_approved": True}
+        return {**get_audit_summary(db, round_id), "already_approved": True}
 
     if session["reviewed_items"] < session["total_items"]:
         raise AuditPrecondition(
@@ -308,12 +308,12 @@ def approve_session(db: Session, studio_id: uuid.UUID, *, user_id) -> dict:
         )
 
     finalize_audit_session(db, session["id"], user_id)
-    set_studio_status(db, studio_id, "audit_approved")
+    set_round_status(db, round_id, "audit_approved")
     log_action(
-        db, user_id, studio_id, "audit_session", uuid.UUID(session["id"]), "audit:approve",
+        db, user_id, round_id, "audit_session", uuid.UUID(session["id"]), "audit:approve",
         old_value={"status": session["status"]},
         new_value={"status": "approved", "reviewed_items": session["reviewed_items"],
                    "total_items": session["total_items"]},
     )
     db.commit()
-    return {**get_audit_summary(db, studio_id), "already_approved": False}
+    return {**get_audit_summary(db, round_id), "already_approved": False}

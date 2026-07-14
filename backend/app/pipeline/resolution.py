@@ -16,7 +16,7 @@ from app.repositories import (
     create_code,
     deactivate_group_codes,
     get_group_detail,
-    list_studio_codes,
+    list_round_codes,
     log_action,
     mark_group_resolved,
 )
@@ -32,7 +32,7 @@ class BelowThresholdError(Exception):
 
 def resolve_group(
     db: Session,
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     group_id: uuid.UUID,
     decision: dict,
     *,
@@ -40,7 +40,7 @@ def resolve_group(
     expected_status: str | None = None,
 ) -> dict:
     group = get_group_detail(db, group_id)
-    if not group or group["studio_id"] != str(studio_id):
+    if not group or group["round_id"] != str(round_id):
         raise LookupError("Grupo no encontrado")
 
     if group["status"] == "resolved":
@@ -55,15 +55,11 @@ def resolve_group(
             f"El grupo cambió de estado ('{group['status']}') mientras se resolvía"
         )
 
-    studio_threshold = db.execute(
-        text("""
-            select r.min_mentions_threshold from rounds r
-            join studio s on s.round_id = r.id
-            where s.id = :id
-        """),
-        {"id": studio_id},
+    round_threshold = db.execute(
+        text("select min_mentions_threshold from rounds where id = :id"),
+        {"id": round_id},
     ).scalar()
-    cb_id = _current_codebook_id(db, studio_id)
+    cb_id = _current_codebook_id(db, round_id)
 
     action = decision.get("action")
     new_code_result = None
@@ -98,18 +94,18 @@ def resolve_group(
     auto_resolved = []
     if action == "approve" and decision.get("add_alias") and not is_system_target and code_ids:
         add_alias_from_group(db, cb_id, code_ids[0], group)
-        auto_resolved = _auto_resolve_similar_pending_groups(db, studio_id, code_ids[0], group, user_id)
+        auto_resolved = _auto_resolve_similar_pending_groups(db, round_id, code_ids[0], group, user_id)
 
     mark_group_resolved(db, group_id, user_id)
 
     log_action(
-        db, user_id, studio_id, "mention_group", group_id, f"resolve:{action}",
+        db, user_id, round_id, "mention_group", group_id, f"resolve:{action}",
         old_value={"status": group["status"]},
         new_value={"status": "resolved", "code_ids": [str(c) for c in code_ids]},
     )
     db.commit()
 
-    codes_by_id = {c["id"]: c for c in list_studio_codes(db, studio_id, include_system=True)}
+    codes_by_id = {c["id"]: c for c in list_round_codes(db, round_id, include_system=True)}
     codes_assigned = [codes_by_id[str(c)] for c in code_ids if str(c) in codes_by_id]
 
     return {
@@ -122,44 +118,44 @@ def resolve_group(
         "auto_resolved_groups": auto_resolved,
     }
 
-def _auto_resolve_similar_pending_groups(db, studio_id, code_id, reference_group, user_id):
+def _auto_resolve_similar_pending_groups(db, round_id, code_id, reference_group, user_id):
     from rapidfuzz import fuzz
     from app.pipeline.fuzzy.models import SCORE_THRESHOLD, SHORT_TEXT_EXACT_MAX_LEN
-    
+
     new_alias = reference_group.get("normalized_text")
     if not new_alias:
         return []
-        
+
     # below_threshold incluido: menciones insuficientes de la misma marca ("pia monte")
     # se consolidan al clasificar una manualmente ("Piamonte").
     pending = db.execute(
         text("""SELECT id, normalized_text, status FROM mention_groups
-                WHERE studio_id = :sid AND status IN ('pending_review', 'below_threshold')"""),
-        {"sid": studio_id}
+                WHERE round_id = :rid AND status IN ('pending_review', 'below_threshold')"""),
+        {"rid": round_id}
     ).mappings().all()
-    
+
     auto_resolved = []
     for p_group in pending:
         text_norm = p_group["normalized_text"]
         if not text_norm:
             continue
-            
+
         if len(text_norm) <= SHORT_TEXT_EXACT_MAX_LEN or len(new_alias) <= SHORT_TEXT_EXACT_MAX_LEN:
             score = 100.0 if text_norm == new_alias else 0.0
         else:
             score = fuzz.WRatio(text_norm, new_alias)
-            
+
         if score >= SCORE_THRESHOLD:
             pid = p_group["id"]
             deactivate_group_codes(db, pid)
             assign_codes_to_group(db, pid, [code_id], "analyst_manual", user_id)
             mark_group_resolved(db, pid, user_id)
-            
+
             log_action(
-                db, user_id, studio_id, "mention_group", pid, "resolve:approve:auto_fuzzy",
+                db, user_id, round_id, "mention_group", pid, "resolve:approve:auto_fuzzy",
                 old_value={"status": p_group["status"]},
                 new_value={"status": "resolved", "code_ids": [str(code_id)], "score": score, "matched_alias": new_alias},
             )
             auto_resolved.append({"id": str(pid), "normalized_text": text_norm})
-            
+
     return auto_resolved

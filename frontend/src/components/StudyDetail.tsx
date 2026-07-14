@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
-import { deleteStudio, getProject } from "@/api/client";
+import { deleteRound, getProject } from "@/api/client";
 import type { ProjectDetail as ProjectDetailType } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
-import { findStudyGroup, parseStudyKey, studyDisplayName, codingTypeLabel, studioPhasePath } from "@/lib/projectTree";
+import { findStudy, studyDisplayName, codingTypeLabel, roundPhasePath } from "@/lib/projectTree";
 import { STUDIO_STATUS_TONE, studioStatusLabel } from "@/lib/studioStatus";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 
@@ -23,7 +23,7 @@ function phaseLabel(status: string): string {
 }
 
 export default function StudyDetail() {
-  const { projectId, studyKey } = useParams<{ projectId: string; studyKey: string }>();
+  const { projectId, studyId } = useParams<{ projectId: string; studyId: string }>();
   const navigate = useNavigate();
   const setActiveProjectId = useVerbatixStore((s) => s.setActiveProjectId);
 
@@ -41,16 +41,15 @@ export default function StudyDetail() {
       .finally(() => setLoading(false));
   }, [projectId, setActiveProjectId]);
 
-  const parsed = studyKey ? parseStudyKey(studyKey) : null;
-  const study = project && studyKey ? findStudyGroup(project, studyKey) : undefined;
+  const study = project && studyId ? findStudy(project, studyId) : undefined;
 
-  const handleDeleteRoundStudio = async (studioId: string, roundName: string) => {
+  const handleDeleteRound = async (roundId: string, roundName: string) => {
     if (!confirm(`¿Eliminar la ronda "${roundName}" de este estudio?`)) return;
-    await deleteStudio(studioId);
+    await deleteRound(roundId);
     if (!projectId) return;
     const p = await getProject(projectId);
     setProject(p);
-    if (!findStudyGroup(p, studyKey!)) navigate(`/projects/${projectId}`);
+    if (!findStudy(p, studyId!)) navigate(`/projects/${projectId}`);
   };
 
   if (loading) {
@@ -62,7 +61,7 @@ export default function StudyDetail() {
     );
   }
 
-  if (!project || !parsed || !study) {
+  if (!project || !studyId || !study) {
     return (
       <div className="max-w-4xl mx-auto py-4">
         <p className="text-sm text-p-text-faint">Estudio no encontrado.</p>
@@ -99,7 +98,7 @@ export default function StudyDetail() {
           </p>
         </div>
         <Link
-          to={`/wizard?projectId=${project.id}&study=${study.key}`}
+          to={`/wizard?projectId=${project.id}&study=${study.id}`}
           className="btn-primary text-xs py-1.5 px-3.5 rounded-full inline-flex items-center gap-1.5 shrink-0"
         >
           <Plus className="w-3.5 h-3.5" /> Nueva ronda
@@ -111,7 +110,7 @@ export default function StudyDetail() {
           <p className="text-sm font-semibold text-p-text">Sin rondas todavía</p>
           <p className="text-xs text-p-text-faint">Crea la primera ronda para subir verbatims.</p>
           <Link
-            to={`/wizard?projectId=${project.id}&study=${study.key}`}
+            to={`/wizard?projectId=${project.id}&study=${study.id}`}
             className="btn-primary text-xs py-1.5 px-3.5 rounded-full inline-flex items-center gap-1.5 mt-2"
           >
             <Plus className="w-3.5 h-3.5" /> Nueva ronda
@@ -119,40 +118,40 @@ export default function StudyDetail() {
         </div>
       ) : (
         <div className="space-y-2">
-          {study.rounds.map((entry) => (
+          {study.rounds.map((round) => (
             <Link
-              key={entry.studio.id}
-              to={studioPhasePath(entry.studio.id, entry.studio.status)}
+              key={round.id}
+              to={roundPhasePath(round.id, round.status)}
               className="project-row group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40"
             >
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-semibold text-p-text group-hover:text-p-accent transition-colors">
-                  R{entry.round_number} · {entry.round_name}
+                  R{round.round_number} · {round.name}
                 </div>
                 <div className="text-[11px] font-subtitle text-p-text-faint mt-0.5">
-                  {phaseLabel(entry.studio.status)}
+                  {phaseLabel(round.status)}
                   <span className="mx-1.5 text-p-border-mid">·</span>
-                  {entry.studio.auto_coded}/{entry.studio.verbatims_total} codificados
+                  {round.auto_coded}/{round.verbatims_total} codificados
                 </div>
               </div>
               <span
                 className={[
                   "shrink-0 text-[10px] font-semibold tracking-wide uppercase px-2.5 py-1 rounded-full border",
-                  STUDIO_STATUS_TONE[entry.studio.status] ?? STUDIO_STATUS_TONE.created,
+                  STUDIO_STATUS_TONE[round.status] ?? STUDIO_STATUS_TONE.created,
                 ].join(" ")}
               >
-                {studioStatusLabel(entry.studio.status)}
+                {studioStatusLabel(round.status)}
               </span>
               <ArrowRight className="w-4 h-4 text-p-text-faint group-hover:translate-x-0.5 transition-transform shrink-0" />
               <button
                 type="button"
                 onClick={(e) => {
                   e.preventDefault();
-                  void handleDeleteRoundStudio(entry.studio.id, entry.round_name);
+                  void handleDeleteRound(round.id, round.name);
                 }}
                 className="w-7 h-7 flex items-center justify-center rounded-md text-p-text-faint opacity-0 group-hover:opacity-100 hover:text-p-error hover:bg-p-error/10 transition-all shrink-0"
                 title="Eliminar ronda"
-                aria-label={`Eliminar ronda ${entry.round_name}`}
+                aria-label={`Eliminar ronda ${round.name}`}
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>

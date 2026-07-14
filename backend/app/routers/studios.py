@@ -1,3 +1,5 @@
+"""CRUD de Estudio (Marcas/Razones, persistente en el proyecto) y Ronda (ola de
+datos de un estudio: su propio Excel, verbatims, codebook y procesamiento)."""
 import hashlib
 import logging
 import uuid
@@ -7,11 +9,11 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.access import require_project, require_round, require_studio
+from app.core.access import require_project, require_round, require_study
 from app.core.auth import CurrentUser, current_user
 from app.core.database import SessionLocal, get_db
 from app.core import storage
-from app.pipeline import process_studio
+from app.pipeline import process_round
 from app.pipeline.ingest import excel
 from app.repositories import (
     build_mention_groups,
@@ -24,7 +26,68 @@ from app.repositories import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1", tags=["rounds & studios"])
+router = APIRouter(prefix="/api/v1", tags=["studies & rounds"])
+
+
+class StudyIn(BaseModel):
+    name: str
+    coding_type: str
+    survey_question: str | None = None
+
+
+@router.post("/projects/{project_id}/studies", status_code=201)
+def create_study(
+    project_id: uuid.UUID,
+    payload: StudyIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    if payload.coding_type not in ("brands", "reasons"):
+        raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
+
+    require_project(db, project_id, user["id"])
+
+    study_id = uuid.uuid4()
+    db.execute(
+        text("""
+            insert into studio (id, project_id, name, coding_type, survey_question, created_by)
+            values (:id, :p, :n, :ct, :q, :u)
+        """),
+        {
+            "id": study_id,
+            "p": project_id,
+            "n": payload.name,
+            "ct": payload.coding_type,
+            "q": payload.survey_question,
+            "u": user["id"],
+        },
+    )
+    db.commit()
+    return {
+        "id": str(study_id),
+        "project_id": str(project_id),
+        **payload.model_dump(mode="json"),
+    }
+
+
+@router.delete("/studies/{study_id}", status_code=204)
+def delete_study(
+    study_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    deleted = db.execute(
+        text("""
+            delete from studio s
+            using projects p
+            where s.id = :id and s.project_id = p.id and p.created_by = :u
+            returning s.id
+        """),
+        {"id": study_id, "u": user["id"]},
+    ).scalar()
+    if not deleted:
+        raise HTTPException(404, "Estudio no encontrado")
+    db.commit()
 
 
 class RoundIn(BaseModel):
@@ -32,40 +95,61 @@ class RoundIn(BaseModel):
     round_number: int
     min_mentions_threshold: int = 3
     audit_percentage: float = 10
+    origin_mode: str = "from_scratch"
+    source_round_id: uuid.UUID | None = None
 
 
-@router.post("/projects/{project_id}/rounds", status_code=201)
+@router.post("/studies/{study_id}/rounds", status_code=201)
 def create_round(
-    project_id: uuid.UUID,
+    study_id: uuid.UUID,
     payload: RoundIn,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_project(db, project_id, user["id"])
+    require_study(db, study_id, user["id"])
 
-    rid = uuid.uuid4()
+    if payload.origin_mode == "homologated" and payload.source_round_id:
+        require_round(db, payload.source_round_id, user["id"])
+
+    round_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into rounds (id, project_id, name, round_number,
-                                min_mentions_threshold, audit_percentage, created_by)
-            values (:id, :p, :n, :num, :thr, :pct, :u)
+            insert into rounds (id, studio_id, name, round_number, min_mentions_threshold,
+                                audit_percentage, origin_mode, source_round_id, created_by)
+            values (:id, :s, :n, :num, :thr, :pct, :om, :src, :u)
         """),
         {
-            "id": rid,
-            "p": project_id,
+            "id": round_id,
+            "s": study_id,
             "n": payload.name,
             "num": payload.round_number,
             "thr": payload.min_mentions_threshold,
             "pct": payload.audit_percentage,
+            "om": payload.origin_mode,
+            "src": payload.source_round_id,
             "u": user["id"],
         },
     )
+
+    inherited = {"codes": 0, "aliases": 0, "nets": 0}
+    cb_id = create_codebook(db, round_id)
+
+    if payload.origin_mode == "homologated" and payload.source_round_id:
+        inherited = clone_codebook(db, payload.source_round_id, cb_id)
+
+    seed_system_codes(db, cb_id)
     db.commit()
+
     return {
-        "id": str(rid),
-        "project_id": str(project_id),
+        "id": str(round_id),
+        "studio_id": str(study_id),
         **payload.model_dump(mode="json"),
-        "status": "draft",
+        "status": "created",
+        "codebook": {
+            "id": str(cb_id),
+            "inherited_codes": inherited["codes"],
+            "inherited_aliases": inherited["aliases"],
+        },
     }
 
 
@@ -78,8 +162,8 @@ def delete_round(
     deleted = db.execute(
         text("""
             delete from rounds r
-            using projects p
-            where r.id = :id and r.project_id = p.id and p.created_by = :u
+            using studio s, projects p
+            where r.id = :id and r.studio_id = s.id and s.project_id = p.id and p.created_by = :u
             returning r.id
         """),
         {"id": round_id, "u": user["id"]},
@@ -89,134 +173,51 @@ def delete_round(
     db.commit()
 
 
-class StudioIn(BaseModel):
-    name: str
-    coding_type: str
-    survey_question: str | None = None
-    origin_mode: str = "from_scratch"
-    source_studio_id: uuid.UUID | None = None
-
-
-@router.post("/rounds/{round_id}/studios", status_code=201)
-def create_studio(
+@router.get("/rounds/{round_id}")
+def get_round(
     round_id: uuid.UUID,
-    payload: StudioIn,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    if payload.coding_type not in ("brands", "reasons"):
-        raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
-
-    require_round(db, round_id, user["id"])
-
-    if payload.origin_mode == "homologated" and payload.source_studio_id:
-        require_studio(db, payload.source_studio_id, user["id"])
-
-    studio_id = uuid.uuid4()
-    db.execute(
-        text("""
-            insert into studio (id, round_id, name, coding_type, survey_question,
-                                origin_mode, source_studio_id)
-            values (:id, :r, :n, :ct, :q, :om, :src)
-        """),
-        {
-            "id": studio_id,
-            "r": round_id,
-            "n": payload.name,
-            "ct": payload.coding_type,
-            "q": payload.survey_question,
-            "om": payload.origin_mode,
-            "src": payload.source_studio_id,
-        },
-    )
-
-    inherited = {"codes": 0, "aliases": 0, "nets": 0}
-    cb_id = create_codebook(db, studio_id)
-
-    if payload.origin_mode == "homologated" and payload.source_studio_id:
-        inherited = clone_codebook(db, payload.source_studio_id, cb_id)
-
-    seed_system_codes(db, cb_id)
-    db.commit()
-
-    return {
-        "id": str(studio_id),
-        "round_id": str(round_id),
-        **payload.model_dump(mode="json"),
-        "status": "created",
-        "codebook": {
-            "id": str(cb_id),
-            "inherited_codes": inherited["codes"],
-            "inherited_aliases": inherited["aliases"],
-        },
-    }
-
-
-@router.delete("/studios/{studio_id}", status_code=204)
-def delete_studio(
-    studio_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    user: CurrentUser = Depends(current_user),
-):
-    deleted = db.execute(
-        text("""
-            delete from studio s
-            using rounds r, projects p
-            where s.id = :id and s.round_id = r.id and r.project_id = p.id and p.created_by = :u
-            returning s.id
-        """),
-        {"id": studio_id, "u": user["id"]},
-    ).scalar()
-    if not deleted:
-        raise HTTPException(404, "Estudio no encontrado")
-    db.commit()
-
-
-@router.get("/studios/{studio_id}")
-def get_studio(
-    studio_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    user: CurrentUser = Depends(current_user),
-):
-    row = require_studio(db, studio_id, user["id"])
+    row = require_round(db, round_id, user["id"])
 
     nav = db.execute(
         text("""
-            select r.name as round_name, r.round_number,
+            select st.name as study_name, st.coding_type, st.survey_question,
                    p.id as project_id, p.name as project_name,
                    p.external_code as project_external_code
-            from studio s
-            join rounds r on r.id = s.round_id
-            join projects p on p.id = r.project_id
-            where s.id = :id
+            from rounds r
+            join studio st on st.id = r.studio_id
+            join projects p on p.id = st.project_id
+            where r.id = :id
         """),
-        {"id": studio_id},
+        {"id": round_id},
     ).mappings().first()
 
     counters = db.execute(
         text("""
             select
-              (select count(*) from verbatims where studio_id = :id) as verbatims_total,
-              (select count(*) from mention_groups where studio_id = :id) as mention_groups,
+              (select count(*) from verbatims where round_id = :id) as verbatims_total,
+              (select count(*) from mention_groups where round_id = :id) as mention_groups,
               (select count(*) from codes c join codebooks b on b.id = c.codebook_id
-                 where b.studio_id = :id) as codes_total,
+                 where b.round_id = :id) as codes_total,
               (select count(*) from code_aliases a join codebooks b on b.id = a.codebook_id
-                 where b.studio_id = :id) as aliases_total
+                 where b.round_id = :id) as aliases_total
         """),
-        {"id": studio_id},
+        {"id": round_id},
     ).mappings().first()
 
     # Bloque `audit`: el estado que consumen los badges y el dashboard futuro.
-    # 'not_started' = nadie inició auditoría (estudio "sin auditar").
+    # 'not_started' = nadie inició auditoría (ronda "sin auditar").
     audit_row = db.execute(
         text("""
             select status, reviewed_items, total_items, target_met
             from audit_sessions
-            where studio_id = :id
+            where round_id = :id
             order by created_at desc
             limit 1
         """),
-        {"id": studio_id},
+        {"id": round_id},
     ).mappings().first()
     audit = {
         "status": (
@@ -230,14 +231,15 @@ def get_studio(
     }
 
     # UUID → str para que el front arme breadcrumbs/rutas sin "undefined".
-    studio_out = {
+    round_out = {
         k: str(v) if isinstance(v, uuid.UUID) else v
         for k, v in dict(row).items()
     }
     return {
-        **studio_out,
-        "round_name": nav["round_name"] if nav else None,
-        "round_number": nav["round_number"] if nav else None,
+        **round_out,
+        "study_name": nav["study_name"] if nav else None,
+        "coding_type": nav["coding_type"] if nav else None,
+        "survey_question": nav["survey_question"] if nav else None,
         "project_id": str(nav["project_id"]) if nav else None,
         "project_name": nav["project_name"] if nav else None,
         "project_external_code": nav["project_external_code"] if nav else None,
@@ -246,21 +248,21 @@ def get_studio(
     }
 
 
-@router.get("/studios/{studio_id}/mention-groups")
+@router.get("/rounds/{round_id}/mention-groups")
 def list_mention_groups(
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_studio(db, studio_id, user["id"])
+    require_round(db, round_id, user["id"])
     rows = db.execute(
         text("""
             select id, normalized_text, sample_text, frequency_count, status
             from mention_groups
-            where studio_id = :id
+            where round_id = :id
             order by frequency_count desc, normalized_text
         """),
-        {"id": studio_id},
+        {"id": round_id},
     ).mappings().all()
 
     return [
@@ -275,16 +277,16 @@ def list_mention_groups(
     ]
 
 
-@router.get("/studios/{studio_id}/verbatims")
+@router.get("/rounds/{round_id}/verbatims")
 def list_verbatims(
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     limit: int = 100,
     offset: int = 0,
     status: str | None = None,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_studio(db, studio_id, user["id"])
+    require_round(db, round_id, user["id"])
     rows = db.execute(
         text("""
             select v.id, v.respondent_external_id, v.question_key, v.original_text,
@@ -307,20 +309,20 @@ def list_verbatims(
             left join codes c on c.id = vc.code_id
             left join net_codes nc on nc.code_id = c.id
             left join nets n on n.id = nc.net_id
-            where v.studio_id = :id and (:status is null or v.coding_status = :status)
+            where v.round_id = :id and (:status is null or v.coding_status = :status)
             group by v.id
             order by v.created_at
             limit :lim offset :off
         """),
-        {"id": studio_id, "lim": limit, "off": offset, "status": status},
+        {"id": round_id, "lim": limit, "off": offset, "status": status},
     ).mappings().all()
 
     total = db.execute(
         text("""
             select count(*) from verbatims
-            where studio_id = :id and (:status is null or coding_status = :status)
+            where round_id = :id and (:status is null or coding_status = :status)
         """),
-        {"id": studio_id, "status": status},
+        {"id": round_id, "status": status},
     ).scalar()
 
     return {
@@ -341,14 +343,14 @@ def list_verbatims(
     }
 
 
-@router.post("/studios/{studio_id}/files", status_code=201)
+@router.post("/rounds/{round_id}/files", status_code=201)
 def upload_file(
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_studio(db, studio_id, user["id"])
+    require_round(db, round_id, user["id"])
     content = file.file.read()
     checksum = hashlib.sha256(content).hexdigest()
 
@@ -356,17 +358,17 @@ def upload_file(
     total_rows = sum(s["rows"] for s in detected_sheets)
 
     file_id = uuid.uuid4()
-    path = f"{studio_id}/{file_id}/{file.filename}"
+    path = f"{round_id}/{file_id}/{file.filename}"
     storage.upload("uploads", path, content)
 
     db.execute(
         text("""
-            insert into imported_files (id, studio_id, file_type, original_filename,
+            insert into imported_files (id, round_id, file_type, original_filename,
                                         storage_path, checksum, total_rows, status, uploaded_by)
-            values (:id, :studio, 'combined_xlsx', :name, :path, :sum, :rows, 'uploaded', :user)
+            values (:id, :round, 'combined_xlsx', :name, :path, :sum, :rows, 'uploaded', :user)
         """),
         {
-            "id": file_id, "studio": studio_id, "name": file.filename,
+            "id": file_id, "round": round_id, "name": file.filename,
             "path": f"uploads/{path}", "sum": checksum, "rows": total_rows, "user": user["id"],
         },
     )
@@ -387,10 +389,10 @@ class ImportIn(BaseModel):
     column_map: dict[str, str] | None = None
 
 
-def _mark_studio_failed(db: Session, studio_id: uuid.UUID, message: str) -> None:
-    """Deja el studio y cualquier run colgado en un estado terminal 'failed'.
+def _mark_round_failed(db: Session, round_id: uuid.UUID, message: str) -> None:
+    """Deja la ronda y cualquier run colgado en un estado terminal 'failed'.
 
-    Sin esto, una excepción en el background task dejaba el studio en
+    Sin esto, una excepción en el background task dejaba la ronda en
     'files_uploaded' y el run en 'running' para siempre — el frontend hace polling
     infinito y el usuario ve "procesando" que nunca termina.
     """
@@ -399,44 +401,49 @@ def _mark_studio_failed(db: Session, studio_id: uuid.UUID, message: str) -> None
             text("""
                 update processing_runs set status = 'failed', finished_at = now(),
                     error_message = :msg
-                where studio_id = :id and status = 'running'
+                where round_id = :id and status = 'running'
             """),
-            {"id": studio_id, "msg": message[:2000]},
+            {"id": round_id, "msg": message[:2000]},
         )
         db.execute(
-            text("update studio set status = 'failed', updated_at = now() where id = :id"),
-            {"id": studio_id},
+            text("update rounds set status = 'failed', updated_at = now() where id = :id"),
+            {"id": round_id},
         )
         db.commit()
     except Exception:
         db.rollback()
 
 
-def _process_studio_task(studio_id: uuid.UUID) -> None:
+def _process_round_task(round_id: uuid.UUID) -> None:
     db = SessionLocal()
     try:
-        process_studio(db, studio_id)
+        process_round(db, round_id)
     except Exception as exc:
-        logger.exception("process_studio falló para studio %s", studio_id)
+        logger.exception("process_round falló para ronda %s", round_id)
         db.rollback()
-        _mark_studio_failed(db, studio_id, str(exc))
+        _mark_round_failed(db, round_id, str(exc))
     finally:
         db.close()
 
 
-@router.post("/studios/{studio_id}/files/{file_id}/import")
+@router.post("/rounds/{round_id}/files/{file_id}/import")
 def import_file(
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     file_id: uuid.UUID,
     payload: ImportIn,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    studio = require_studio(db, studio_id, user["id"])
+    round_row = require_round(db, round_id, user["id"])
+    coding_type = db.execute(
+        text("select coding_type from studio where id = :id"),
+        {"id": round_row["studio_id"]},
+    ).scalar()
+
     meta = db.execute(
-        text("select storage_path from imported_files where id = :id and studio_id = :studio"),
-        {"id": file_id, "studio": studio_id},
+        text("select storage_path from imported_files where id = :id and round_id = :round"),
+        {"id": file_id, "round": round_id},
     ).mappings().first()
     if not meta:
         raise HTTPException(404, "Archivo no encontrado")
@@ -449,36 +456,36 @@ def import_file(
     except (ValueError, KeyError) as exc:
         # KeyError: la hoja no existe en el workbook; ValueError: no es de verbatims.
         raise HTTPException(400, f"Hoja de verbatims inválida: {exc}") from exc
-    n_inserted, df = insert_verbatims(db, studio_id, file_id, rows, studio["coding_type"])
+    n_inserted, df = insert_verbatims(db, round_id, file_id, rows, coding_type)
 
     n_codes = n_aliases = 0
     if payload.codebook_sheet:
         codebook_id = db.execute(
-            text("select id from codebooks where studio_id = :studio order by version desc limit 1"),
-            {"studio": studio_id},
+            text("select id from codebooks where round_id = :round order by version desc limit 1"),
+            {"round": round_id},
         ).scalar()
         parsed = excel.parse_codebook(content, payload.codebook_sheet)
         imported = insert_codebook_from_excel(db, codebook_id, parsed)
         n_codes, n_aliases = imported["codes"], imported["aliases"]
 
-    build_mention_groups(db, studio_id)
+    build_mention_groups(db, round_id)
 
     db.execute(
         text("update imported_files set status = 'validated' where id = :id"),
         {"id": file_id},
     )
     db.execute(
-        text("update studio set status = 'files_uploaded', updated_at = now() where id = :id"),
-        {"id": studio_id},
+        text("update rounds set status = 'files_uploaded', updated_at = now() where id = :id"),
+        {"id": round_id},
     )
     db.commit()
 
     # Auto-process right after import so the user never has to notice/click a
     # separate "Procesar" step. Runs as a background task (own DB session) instead
     # of inline — the LLM pass can take minutes and blocking the response left the
-    # frontend with nothing but a spinner. Studio stays 'files_uploaded' until the
-    # task flips it to 'preliminary_ready'; the frontend polls GET /studios/{id}.
-    background_tasks.add_task(_process_studio_task, studio_id)
+    # frontend with nothing but a spinner. Round stays 'files_uploaded' until the
+    # task flips it to 'preliminary_ready'; the frontend polls GET /rounds/{id}.
+    background_tasks.add_task(_process_round_task, round_id)
 
     return {
         "imported": {
@@ -489,41 +496,41 @@ def import_file(
         },
         "processing": {"status": "queued"},
         "warnings": [],
-        "studio_status": db.execute(
-            text("select status from studio where id = :id"), {"id": studio_id}
+        "round_status": db.execute(
+            text("select status from rounds where id = :id"), {"id": round_id}
         ).scalar(),
     }
 
 
-@router.post("/studios/{studio_id}/process", status_code=202)
+@router.post("/rounds/{round_id}/process", status_code=202)
 def process(
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_studio(db, studio_id, user["id"])
+    require_round(db, round_id, user["id"])
     try:
-        result = process_studio(db, studio_id)
+        result = process_round(db, round_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     return result
 
 
-@router.get("/studios/{studio_id}/preliminary")
+@router.get("/rounds/{round_id}/preliminary")
 def preliminary(
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_studio(db, studio_id, user["id"])
+    require_round(db, round_id, user["id"])
     counts = db.execute(
         text("""
             select status, count(*) as n
             from mention_groups
-            where studio_id = :id
+            where round_id = :id
             group by status
         """),
-        {"id": studio_id},
+        {"id": round_id},
     ).mappings().all()
     by_status = {r["status"]: r["n"] for r in counts}
 

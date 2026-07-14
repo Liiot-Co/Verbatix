@@ -3,7 +3,7 @@ import { ArrowRight, ClipboardCheck, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 
 interface PhaseCompleteChoiceProps {
-  studioId: string;
+  roundId: string;
   /** Overlay centrado (modal) o barra inline. */
   variant?: "modal" | "inline";
   onDismiss?: () => void;
@@ -11,7 +11,7 @@ interface PhaseCompleteChoiceProps {
 
 /** Tras cerrar la resolución manual: continuar al reporte o auditar (opcional). */
 export function PhaseCompleteChoice({
-  studioId,
+  roundId,
   variant = "inline",
   onDismiss,
 }: PhaseCompleteChoiceProps) {
@@ -19,12 +19,12 @@ export function PhaseCompleteChoice({
 
   const goReport = () => {
     onDismiss?.();
-    navigate(`/studios/${studioId}/report`);
+    navigate(`/rounds/${roundId}/report`);
   };
 
   const goAudit = () => {
     onDismiss?.();
-    navigate(`/studios/${studioId}/audit`);
+    navigate(`/rounds/${roundId}/audit`);
   };
 
   const card = (

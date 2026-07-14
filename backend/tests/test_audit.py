@@ -21,7 +21,7 @@ from app.pipeline.audit import (
     update_item,
 )
 
-STUDIO_ID = uuid.uuid4()
+ROUND_ID = uuid.uuid4()
 SESSION_ID = str(uuid.uuid4())
 ITEM_ID = uuid.uuid4()
 USER_ID = uuid.uuid4()
@@ -38,15 +38,15 @@ class FakeResult:
 
 
 class FakeSession:
-    """Responde la única query ad-hoc de start_audit_session: ¿existe el estudio?"""
+    """Responde la única query ad-hoc de start_audit_session: ¿existe la ronda?"""
 
-    def __init__(self, studio_exists=True):
-        self.studio_exists = studio_exists
+    def __init__(self, round_exists=True):
+        self.round_exists = round_exists
         self.committed = False
 
     def execute(self, stmt, params=None):
-        if "select 1 from studio" in str(stmt):
-            return FakeResult(scalar=1 if self.studio_exists else None)
+        if "select 1 from rounds" in str(stmt):
+            return FakeResult(scalar=1 if self.round_exists else None)
         return FakeResult()
 
     def commit(self):
@@ -130,7 +130,7 @@ class StartMocks:
             patch(base + "create_audit_code_review", side_effect=lambda *a: str(uuid.uuid4()))
         )
         self.create_item = stack.enter_context(patch(base + "create_audit_item"))
-        self.set_status = stack.enter_context(patch(base + "set_studio_status"))
+        self.set_status = stack.enter_context(patch(base + "set_round_status"))
         self.log = stack.enter_context(patch(base + "log_action"))
 
 
@@ -139,19 +139,19 @@ def test_start_is_idempotent_when_session_exists():
     existing = {"id": SESSION_ID, "status": "in_progress", "is_stale": False}
     with ExitStack() as stack:
         mocks = StartMocks(stack, existing=existing)
-        result = start_audit_session(db, STUDIO_ID, user_id=USER_ID)
+        result = start_audit_session(db, ROUND_ID, user_id=USER_ID)
 
     assert result is existing
     mocks.create_session.assert_not_called()
     assert not db.committed
 
 
-def test_start_requires_studio():
-    db = FakeSession(studio_exists=False)
+def test_start_requires_round():
+    db = FakeSession(round_exists=False)
     with ExitStack() as stack:
         StartMocks(stack)
         with pytest.raises(LookupError):
-            start_audit_session(db, STUDIO_ID, user_id=USER_ID)
+            start_audit_session(db, ROUND_ID, user_id=USER_ID)
 
 
 def test_start_requires_resolution_complete():
@@ -159,7 +159,7 @@ def test_start_requires_resolution_complete():
     with ExitStack() as stack:
         StartMocks(stack, can_close=False)
         with pytest.raises(AuditPrecondition):
-            start_audit_session(db, STUDIO_ID, user_id=USER_ID)
+            start_audit_session(db, ROUND_ID, user_id=USER_ID)
     assert not db.committed
 
 
@@ -168,14 +168,14 @@ def test_start_materializes_sample_grouped_by_primary_code():
     pop = _population(3, CODE_A) + _population(2, CODE_B)
     with ExitStack() as stack:
         mocks = StartMocks(stack, pct=100.0, population=pop)
-        start_audit_session(db, STUDIO_ID, user_id=USER_ID)
+        start_audit_session(db, ROUND_ID, user_id=USER_ID)
 
     # pct 100 → 5 items; un review por código presente en la muestra.
     _, _, _, _, total = mocks.create_session.call_args[0]
     assert total == 5
     assert mocks.create_review.call_count == 2
     assert mocks.create_item.call_count == 5
-    mocks.set_status.assert_called_once_with(db, STUDIO_ID, "audit_pending")
+    mocks.set_status.assert_called_once_with(db, ROUND_ID, "audit_pending")
     assert db.committed
 
 
@@ -183,7 +183,7 @@ def test_start_with_pct_zero_creates_empty_satisfied_session():
     db = FakeSession()
     with ExitStack() as stack:
         mocks = StartMocks(stack, pct=0.0, population=_population(40))
-        start_audit_session(db, STUDIO_ID, user_id=USER_ID)
+        start_audit_session(db, ROUND_ID, user_id=USER_ID)
 
     _, _, _, _, total = mocks.create_session.call_args[0]
     assert total == 0
@@ -196,7 +196,7 @@ def test_start_persists_seed_when_run_has_none():
     run_id = str(uuid.uuid4())
     with ExitStack() as stack:
         mocks = StartMocks(stack, run={"id": run_id, "random_seed": None}, population=_population(5))
-        start_audit_session(db, STUDIO_ID, user_id=USER_ID)
+        start_audit_session(db, ROUND_ID, user_id=USER_ID)
 
     mocks.set_seed.assert_called_once()
     assert mocks.set_seed.call_args[0][1] == uuid.UUID(run_id)
@@ -207,14 +207,14 @@ def test_start_resamples_only_stale_sessions():
     stale = {"id": SESSION_ID, "status": "in_progress", "is_stale": True}
     with ExitStack() as stack:
         mocks = StartMocks(stack, existing=stale, population=_population(5))
-        start_audit_session(db, STUDIO_ID, user_id=USER_ID, resample=True)
+        start_audit_session(db, ROUND_ID, user_id=USER_ID, resample=True)
     mocks.create_session.assert_called_once()
 
     db2 = FakeSession()
     fresh = {"id": SESSION_ID, "status": "in_progress", "is_stale": False}
     with ExitStack() as stack:
         mocks = StartMocks(stack, existing=fresh, population=_population(5))
-        result = start_audit_session(db2, STUDIO_ID, user_id=USER_ID, resample=True)
+        result = start_audit_session(db2, ROUND_ID, user_id=USER_ID, resample=True)
     assert result is fresh
     mocks.create_session.assert_not_called()
 
@@ -228,7 +228,7 @@ def _item(status="pending", session_status="in_progress"):
         "verbatim_id": str(uuid.uuid4()), "codes_snapshot": [],
         "review_id": str(uuid.uuid4()), "corrections_count": 0,
         "session_id": SESSION_ID, "session_status": session_status,
-        "total_items": 10, "reviewed_items": 3, "studio_id": str(STUDIO_ID),
+        "total_items": 10, "reviewed_items": 3, "round_id": str(ROUND_ID),
     }
 
 
@@ -384,7 +384,7 @@ def _review(status="pending", pending_items=5, corrections=0, session_status="in
         "id": str(uuid.uuid4()), "status": status, "items_count": 5,
         "corrections_count": corrections, "pending_items": pending_items,
         "session_id": SESSION_ID, "session_status": session_status,
-        "studio_id": str(STUDIO_ID),
+        "round_id": str(ROUND_ID),
     }
 
 
@@ -460,7 +460,7 @@ def test_approve_section_is_idempotent():
 
 def _session(status="in_progress", total=10, reviewed=10):
     return {
-        "id": SESSION_ID, "studio_id": str(STUDIO_ID), "processing_run_id": None,
+        "id": SESSION_ID, "round_id": str(ROUND_ID), "processing_run_id": None,
         "target_percentage": 10.0, "total_items": total, "reviewed_items": reviewed,
         "target_met": reviewed >= total, "status": status,
         "approved_by": None, "approved_at": None, "created_at": None,
@@ -473,7 +473,7 @@ class ApproveMocks:
         stack.enter_context(patch(base + "get_audit_session", return_value=session))
         stack.enter_context(patch(base + "get_audit_summary", return_value={"status": "approved"}))
         self.finalize = stack.enter_context(patch(base + "finalize_audit_session"))
-        self.set_status = stack.enter_context(patch(base + "set_studio_status"))
+        self.set_status = stack.enter_context(patch(base + "set_round_status"))
         self.log = stack.enter_context(patch(base + "log_action"))
 
 
@@ -481,14 +481,14 @@ def test_approve_without_session():
     db = FakeSession()
     with patch("app.pipeline.audit.get_audit_session", return_value=None):
         with pytest.raises(LookupError):
-            approve_session(db, STUDIO_ID, user_id=USER_ID)
+            approve_session(db, ROUND_ID, user_id=USER_ID)
 
 
 def test_approve_is_idempotent():
     db = FakeSession()
     with ExitStack() as stack:
         mocks = ApproveMocks(stack, _session(status="approved"))
-        result = approve_session(db, STUDIO_ID, user_id=USER_ID)
+        result = approve_session(db, ROUND_ID, user_id=USER_ID)
 
     assert result["already_approved"] is True
     mocks.finalize.assert_not_called()
@@ -500,7 +500,7 @@ def test_approve_requires_target_met():
     with ExitStack() as stack:
         ApproveMocks(stack, _session(total=10, reviewed=7))
         with pytest.raises(AuditPrecondition):
-            approve_session(db, STUDIO_ID, user_id=USER_ID)
+            approve_session(db, ROUND_ID, user_id=USER_ID)
 
 
 def test_approve_allows_empty_sample():
@@ -508,21 +508,21 @@ def test_approve_allows_empty_sample():
     db = FakeSession()
     with ExitStack() as stack:
         mocks = ApproveMocks(stack, _session(total=0, reviewed=0))
-        result = approve_session(db, STUDIO_ID, user_id=USER_ID)
+        result = approve_session(db, ROUND_ID, user_id=USER_ID)
 
     assert result["already_approved"] is False
     mocks.finalize.assert_called_once()
-    mocks.set_status.assert_called_once_with(db, STUDIO_ID, "audit_approved")
+    mocks.set_status.assert_called_once_with(db, ROUND_ID, "audit_approved")
     assert db.committed
 
 
-def test_approve_finalizes_and_marks_studio():
+def test_approve_finalizes_and_marks_round():
     db = FakeSession()
     with ExitStack() as stack:
         mocks = ApproveMocks(stack, _session())
-        approve_session(db, STUDIO_ID, user_id=USER_ID)
+        approve_session(db, ROUND_ID, user_id=USER_ID)
 
     mocks.finalize.assert_called_once_with(db, SESSION_ID, USER_ID)
-    mocks.set_status.assert_called_once_with(db, STUDIO_ID, "audit_approved")
+    mocks.set_status.assert_called_once_with(db, ROUND_ID, "audit_approved")
     mocks.log.assert_called_once()
     assert db.committed

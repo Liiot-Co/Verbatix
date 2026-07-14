@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Keyboard, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { getPreliminary, getResolutionSummary, getStudio, getVerbatims, processStudio } from "@/api/client";
-import type { CodingStatus, PreliminarySummary, ResolutionSummary, StudioStatus, Verbatim } from "@/api/types";
+import { getPreliminary, getResolutionSummary, getRound, getVerbatims, processRound } from "@/api/client";
+import type { CodingStatus, PreliminarySummary, ResolutionSummary, RoundStatus, Verbatim } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 import ResolutionCenter from "./ResolutionCenter";
 import { PhaseCompleteChoice } from "./PhaseCompleteChoice";
-import { studyDisplayName, studyKey } from "@/lib/projectTree";
+import { studyDisplayName } from "@/lib/projectTree";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -26,32 +26,32 @@ function playProcessingFinishedSound() {
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
     const gainNode = ctx.createGain();
-    
+
     osc1.connect(gainNode);
     osc2.connect(gainNode);
     gainNode.connect(ctx.destination);
-    
+
     osc1.type = "sine";
     osc2.type = "triangle";
-    
+
     const now = ctx.currentTime;
-    
+
     osc1.frequency.setValueAtTime(523.25, now); // C5
     osc2.frequency.setValueAtTime(523.25, now);
-    
+
     osc1.frequency.setValueAtTime(659.25, now + 0.1); // E5
     osc2.frequency.setValueAtTime(659.25, now + 0.1);
-    
+
     osc1.frequency.setValueAtTime(783.99, now + 0.2); // G5
     osc2.frequency.setValueAtTime(783.99, now + 0.2);
-    
+
     osc1.frequency.setValueAtTime(1046.50, now + 0.3); // C6
     osc2.frequency.setValueAtTime(1046.50, now + 0.3);
-    
+
     gainNode.gain.setValueAtTime(0, now);
     gainNode.gain.linearRampToValueAtTime(0.1, now + 0.05);
     gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
-    
+
     osc1.start(now);
     osc2.start(now);
     osc1.stop(now + 0.65);
@@ -64,12 +64,12 @@ function playProcessingFinishedSound() {
 const PAGE_SIZE = 50;
 
 export default function UnifiedStudioView() {
-  const { studioId } = useParams<{ studioId: string }>();
+  const { roundId } = useParams<{ roundId: string }>();
   const navigate = useNavigate();
   const searchRef = useRef<HTMLInputElement>(null);
   const showToast = useVerbatixStore((s) => s.showToast);
 
-  const [studio, setStudio] = useState<StudioStatus | null>(null);
+  const [round, setRound] = useState<RoundStatus | null>(null);
   const [preliminary, setPreliminary] = useState<PreliminarySummary | null>(null);
   const [resolution, setResolution] = useState<ResolutionSummary | null>(null);
   const [verbatims, setVerbatims] = useState<Verbatim[]>([]);
@@ -85,45 +85,45 @@ export default function UnifiedStudioView() {
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
   const loadData = useCallback(() => {
-    if (!studioId) return Promise.resolve();
+    if (!roundId) return Promise.resolve();
     return Promise.all([
-      getStudio(studioId).then(setStudio),
-      getPreliminary(studioId).then(setPreliminary),
-      getResolutionSummary(studioId).then(setResolution),
+      getRound(roundId).then(setRound),
+      getPreliminary(roundId).then(setPreliminary),
+      getResolutionSummary(roundId).then(setResolution),
     ]);
-  }, [studioId]);
+  }, [roundId]);
 
   const loadVerbatims = useCallback(() => {
-    if (!studioId) return;
-    getVerbatims(studioId, PAGE_SIZE, (page - 1) * PAGE_SIZE, statusFilter || undefined)
+    if (!roundId) return;
+    getVerbatims(roundId, PAGE_SIZE, (page - 1) * PAGE_SIZE, statusFilter || undefined)
       .then((res) => {
         setVerbatims(res.items);
         setTotal(res.total);
       });
-  }, [studioId, page, statusFilter]);
+  }, [roundId, page, statusFilter]);
 
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      getStudio(studioId!).then(setStudio),
-      getPreliminary(studioId!).then(setPreliminary),
-      getResolutionSummary(studioId!).then(setResolution),
+      getRound(roundId!).then(setRound),
+      getPreliminary(roundId!).then(setPreliminary),
+      getResolutionSummary(roundId!).then(setResolution),
     ]).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [studioId]);
+  }, [roundId]);
 
   useEffect(() => {
-    if (!studioId) return;
+    if (!roundId) return;
     setLoading(true);
-    getVerbatims(studioId, PAGE_SIZE, (page - 1) * PAGE_SIZE, statusFilter || undefined)
+    getVerbatims(roundId, PAGE_SIZE, (page - 1) * PAGE_SIZE, statusFilter || undefined)
       .then((res) => {
         setVerbatims(res.items);
         setTotal(res.total);
       })
       .finally(() => setLoading(false));
-  }, [studioId, page, statusFilter]);
+  }, [roundId, page, statusFilter]);
 
-  const autoProcessing = studio?.status === "processing" || studio?.status === "files_uploaded";
+  const autoProcessing = round?.status === "processing" || round?.status === "files_uploaded";
   const wasProcessing = useRef(false);
 
   useEffect(() => {
@@ -131,13 +131,13 @@ export default function UnifiedStudioView() {
       wasProcessing.current = true;
       return;
     }
-    if (wasProcessing.current && studio?.status === "preliminary_ready") {
+    if (wasProcessing.current && round?.status === "preliminary_ready") {
       wasProcessing.current = false;
       showToast("Procesamiento terminado", "success");
       playProcessingFinishedSound();
       loadVerbatims();
     }
-  }, [autoProcessing, studio?.status, showToast, loadVerbatims]);
+  }, [autoProcessing, round?.status, showToast, loadVerbatims]);
 
   useEffect(() => {
     if (!autoProcessing) return;
@@ -150,29 +150,29 @@ export default function UnifiedStudioView() {
   // Tras cerrar resolución: elegir reporte o auditoría. Si ya estaba cerrada al entrar, ir al reporte.
   const wasCloseable = useRef<boolean | null>(null);
   useEffect(() => {
-    if (!studioId || resolution == null) return;
+    if (!roundId || resolution == null) return;
     const canClose = resolution.can_close;
 
     if (canClose && wasCloseable.current === null) {
-      navigate(`/studios/${studioId}/report`, { replace: true });
+      navigate(`/rounds/${roundId}/report`, { replace: true });
       return;
     }
     if (canClose && wasCloseable.current === false) {
       setPhaseChoiceOpen(true);
     }
     wasCloseable.current = canClose;
-  }, [studioId, resolution, navigate]);
+  }, [roundId, resolution, navigate]);
 
   const handleProcess = async () => {
-    if (!studioId) return;
+    if (!roundId) return;
     setProcessing(true);
     try {
-      await processStudio(studioId);
+      await processRound(roundId);
       showToast("Procesamiento encolado — el motor está trabajando", "info");
-      setStudio((s) => (s ? { ...s, status: "processing" } : s));
+      setRound((r) => (r ? { ...r, status: "processing" } : r));
       await Promise.all([loadData(), loadVerbatims()]);
     } catch {
-      showToast("No se pudo procesar el estudio", "error");
+      showToast("No se pudo procesar la ronda", "error");
     } finally {
       setProcessing(false);
     }
@@ -209,7 +209,7 @@ export default function UnifiedStudioView() {
 
   useKeyboardShortcuts("unified-studio");
 
-  if (loading && !studio) {
+  if (loading && !round) {
     return (
       <div className="max-w-4xl mx-auto py-4 space-y-4">
         <div className="skeleton h-6 w-40 rounded" />
@@ -219,10 +219,10 @@ export default function UnifiedStudioView() {
     );
   }
 
-  if (!studioId || !studio) {
+  if (!roundId || !round) {
     return (
       <div className="max-w-4xl mx-auto py-4">
-        <p className="text-sm text-p-text-faint">Estudio no encontrado.</p>
+        <p className="text-sm text-p-text-faint">Ronda no encontrada.</p>
       </div>
     );
   }
@@ -257,7 +257,7 @@ export default function UnifiedStudioView() {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => navigate(`/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`)}
+          onClick={() => navigate(`/projects/${round.project_id}/studies/${round.studio_id}`)}
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-p-text-faint hover:text-p-text hover:bg-p-bg-subtle transition-colors"
           title="Volver"
           aria-label="Volver"
@@ -267,24 +267,24 @@ export default function UnifiedStudioView() {
         <Breadcrumb
           items={[
             { label: "Proyectos", to: "/" },
-            { label: studio.project_name, to: `/projects/${studio.project_id}` },
+            { label: round.project_name, to: `/projects/${round.project_id}` },
             {
-              label: studyDisplayName(studio.name, studio.coding_type),
-              to: `/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`,
+              label: studyDisplayName(round.study_name, round.coding_type),
+              to: `/projects/${round.project_id}/studies/${round.studio_id}`,
             },
             { label: "Procesamiento" },
           ]}
         />
       </div>
 
-      <div 
+      <div
         className={`grid grid-cols-1 gap-4 items-start ${preliminary && !isProcessingNow && !fullscreenResolution ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
         style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
       >
       <div className="space-y-4 min-w-0 order-2 xl:order-none">
 
       <StudioHeader
-        studio={studio}
+        studio={round}
         autoProcessing={autoProcessing}
         neverProcessed={neverProcessed}
         isProcessingNow={isProcessingNow}
@@ -401,7 +401,7 @@ export default function UnifiedStudioView() {
             <div className="w-1 h-12 bg-p-text-muted/30 group-hover:bg-p-accent rounded-full transition-colors" />
           </div>
           <ResolutionSidebar
-            studioId={studioId}
+            roundId={roundId}
             onResolved={() => { loadData(); loadVerbatims(); }}
             onExpand={() => setFullscreenResolution(true)}
           />
@@ -410,7 +410,7 @@ export default function UnifiedStudioView() {
       </div>
 
       {fullscreenResolution && !isProcessingNow && (
-        <ResolutionCenter studioId={studioId} onClose={() => setFullscreenResolution(false)} />
+        <ResolutionCenter roundId={roundId} onClose={() => setFullscreenResolution(false)} />
       )}
 
       <AnimatePresence>
@@ -466,9 +466,9 @@ export default function UnifiedStudioView() {
         )}
       </AnimatePresence>
 
-      {phaseChoiceOpen && studioId && (
+      {phaseChoiceOpen && roundId && (
         <PhaseCompleteChoice
-          studioId={studioId}
+          roundId={roundId}
           variant="modal"
           onDismiss={() => setPhaseChoiceOpen(false)}
         />
@@ -476,5 +476,3 @@ export default function UnifiedStudioView() {
     </div>
   );
 }
-
-

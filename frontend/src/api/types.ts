@@ -2,23 +2,25 @@ export type CodingType = "brands" | "reasons";
 export type OriginMode = "from_scratch" | "homologated";
 export type CodingStatus = "pending" | "auto_coded" | "needs_review" | "manually_coded" | "unknown";
 
-// Matches GET /projects/{id}/rounds[].studios[] — a lightweight progress
-// summary, not the full Studio (that's a separate GET /studios/{id} call).
-export interface StudioSummary {
-  id: string;
-  name: string;
-  coding_type: CodingType;
-  status: string;
-  verbatims_total: number;
-  auto_coded: number;
-}
-
+// Matches GET /projects/{id}.studies[].rounds[] — a lightweight progress
+// summary, not the full Round (that's a separate GET /rounds/{id} call).
 export interface RoundSummary {
   id: string;
   name: string;
   round_number: number;
   status: string;
-  studios: StudioSummary[];
+  verbatims_total: number;
+  auto_coded: number;
+}
+
+// El Estudio (Marcas / Razones): entidad persistente dentro de un proyecto,
+// fija a través de las rondas. Cada ronda es una ola de datos independiente.
+export interface StudySummary {
+  id: string;
+  name: string;
+  coding_type: CodingType;
+  survey_question: string | null;
+  rounds: RoundSummary[];
 }
 
 // GET /projects returns a bare array, no pagination envelope.
@@ -26,8 +28,8 @@ export interface ProjectListItem {
   id: string;
   external_code: string;
   name: string;
-  rounds_count: number;
   studies_count: number;
+  rounds_count: number;
   created_at: string;
 }
 
@@ -35,7 +37,7 @@ export interface ProjectDetail {
   id: string;
   external_code: string;
   name: string;
-  rounds: RoundSummary[];
+  studies: StudySummary[];
   created_at: string;
 }
 
@@ -45,60 +47,60 @@ export interface Codebook {
   inherited_aliases: number;
 }
 
-// Rounds belong to a project; each round holds one studio instance per
-// logical study (Marcas / Razones). The UI groups those instances by study.
-export interface Round {
+// Un estudio (Marcas / Razones) dentro de un proyecto — persistente a través
+// de sus rondas.
+export interface Study {
   id: string;
   project_id: string;
+  name: string;
+  coding_type: CodingType;
+  survey_question: string | null;
+}
+
+// Una ronda es una ola de datos de un estudio: su propio Excel, verbatims,
+// codebook y procesamiento — cuelga del estudio, no del proyecto.
+export interface Round {
+  id: string;
+  studio_id: string;
   name: string;
   round_number: number;
   min_mentions_threshold: number;
   audit_percentage: number;
-  status: string;
-}
-
-// A studio is one coding stream (brands or reasons) within a round — it owns
-// the codebook, imported files, and verbatims for that stream.
-export interface Studio {
-  id: string;
-  round_id: string;
-  name: string;
-  coding_type: CodingType;
-  survey_question: string | null;
   origin_mode: OriginMode;
-  source_studio_id: string | null;
+  source_round_id: string | null;
   status: string;
   codebook: Codebook;
 }
 
-// GET /studios/{id} — the full studio row plus live counters and navigation context.
-export interface StudioCounters {
+// GET /rounds/{id} — la ronda completa + contadores en vivo y contexto de navegación.
+export interface RoundCounters {
   verbatims_total: number;
   mention_groups: number;
   codes_total: number;
   aliases_total: number;
 }
 
-export interface StudioNavContext {
-  round_name: string;
-  round_number: number;
+export interface RoundNavContext {
+  study_name: string;
+  coding_type: CodingType;
+  survey_question: string | null;
   project_id: string;
   project_name: string;
   project_external_code: string | null;
 }
 
-// Bloque `audit` de GET /studios/{id}: el estado que leen los badges y el
-// dashboard futuro. 'not_started' = estudio "sin auditar".
-export interface StudioAudit {
+// Bloque `audit` de GET /rounds/{id}: el estado que leen los badges y el
+// dashboard. 'not_started' = ronda "sin auditar".
+export interface RoundAudit {
   status: "not_started" | "in_progress" | "approved";
   reviewed_items: number;
   total_items: number;
   target_met: boolean;
 }
 
-export interface StudioStatus extends Studio, StudioNavContext {
-  counters: StudioCounters;
-  audit: StudioAudit;
+export interface RoundStatus extends Round, RoundNavContext {
+  counters: RoundCounters;
+  audit: RoundAudit;
 }
 
 export interface DetectedSheet {
@@ -123,10 +125,10 @@ export interface ColumnMap {
   input_code?: string;
 }
 
-// POST /studios/{id}/process — queued as a background task; poll studio status.
+// POST /rounds/{id}/process — queued as a background task; poll round status.
 export interface ProcessResult {
   status: "queued";
-  studio_id: string;
+  round_id: string;
 }
 
 export interface ImportResult {
@@ -137,14 +139,14 @@ export interface ImportResult {
     skipped_rows: number;
   };
   // Queued as a background task right after import — the LLM pass can take
-  // minutes, so the response doesn't wait for it. Poll GET /studios/{id} for
+  // minutes, so the response doesn't wait for it. Poll GET /rounds/{id} for
   // status: 'processing' (still working) -> 'preliminary_ready' (done).
   processing: { status: "queued" };
   warnings: string[];
-  studio_status: string;
+  round_status: string;
 }
 
-// GET /studios/{id}/preliminary
+// GET /rounds/{id}/preliminary
 export interface PreliminarySummary {
   summary: {
     auto_coded: number;
@@ -154,7 +156,7 @@ export interface PreliminarySummary {
   };
 }
 
-// GET /studios/{id}/verbatims — manual code assignment/edit is still Fase 3;
+// GET /rounds/{id}/verbatims — manual code assignment/edit is still Fase 3;
 // codes[] is read-only transparency into what the engine assigned and why.
 export interface VerbatimCode {
   code_number: number;
@@ -232,7 +234,7 @@ export interface UserProfile {
 
 export type MentionGroupStatus = "auto_coded" | "below_threshold" | "anomaly" | "pending_review" | "resolved";
 
-export interface StudioCode {
+export interface RoundCode {
   id: string;
   code_number: number;
   label: string;
@@ -270,7 +272,7 @@ export interface ResolutionSummary {
 
 export interface MentionGroupDetail {
   id: string;
-  studio_id: string;
+  round_id: string;
   normalized_text: string;
   sample_text: string | null;
   frequency_count: number;
@@ -297,7 +299,7 @@ export interface ResolveResult {
   group_id: string;
   status: "resolved";
   already_resolved: boolean;
-  codes_assigned: StudioCode[];
+  codes_assigned: RoundCode[];
   verbatims_updated: number;
   new_code: { id: string; code_number: number; label: string; is_new: boolean } | null;
   auto_resolved_groups: { id: string; normalized_text: string }[];
@@ -314,10 +316,10 @@ export type AuditItemStatus = "pending" | "correct" | "reassigned";
 export type AuditSessionStatus = "pending" | "in_progress" | "approved";
 export type AuditCodeReviewStatus = "pending" | "approved" | "with_corrections";
 
-// GET/POST /studios/{id}/audit/session — resumen de la última sesión.
+// GET/POST /rounds/{id}/audit/session — resumen de la última sesión.
 export interface AuditSessionSummary {
   id: string;
-  studio_id: string;
+  round_id: string;
   processing_run_id: string | null;
   target_percentage: number;
   total_items: number;
@@ -336,7 +338,7 @@ export interface AuditSessionSummary {
   is_stale: boolean;
 }
 
-// GET /studios/{id}/audit/codes — la capa de agrupación por código de la muestra.
+// GET /rounds/{id}/audit/codes — la capa de agrupación por código de la muestra.
 export interface AuditCodeReview {
   id: string;
   code: { id: string; code_number: number; label: string; net: string | null };
@@ -420,8 +422,8 @@ export interface ReportCodeStat {
   samples: string[];
 }
 
-// GET /studios/{id}/report
-export interface StudioReport {
+// GET /rounds/{id}/report
+export interface RoundReport {
   verbatims_total: number;
   auto_coded: number;
   auto_coded_pct: number;

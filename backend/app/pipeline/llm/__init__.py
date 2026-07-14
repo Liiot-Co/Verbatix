@@ -2,6 +2,6 @@
 leftover de marcas que el fuzzy no resuelve.
 """
 
-from .classify import classify_studio
+from .classify import classify_round
 
-__all__ = ["classify_studio"]
+__all__ = ["classify_round"]

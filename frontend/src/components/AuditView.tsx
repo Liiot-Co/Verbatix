@@ -18,8 +18,8 @@ import {
   deleteAuditItem,
   getAuditCodes,
   getAuditItems,
-  getStudio,
-  getStudioCodes,
+  getRound,
+  getRoundCodes,
   patchAuditItem,
   reviewAuditItem,
 } from "@/api/client";
@@ -28,13 +28,13 @@ import type {
   AuditItem,
   AuditSessionSummary,
   CodingType,
-  StudioCode,
-  StudioStatus,
+  RoundCode,
+  RoundStatus,
 } from "@/api/types";
 import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { playSuccess, playTick } from "@/lib/sound";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
-import { studyDisplayName, studyKey } from "@/lib/projectTree";
+import { studyDisplayName } from "@/lib/projectTree";
 import Breadcrumb from "./Breadcrumb";
 
 const ITEMS_PAGE = 200;
@@ -66,14 +66,14 @@ function codeColor(codeNumber: number): string {
  * auditoría.
  */
 export default function AuditView() {
-  const { studioId } = useParams<{ studioId: string }>();
+  const { roundId } = useParams<{ roundId: string }>();
   const navigate = useNavigate();
   const showToast = useVerbatixStore((s) => s.showToast);
 
-  const [studio, setStudio] = useState<StudioStatus | null>(null);
+  const [studio, setStudio] = useState<RoundStatus | null>(null);
   const [summary, setSummary] = useState<AuditSessionSummary | null>(null);
   const [reviews, setReviews] = useState<AuditCodeReview[]>([]);
-  const [codes, setCodes] = useState<StudioCode[]>([]);
+  const [codes, setCodes] = useState<RoundCode[]>([]);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
   const [items, setItems] = useState<AuditItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -102,20 +102,20 @@ export default function AuditView() {
   // Bootstrap: POST crea o reanuda la sesión (idempotente) — cubre el deep-link
   // a /audit sin sesión creada. Un 422 significa resolución incompleta.
   useEffect(() => {
-    if (!studioId) return;
+    if (!roundId) return;
     setLoading(true);
     (async () => {
       try {
-        const [s, session] = await Promise.all([getStudio(studioId), createAuditSession(studioId)]);
+        const [s, session] = await Promise.all([getRound(roundId), createAuditSession(roundId)]);
         setStudio(s);
         setSummary(session);
         if (session.status === "approved") {
-          navigate(`/studios/${studioId}/report`, { replace: true });
+          navigate(`/rounds/${roundId}/report`, { replace: true });
           return;
         }
         const [list] = await Promise.all([
-          loadReviews(studioId),
-          getStudioCodes(studioId, true).then(setCodes),
+          loadReviews(roundId),
+          getRoundCodes(roundId, true).then(setCodes),
         ]);
         const firstPending = list.find((r) => r.reviewed_count < r.items_count) ?? list[0];
         if (firstPending) setSelectedReviewId(firstPending.id);
@@ -130,7 +130,7 @@ export default function AuditView() {
         setLoading(false);
       }
     })();
-  }, [studioId, loadReviews, navigate]);
+  }, [roundId, loadReviews, navigate]);
 
   useEffect(() => {
     if (!selectedReviewId) {
@@ -149,9 +149,9 @@ export default function AuditView() {
   const refreshCounters = useCallback(
     (session: AuditSessionSummary) => {
       setSummary(session);
-      if (studioId) loadReviews(studioId).catch(() => {});
+      if (roundId) loadReviews(roundId).catch(() => {});
     },
-    [studioId, loadReviews]
+    [roundId, loadReviews]
   );
 
   /** Actualización optimista con rollback (patrón del Centro de Resolución). */
@@ -177,7 +177,7 @@ export default function AuditView() {
   // Aprueba la SECCIÓN seleccionada: los items sin corregir pasan a 'correct'
   // de una vez — el analista no marca verbatim por verbatim.
   const handleApproveSection = useCallback(async () => {
-    if (!selectedReviewId || busy || !studioId) return;
+    if (!selectedReviewId || busy || !roundId) return;
     setBusy(true);
     try {
       const res = await approveAuditSection(selectedReviewId);
@@ -191,7 +191,7 @@ export default function AuditView() {
         "success"
       );
       // Saltar a la siguiente sección pendiente para mantener el flujo.
-      const list = await loadReviews(studioId);
+      const list = await loadReviews(roundId);
       const next = list.find((r) => r.id !== selectedReviewId && r.status === "pending");
       if (next) setSelectedReviewId(next.id);
     } catch {
@@ -199,7 +199,7 @@ export default function AuditView() {
     } finally {
       setBusy(false);
     }
-  }, [selectedReviewId, busy, studioId, showToast, loadReviews]);
+  }, [selectedReviewId, busy, roundId, showToast, loadReviews]);
 
   const submitReassign = useCallback(
     (item: AuditItem) => {
@@ -226,14 +226,14 @@ export default function AuditView() {
             new_code: label ? { label } : null,
             expected_status: item.status,
           });
-          if (res.new_code?.is_new && studioId) {
-            getStudioCodes(studioId, true).then(setCodes).catch(() => {});
+          if (res.new_code?.is_new && roundId) {
+            getRoundCodes(roundId, true).then(setCodes).catch(() => {});
           }
           return res.summary;
         }
       );
     },
-    [reassignCodeId, newCodeLabel, codes, applyOptimistic, studioId]
+    [reassignCodeId, newCodeLabel, codes, applyOptimistic, roundId]
   );
 
   const removeItem = useCallback(
@@ -265,14 +265,14 @@ export default function AuditView() {
   );
 
   const handleApprove = useCallback(async () => {
-    if (!studioId || !summary || busy) return;
+    if (!roundId || !summary || busy) return;
     setBusy(true);
     try {
-      const res = await approveAudit(studioId);
+      const res = await approveAudit(roundId);
       setSummary(res);
       playSuccess();
       showToast("Auditoría aprobada — el estudio quedó auditado.", "success");
-      navigate(`/studios/${studioId}/report`, { replace: true });
+      navigate(`/rounds/${roundId}/report`, { replace: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "";
       showToast(
@@ -282,15 +282,15 @@ export default function AuditView() {
     } finally {
       setBusy(false);
     }
-  }, [studioId, summary, busy, showToast, navigate]);
+  }, [roundId, summary, busy, showToast, navigate]);
 
   const handleResample = useCallback(async () => {
-    if (!studioId || busy) return;
+    if (!roundId || busy) return;
     setBusy(true);
     try {
-      const session = await createAuditSession(studioId, true);
+      const session = await createAuditSession(roundId, true);
       setSummary(session);
-      const list = await loadReviews(studioId);
+      const list = await loadReviews(roundId);
       setSelectedReviewId(list[0]?.id ?? null);
       showToast("Muestra regenerada con el último procesamiento.", "success");
     } catch {
@@ -298,7 +298,7 @@ export default function AuditView() {
     } finally {
       setBusy(false);
     }
-  }, [studioId, busy, loadReviews, showToast]);
+  }, [roundId, busy, loadReviews, showToast]);
 
   const focusedItem = items[focusIndex] ?? null;
   const approved = summary?.status === "approved";
@@ -369,7 +369,7 @@ export default function AuditView() {
     [reviews, selectedReviewId]
   );
 
-  if (!studioId) return null;
+  if (!roundId) return null;
 
   if (loading) {
     return (
@@ -386,10 +386,10 @@ export default function AuditView() {
 
   const studyCrumb = studio
     ? {
-        label: studyDisplayName(studio.name, studio.coding_type),
-        to: `/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`,
+        label: studyDisplayName(studio.study_name, studio.coding_type),
+        to: `/projects/${studio.project_id}/studies/${studio.studio_id}`,
       }
-    : { label: "Estudio", to: `/studios/${studioId}` };
+    : { label: "Estudio", to: `/rounds/${roundId}` };
 
   if (blockedReason) {
     return (
@@ -399,7 +399,7 @@ export default function AuditView() {
             { label: "Proyectos", to: "/" },
             ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
             studyCrumb,
-            { label: "Reporte", to: `/studios/${studioId}/report` },
+            { label: "Reporte", to: `/rounds/${roundId}/report` },
             { label: "Auditoría" },
           ]}
         />
@@ -407,7 +407,7 @@ export default function AuditView() {
           <AlertTriangle className="w-8 h-8 text-p-warning mx-auto" />
           <h1 className="font-heading text-xl font-semibold text-p-text">Auditoría no disponible</h1>
           <p className="text-sm text-p-text-muted">{blockedReason}</p>
-          <Link to={`/studios/${studioId}/report`} className="btn-primary inline-flex justify-center">
+          <Link to={`/rounds/${roundId}/report`} className="btn-primary inline-flex justify-center">
             Ir al reporte
           </Link>
         </div>
@@ -428,7 +428,7 @@ export default function AuditView() {
           { label: "Proyectos", to: "/" },
           ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
           studyCrumb,
-          { label: "Reporte", to: `/studios/${studioId}/report` },
+          { label: "Reporte", to: `/rounds/${roundId}/report` },
           { label: "Auditoría" },
         ]}
       />
@@ -458,7 +458,7 @@ export default function AuditView() {
               <button
                 type="button"
                 className="btn-ghost text-sm py-2"
-                onClick={() => navigate(`/studios/${studioId}/report`)}
+                onClick={() => navigate(`/rounds/${roundId}/report`)}
               >
                 Ver reporte
               </button>
@@ -668,7 +668,7 @@ interface AuditRowProps {
   item: AuditItem;
   focused: boolean;
   approved: boolean;
-  codes: StudioCode[];
+  codes: RoundCode[];
   noun: string;
   reassignOpen: boolean;
   reassignCodeId: string;

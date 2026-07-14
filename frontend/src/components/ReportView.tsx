@@ -19,15 +19,15 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { motion } from "framer-motion";
-import { downloadCodebookExport, getStudio, getStudioReport } from "@/api/client";
-import type { CodingType, ReportCodeStat, StudioReport, StudioStatus } from "@/api/types";
+import { downloadCodebookExport, getRound, getRoundReport } from "@/api/client";
+import type { CodingType, ReportCodeStat, RoundReport, RoundStatus } from "@/api/types";
 import { glowVariantForIndex } from "@/components/GlowCard";
-import { studyDisplayName, studyKey } from "@/lib/projectTree";
+import { studyDisplayName } from "@/lib/projectTree";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import Breadcrumb from "./Breadcrumb";
 
 const AUDIT_BADGE: Record<
-  StudioStatus["audit"]["status"],
+  RoundStatus["audit"]["status"],
   { label: string; className: string }
 > = {
   not_started: { label: "Sin auditar", className: "badge-pending" },
@@ -209,26 +209,26 @@ const GLOW_CLASS: Record<1 | 2 | 3, string> = {
 };
 
 export default function ReportView() {
-  const { studioId } = useParams<{ studioId: string }>();
+  const { roundId } = useParams<{ roundId: string }>();
   const navigate = useNavigate();
   const showToast = useVerbatixStore((s) => s.showToast);
 
-  const [studio, setStudio] = useState<StudioStatus | null>(null);
-  const [report, setReport] = useState<StudioReport | null>(null);
+  const [studio, setStudio] = useState<RoundStatus | null>(null);
+  const [report, setReport] = useState<RoundReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
-    if (!studioId) return;
+    if (!roundId) return;
     setLoading(true);
-    Promise.all([getStudio(studioId), getStudioReport(studioId)])
+    Promise.all([getRound(roundId), getRoundReport(roundId)])
       .then(([s, r]) => {
         setStudio(s);
         setReport(r);
       })
       .catch(() => showToast("No se pudo cargar el reporte.", "error"))
       .finally(() => setLoading(false));
-  }, [studioId, showToast]);
+  }, [roundId, showToast]);
 
   const codingType: CodingType = studio?.coding_type ?? "brands";
   const typeLabel = codingType === "brands" ? "marcas" : "razones";
@@ -249,24 +249,24 @@ export default function ReportView() {
   }, [report?.codes]);
 
   const handleExport = useCallback(async () => {
-    if (!studioId || exporting) return;
+    if (!roundId || exporting) return;
     setExporting(true);
     try {
-      await downloadCodebookExport(studioId);
+      await downloadCodebookExport(roundId);
       showToast("Paquete descargado (Excel + MDD).", "success");
     } catch {
       showToast("No se pudo exportar el paquete.", "error");
     } finally {
       setExporting(false);
     }
-  }, [studioId, exporting, showToast]);
+  }, [roundId, exporting, showToast]);
 
   const studyCrumb = studio
     ? {
-        label: studyDisplayName(studio.name, studio.coding_type),
-        to: `/projects/${studio.project_id}/studies/${studyKey(studio.coding_type, studio.name)}`,
+        label: studyDisplayName(studio.study_name, studio.coding_type),
+        to: `/projects/${studio.project_id}/studies/${studio.studio_id}`,
       }
-    : { label: "Estudio", to: `/studios/${studioId}` };
+    : { label: "Estudio", to: `/rounds/${roundId}` };
 
   if (loading) {
     return (
@@ -278,7 +278,7 @@ export default function ReportView() {
   }
 
   const studyTitle = studio
-    ? studyDisplayName(studio.name, studio.coding_type)
+    ? studyDisplayName(studio.study_name, studio.coding_type)
     : "Reporte del estudio";
 
   return (
@@ -326,7 +326,7 @@ export default function ReportView() {
             <button
               type="button"
               className="btn-ghost-sm shrink-0"
-              onClick={() => navigate(`/studios/${studioId}/audit`)}
+              onClick={() => navigate(`/rounds/${roundId}/audit`)}
             >
               Auditar
             </button>

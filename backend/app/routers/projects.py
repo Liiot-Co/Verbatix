@@ -52,9 +52,11 @@ def list_projects(
     rows = db.execute(
         text("""
             select p.id, p.external_code, p.name, p.created_at,
-                   count(r.id) as rounds_count
+                   count(distinct s.id) as studies_count,
+                   count(distinct r.id) as rounds_count
             from projects p
-            left join rounds r on r.project_id = p.id
+            left join studio s on s.project_id = p.id
+            left join rounds r on r.studio_id = s.id
             where p.created_by = :u
             group by p.id
             order by p.created_at desc
@@ -66,6 +68,7 @@ def list_projects(
             "id": str(r["id"]),
             "external_code": r["external_code"],
             "name": r["name"],
+            "studies_count": r["studies_count"],
             "rounds_count": r["rounds_count"],
             "created_at": r["created_at"],
         }
@@ -100,35 +103,36 @@ def get_project(
         {"id": project_id},
     ).mappings().first()
 
-    rounds = db.execute(
+    studies = db.execute(
         text("""
-            select id, name, round_number, status
-            from rounds where project_id = :id
-            order by round_number
+            select id, name, coding_type, survey_question
+            from studio where project_id = :id
+            order by created_at
         """),
         {"id": project_id},
     ).mappings().all()
 
-    studios = db.execute(
+    rounds = db.execute(
         text("""
-            select s.id, s.round_id, s.name, s.coding_type, s.status,
-                   (select count(*) from verbatims v where v.studio_id = s.id) as verbatims_total,
-                   (select count(*) from verbatims v where v.studio_id = s.id and v.coding_status = 'auto_coded') as auto_coded
-            from studio s
-            join rounds r on r.id = s.round_id
-            where r.project_id = :id
+            select r.id, r.studio_id, r.name, r.round_number, r.status,
+                   (select count(*) from verbatims v where v.round_id = r.id) as verbatims_total,
+                   (select count(*) from verbatims v where v.round_id = r.id and v.coding_status = 'auto_coded') as auto_coded
+            from rounds r
+            join studio s on s.id = r.studio_id
+            where s.project_id = :id
+            order by r.round_number
         """),
         {"id": project_id},
     ).mappings().all()
-    studios_by_round: dict[str, list[dict]] = {}
-    for s in studios:
-        studios_by_round.setdefault(str(s["round_id"]), []).append({
-            "id": str(s["id"]),
-            "name": s["name"],
-            "coding_type": s["coding_type"],
-            "status": s["status"],
-            "verbatims_total": s["verbatims_total"],
-            "auto_coded": s["auto_coded"],
+    rounds_by_study: dict[str, list[dict]] = {}
+    for r in rounds:
+        rounds_by_study.setdefault(str(r["studio_id"]), []).append({
+            "id": str(r["id"]),
+            "name": r["name"],
+            "round_number": r["round_number"],
+            "status": r["status"],
+            "verbatims_total": r["verbatims_total"],
+            "auto_coded": r["auto_coded"],
         })
 
     return {
@@ -136,14 +140,14 @@ def get_project(
         "external_code": project["external_code"],
         "name": project["name"],
         "created_at": project["created_at"],
-        "rounds": [
+        "studies": [
             {
-                "id": str(r["id"]),
-                "name": r["name"],
-                "round_number": r["round_number"],
-                "status": r["status"],
-                "studios": studios_by_round.get(str(r["id"]), []),
+                "id": str(s["id"]),
+                "name": s["name"],
+                "coding_type": s["coding_type"],
+                "survey_question": s["survey_question"],
+                "rounds": rounds_by_study.get(str(s["id"]), []),
             }
-            for r in rounds
+            for s in studies
         ],
     }

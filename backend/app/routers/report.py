@@ -6,46 +6,46 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.access import require_studio
+from app.core.access import require_round
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.pipeline.export import build_export_zip
-from app.repositories import get_codebook_export_data, get_studio_report
+from app.repositories import get_round_export_data, get_round_report
 
 router = APIRouter(prefix="/api/v1", tags=["report"])
 
 
-@router.get("/studios/{studio_id}/report")
-def studio_report(
-    studio_id: uuid.UUID,
+@router.get("/rounds/{round_id}/report")
+def round_report(
+    round_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_studio(db, studio_id, user["id"])
-    return get_studio_report(db, studio_id)
+    require_round(db, round_id, user["id"])
+    return get_round_report(db, round_id)
 
 
-@router.get("/studios/{studio_id}/report/export")
+@router.get("/rounds/{round_id}/report/export")
 def export_codebook(
-    studio_id: uuid.UUID,
+    round_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_studio(db, studio_id, user["id"])
+    require_round(db, round_id, user["id"])
     nav = db.execute(
         text("""
             select p.external_code, r.round_number
-            from studio s
-            join rounds r on r.id = s.round_id
-            join projects p on p.id = r.project_id
-            where s.id = :id
+            from rounds r
+            join studio s on s.id = r.studio_id
+            join projects p on p.id = s.project_id
+            where r.id = :id
         """),
-        {"id": studio_id},
+        {"id": round_id},
     ).mappings().first()
 
-    export_data = get_codebook_export_data(db, studio_id)
+    export_data = get_round_export_data(db, round_id)
     if not export_data:
-        raise HTTPException(404, "Estudio sin datos de exportación")
+        raise HTTPException(404, "Ronda sin datos de exportación")
 
     zip_bytes = build_export_zip(export_data)
 

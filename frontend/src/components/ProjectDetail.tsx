@@ -4,7 +4,7 @@ import { ArrowRight, Plus } from "lucide-react";
 import { getProject } from "@/api/client";
 import type { ProjectDetail as ProjectDetailType } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
-import { codingTypeLabel, countStudies, groupProjectByStudies, studyDisplayName } from "@/lib/projectTree";
+import { codingTypeLabel, studyDisplayName } from "@/lib/projectTree";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
 
@@ -66,8 +66,9 @@ export default function ProjectDetail() {
     );
   }
 
-  const studies = groupProjectByStudies(project);
-  const studiesCount = countStudies(project);
+  const studies = project.studies;
+  const studiesCount = studies.length;
+  const totalRounds = studies.reduce((n, s) => n + s.rounds.length, 0);
 
   return (
     <div className="max-w-4xl mx-auto py-4 space-y-5">
@@ -80,7 +81,7 @@ export default function ProjectDetail() {
             <span className="font-semibold text-p-text-muted">{project.external_code}</span>
             <span>
               {studiesCount} {studiesCount === 1 ? "estudio" : "estudios"}
-              · {project.rounds.length} {project.rounds.length === 1 ? "ronda" : "rondas"}
+              · {totalRounds} {totalRounds === 1 ? "ronda" : "rondas"}
             </span>
           </div>
         </div>
@@ -115,13 +116,13 @@ export default function ProjectDetail() {
           </h2>
           <div className="space-y-2">
             {studies.map((study) => {
-              const totalVerbatims = study.rounds.reduce((n, r) => n + r.studio.verbatims_total, 0);
-              const totalCoded = study.rounds.reduce((n, r) => n + r.studio.auto_coded, 0);
+              const totalVerbatims = study.rounds.reduce((n, r) => n + r.verbatims_total, 0);
+              const totalCoded = study.rounds.reduce((n, r) => n + r.auto_coded, 0);
               const typeLabel = codingTypeLabel(study.coding_type);
               return (
                 <Link
-                  key={study.key}
-                  to={`/projects/${project.id}/studies/${study.key}`}
+                  key={study.id}
+                  to={`/projects/${project.id}/studies/${study.id}`}
                   className="project-row group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40"
                 >
                   <div className={`project-row-icon project-row-icon-${study.coding_type === "brands" ? "1" : "2"}`}>

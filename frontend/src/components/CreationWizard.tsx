@@ -9,7 +9,7 @@ import Breadcrumb, { type Crumb } from "./Breadcrumb";
 import {
   createProject,
   createRound,
-  createStudio,
+  createStudy,
   getProject,
   importFile,
   uploadFile,
@@ -21,12 +21,13 @@ import type {
   OriginMode,
   ProjectDetail,
   Round,
-  Studio,
-  StudioSummary,
+  RoundSummary,
+  Study,
+  StudySummary,
   UploadedFile,
 } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { codingTypeLabel, nextRoundNumber, parseStudyKey } from "@/lib/projectTree";
+import { codingTypeLabel, findStudy, nextRoundNumber } from "@/lib/projectTree";
 
 type WizardStep = "project" | "studio" | "round";
 
@@ -112,15 +113,16 @@ export default function CreationWizard() {
   const [newExternalCode, setNewExternalCode] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
 
-  // Step 2: estudio (definición lógica — Marcas / Razones)
+  // Step 2: estudio (definición lógica, persistente — Marcas / Razones)
+  const [existingStudy, setExistingStudy] = useState<StudySummary | null>(null); // deep-link: reusar en vez de crear
   const [round, setRound] = useState<Round | null>(null);
-  const [studio, setStudio] = useState<Studio | null>(null);
-  const [newStudioName, setNewStudioName] = useState("");
-  const [newStudioCodingType, setNewStudioCodingType] = useState<CodingType>("brands");
+  const [study, setStudy] = useState<Study | null>(null);
+  const [newStudyName, setNewStudyName] = useState("");
+  const [newStudyCodingType, setNewStudyCodingType] = useState<CodingType>("brands");
   // El placeholder deriva del tipo y hace de nombre por defecto si el campo queda vacío.
-  const defaultStudioName = newStudioCodingType === "brands" ? "Marcas" : "Razones";
-  const studioName = newStudioName.trim() || defaultStudioName;
-  const [newStudioQuestion, setNewStudioQuestion] = useState("");
+  const defaultStudyName = newStudyCodingType === "brands" ? "Marcas" : "Razones";
+  const studyName = newStudyName.trim() || defaultStudyName;
+  const [newStudyQuestion, setNewStudyQuestion] = useState("");
   const [sOriginMode, setSOriginMode] = useState<OriginMode>("from_scratch");
   const [sSourceId, setSSourceId] = useState<string>("");
 
@@ -140,10 +142,10 @@ export default function CreationWizard() {
   const [sheetError, setSheetError] = useState<string | null>(null);
 
   const projectRef = useRef<HTMLInputElement>(null);
-  const studioRef = useRef<HTMLInputElement>(null);
+  const studyRef = useRef<HTMLInputElement>(null);
   const roundRef = useRef<HTMLInputElement>(null);
 
-  // Deep-link: /wizard?projectId=... (nuevo estudio) o &study=... (nueva ronda)
+  // Deep-link: /wizard?projectId=... (nuevo estudio) o &study=<studyId> (nueva ronda)
   useEffect(() => {
     const projectId = searchParams.get("projectId");
     if (!projectId) return;
@@ -154,16 +156,17 @@ export default function CreationWizard() {
       setNewExternalCode(detail.external_code);
       setNewProjectName(detail.name);
 
-      const nextNum = nextRoundNumber(detail.rounds);
-      setRRoundNumber(nextNum);
-      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
-
-      const studyParam = searchParams.get("study");
-      if (studyParam) {
-        const parsed = parseStudyKey(studyParam);
-        if (parsed) {
-          setNewStudioName(parsed.name);
-          setNewStudioCodingType(parsed.coding_type);
+      const studyId = searchParams.get("study");
+      if (studyId) {
+        const found = findStudy(detail, studyId);
+        if (found) {
+          setExistingStudy(found);
+          setNewStudyName(found.name);
+          setNewStudyCodingType(found.coding_type);
+          setNewStudyQuestion(found.survey_question ?? "");
+          const nextNum = nextRoundNumber(found.rounds);
+          setRRoundNumber(nextNum);
+          setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
           goToStep("round");
           return;
         }
@@ -173,21 +176,24 @@ export default function CreationWizard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Studios of the same coding_type elsewhere in the project, offered as a
-  // homologation source. Refetched whenever the studio step is reached, since
-  // it needs the project's full round/studio tree (not just WizardProject).
-  const [homologationCandidates, setHomologationCandidates] = useState<StudioSummary[]>([]);
+  // Estudios del mismo coding_type en el proyecto: sus rondas se ofrecen como
+  // fuente de homologación. Refetched al llegar al paso de estudio/ronda, ya
+  // que necesita el árbol completo del proyecto (no solo WizardProject).
+  interface HomologationCandidate extends RoundSummary {
+    studyName: string;
+  }
+  const [homologationCandidates, setHomologationCandidates] = useState<HomologationCandidate[]>([]);
 
   useEffect(() => {
     if (step !== "studio" && step !== "round" || !project) return;
     getProject(project.id).then((detail) => {
       setProjectDetail(detail);
-      const candidates = detail.rounds
-        .flatMap((r) => r.studios)
-        .filter((s) => s.coding_type === newStudioCodingType);
+      const candidates = detail.studies
+        .filter((s) => s.coding_type === newStudyCodingType)
+        .flatMap((s) => s.rounds.map((r) => ({ ...r, studyName: s.name })));
       setHomologationCandidates(candidates);
     });
-  }, [step, project, newStudioCodingType]);
+  }, [step, project, newStudyCodingType]);
 
   const goToStep = (next: WizardStep) => {
     const nextIndex = STEPS.findIndex((s) => s.key === next);
@@ -203,7 +209,7 @@ export default function CreationWizard() {
         const created = await createProject(newExternalCode.trim(), newProjectName.trim());
         setProject(created);
         setActiveProjectId(created.id);
-        setProjectDetail({ ...created, rounds: [], created_at: new Date().toISOString() });
+        setProjectDetail({ ...created, studies: [], created_at: new Date().toISOString() });
       }
       playSuccess();
       goToStep("studio");
@@ -214,7 +220,10 @@ export default function CreationWizard() {
 
   const handleContinueFromStudio = () => {
     if (projectDetail) {
-      const nextNum = nextRoundNumber(projectDetail.rounds);
+      const existing = projectDetail.studies.find(
+        (s) => s.coding_type === newStudyCodingType && s.name === studyName
+      );
+      const nextNum = nextRoundNumber(existing?.rounds ?? []);
       setRRoundNumber(nextNum);
       setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
     }
@@ -222,35 +231,39 @@ export default function CreationWizard() {
     goToStep("round");
   };
 
-  // Crea la ronda + el estudio la primera vez que hace falta (al soltar el
-  // Excel) — el usuario no ve un paso de "crear ronda" separado del de subir
-  // el archivo, ambos viven en el mismo panel.
-  const ensureStudio = async (): Promise<Studio | null> => {
-    if (studio) return studio;
+  // Crea el estudio (si hace falta) + la ronda la primera vez que hace falta
+  // (al soltar el Excel) — el usuario no ve un paso de "crear ronda" separado
+  // del de subir el archivo, ambos viven en el mismo panel.
+  const ensureRound = async (): Promise<Round | null> => {
+    if (round) return round;
     if (!project || !rName.trim()) return null;
     try {
-      const createdRound = await createRound(project.id, {
+      let studyId = existingStudy?.id ?? study?.id;
+      if (!studyId) {
+        const createdStudy = await createStudy(project.id, {
+          name: studyName,
+          coding_type: newStudyCodingType,
+          survey_question: newStudyQuestion.trim() || undefined,
+        });
+        setStudy(createdStudy);
+        studyId = createdStudy.id;
+      }
+      const created = await createRound(studyId, {
         name: rName.trim(),
         round_number: rRoundNumber,
         min_mentions_threshold: rThreshold,
         audit_percentage: rAudit,
-      });
-      setRound(createdRound);
-      const created = await createStudio(createdRound.id, {
-        name: studioName,
-        coding_type: newStudioCodingType,
-        survey_question: newStudioQuestion.trim() || undefined,
         origin_mode: sOriginMode,
-        source_studio_id: sOriginMode === "homologated" && sSourceId ? sSourceId : null,
+        source_round_id: sOriginMode === "homologated" && sSourceId ? sSourceId : null,
       });
-      setStudio(created);
+      setRound(created);
       if (created.codebook.inherited_codes > 0) {
         showToast(`Se heredaron ${created.codebook.inherited_codes} códigos y ${created.codebook.inherited_aliases} alias`, "success");
       }
       playSuccess();
       return created;
     } catch {
-      showToast("Error al crear la ronda o el estudio", "error");
+      showToast("Error al crear la ronda", "error");
       return null;
     }
   };
@@ -259,10 +272,10 @@ export default function CreationWizard() {
     async (accepted: File[]) => {
       const file = accepted[0];
       if (!file) return;
-      const st = await ensureStudio();
-      if (!st) return;
+      const r = await ensureRound();
+      if (!r) return;
       setSheetError(null);
-      const result = await uploadFile(st.id, file);
+      const result = await uploadFile(r.id, file);
       setUploaded(result);
       const verbatimGuess = result.detected_sheets.find((s) => s.guessed_as === "verbatims");
       const codebookGuess = result.detected_sheets.find((s) => s.guessed_as === "codebook");
@@ -271,7 +284,7 @@ export default function CreationWizard() {
       playTick();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [studio, project, rName, rRoundNumber, rThreshold, rAudit, newStudioName, newStudioCodingType, newStudioQuestion, sOriginMode, sSourceId]
+    [round, study, existingStudy, project, rName, rRoundNumber, rThreshold, rAudit, newStudyName, newStudyCodingType, newStudyQuestion, sOriginMode, sSourceId]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -285,14 +298,14 @@ export default function CreationWizard() {
 
   const activeSheet: DetectedSheet | undefined = uploaded?.detected_sheets.find((s) => s.name === verbatimsSheet);
 
-  const canImport = !!(studio && uploaded && verbatimsSheet && columnMap.verbatim);
+  const canImport = !!(round && uploaded && verbatimsSheet && columnMap.verbatim);
 
   const handleImport = async () => {
-    if (!studio || !uploaded || !verbatimsSheet || !columnMap.verbatim) return;
+    if (!round || !uploaded || !verbatimsSheet || !columnMap.verbatim) return;
     setSubmitting(true);
     try {
       const result = await importFile(
-        studio.id,
+        round.id,
         uploaded.file_id,
         verbatimsSheet,
         columnMap as ColumnMap,
@@ -303,7 +316,7 @@ export default function CreationWizard() {
         "success"
       );
       playSuccess();
-      navigate(`/studios/${studio.id}/preliminary`);
+      navigate(`/rounds/${round.id}/preliminary`);
     } catch {
       showToast("No se pudo importar el archivo", "error");
     } finally {
@@ -313,6 +326,7 @@ export default function CreationWizard() {
 
   const stepIndex = STEPS.findIndex((s) => s.key === step);
 
+  const activeStudyName = existingStudy?.name ?? study?.name;
   const crumbs: Crumb[] = [
     { label: "Proyectos", to: "/" },
     {
@@ -320,7 +334,7 @@ export default function CreationWizard() {
       ...(project && step !== "project" ? { onClick: () => goToStep("project") } : {}),
     },
   ];
-  if (studio) crumbs.push({ label: studio.name });
+  if (activeStudyName) crumbs.push({ label: activeStudyName });
 
   const projectPanelKeyDown = useEnterToSubmit(handleCreateProject);
   const studioPanelKeyDown = useEnterToSubmit(handleContinueFromStudio);
@@ -354,7 +368,7 @@ export default function CreationWizard() {
   useEffect(() => {
     setTimeout(() => {
       if (step === "project") projectRef.current?.focus();
-      if (step === "studio") studioRef.current?.focus();
+      if (step === "studio") studyRef.current?.focus();
       if (step === "round") roundRef.current?.focus();
     }, 100);
   }, [step]);
@@ -500,11 +514,11 @@ export default function CreationWizard() {
                       { value: "brands" as CodingType, label: "Marcas" },
                       { value: "reasons" as CodingType, label: "Razones" },
                     ]}
-                    value={newStudioCodingType}
+                    value={newStudyCodingType}
                     onChange={(type) => {
-                      setNewStudioCodingType(type);
+                      setNewStudyCodingType(type);
                       // Si el nombre sigue siendo el default del tipo, alinearlo al nuevo.
-                      setNewStudioName((prev) =>
+                      setNewStudyName((prev) =>
                         prev === "" || prev === "Marcas" || prev === "Razones"
                           ? codingTypeLabel(type)
                           : prev
@@ -516,12 +530,12 @@ export default function CreationWizard() {
                 <div>
                   <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre</motion.label>
                   <motion.input
-                    ref={studioRef}
+                    ref={studyRef}
                     autoFocus
                     className="input w-full text-sm mt-1"
-                    placeholder={defaultStudioName}
-                    value={newStudioName}
-                    onChange={(e) => setNewStudioName(e.target.value)}
+                    placeholder={defaultStudyName}
+                    value={newStudyName}
+                    onChange={(e) => setNewStudyName(e.target.value)}
                     whileFocus={{ scale: 1.002 }}
                   />
                 </div>
@@ -531,8 +545,8 @@ export default function CreationWizard() {
                   <motion.input
                     className="input w-full text-sm mt-1"
                     placeholder="Q030 - BE1: ¿Qué marcas...?"
-                    value={newStudioQuestion}
-                    onChange={(e) => setNewStudioQuestion(e.target.value)}
+                    value={newStudyQuestion}
+                    onChange={(e) => setNewStudyQuestion(e.target.value)}
                     whileFocus={{ scale: 1.002 }}
                   />
                 </div>
@@ -564,7 +578,7 @@ export default function CreationWizard() {
                     >
                       <option value="">Sin origen (libro de códigos externo)</option>
                       {homologationCandidates.map((c) => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
+                        <option key={c.id} value={c.id}>{c.studyName} · R{c.round_number} ({c.name})</option>
                       ))}
                     </motion.select>
                   </motion.div>
@@ -591,20 +605,20 @@ export default function CreationWizard() {
                 whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
               >
-                <ChevronLeft className="w-3.5 h-3.5" /> {studioName}
+                <ChevronLeft className="w-3.5 h-3.5" /> {studyName}
               </motion.button>
 
               <div className="card p-4 space-y-2.5">
                 <p className="text-xs text-p-text-faint">
-                  Estudio <span className="font-semibold text-p-text-muted">{studioName}</span>
-                  {" "}({newStudioCodingType === "brands" ? "Marcas" : "Razones"})
+                  Estudio <span className="font-semibold text-p-text-muted">{studyName}</span>
+                  {" "}({newStudyCodingType === "brands" ? "Marcas" : "Razones"})
                 </p>
 
                 <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre de la ronda</div>
                 <motion.input
                   ref={roundRef}
                   autoFocus
-                  disabled={!!studio}
+                  disabled={!!round}
                   className="input w-full text-sm"
                   value={rName}
                   onChange={(e) => setRName(e.target.value)}
@@ -614,21 +628,21 @@ export default function CreationWizard() {
                 <motion.input
                   type="number"
                   min={1}
-                  disabled={!!studio}
+                  disabled={!!round}
                   className="input w-full text-sm"
                   value={rRoundNumber}
                   onChange={(e) => setRRoundNumber(Number(e.target.value))}
                   whileFocus={{ scale: 1.002 }}
                 />
 
-                <motion.div className={newStudioCodingType === "brands" ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
-                  {newStudioCodingType === "brands" && (
+                <motion.div className={newStudyCodingType === "brands" ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
+                  {newStudyCodingType === "brands" && (
                     <div>
                       <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</motion.label>
                       <motion.input
                         type="number"
                         min={1}
-                        disabled={!!studio}
+                        disabled={!!round}
                         className="input w-full text-sm mt-1"
                         value={rThreshold}
                         onChange={(e) => setRThreshold(Number(e.target.value))}
@@ -642,7 +656,7 @@ export default function CreationWizard() {
                       type="number"
                       min={0}
                       max={100}
-                      disabled={!!studio}
+                      disabled={!!round}
                       className="input w-full text-sm mt-1"
                       value={rAudit}
                       onChange={(e) => setRAudit(Number(e.target.value))}

@@ -1,12 +1,12 @@
 import { Link } from "react-router-dom";
 import { RefreshCw, BarChart3 } from "lucide-react";
 import { motion } from "framer-motion";
-import type { StudioStatus } from "@/api/types";
+import type { RoundStatus } from "@/api/types";
 import { hasReportAccess, studyDisplayName } from "@/lib/projectTree";
 import { studioStatusLabel } from "@/lib/studioStatus";
 
 interface StudioHeaderProps {
-  studio: StudioStatus;
+  studio: RoundStatus;
   autoProcessing: boolean;
   neverProcessed: boolean;
   isProcessingNow: boolean;
@@ -20,7 +20,7 @@ export function StudioHeader({
   isProcessingNow,
   onProcess,
 }: StudioHeaderProps) {
-  const title = studyDisplayName(studio.name, studio.coding_type);
+  const title = studyDisplayName(studio.study_name, studio.coding_type);
 
   return (
     <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -33,7 +33,7 @@ export function StudioHeader({
       <div className="flex items-center gap-2">
         {hasReportAccess(studio.status) && (
           <Link
-            to={`/studios/${studio.id}/report`}
+            to={`/rounds/${studio.id}/report`}
             className="btn-ghost text-sm py-2 inline-flex items-center gap-1.5"
           >
             <BarChart3 className="w-4 h-4" />

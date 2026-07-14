@@ -1,13 +1,13 @@
-"""Unit test for process_studio's brands -> fuzzy, then LLM on the leftovers -> orchestration.
+"""Unit test for process_round's brands -> fuzzy, then LLM on the leftovers -> orchestration.
 
-ponytail: mocks _process_brands/classify_studio themselves (each already covered by
-test_fuzzy.py/test_classification.py) — this only proves process_studio calls both for
-'brands' studios and merges their stats, not the engines' internals.
+ponytail: mocks _process_brands/classify_round themselves (each already covered by
+test_fuzzy.py/test_classification.py) — this only proves process_round calls both for
+'brands' rounds and merges their stats, not the engines' internals.
 """
 import uuid
 from unittest.mock import patch
 
-from app.pipeline.process import process_studio
+from app.pipeline.process import process_round
 
 
 class FakeResult:
@@ -24,7 +24,7 @@ class FakeSession:
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
-        if "select coding_type from studio" in sql:
+        if "coding_type" in sql:
             return FakeResult(scalar=self._coding_type)
         return FakeResult()
 
@@ -32,16 +32,16 @@ class FakeSession:
         pass
 
 
-def test_brands_studio_runs_llm_on_fuzzy_leftovers():
+def test_brands_round_runs_llm_on_fuzzy_leftovers():
     fuzzy_result = {"run_id": "fuzzy-run", "groups_classified": 3, "anomalies": 2, "total": 5}
     llm_result = {"run_id": "llm-run", "groups_classified": 1, "anomalies": 1, "total": 2}
 
     db = FakeSession(coding_type="brands")
     with (
         patch("app.pipeline.process._process_brands", return_value=fuzzy_result) as fuzzy_mock,
-        patch("app.pipeline.process.classify_studio", return_value=llm_result) as llm_mock,
+        patch("app.pipeline.process.classify_round", return_value=llm_result) as llm_mock,
     ):
-        result = process_studio(db, uuid.uuid4())
+        result = process_round(db, uuid.uuid4())
 
     fuzzy_mock.assert_called_once()
     llm_mock.assert_called_once()
@@ -50,15 +50,15 @@ def test_brands_studio_runs_llm_on_fuzzy_leftovers():
     assert result["total"] == 5
 
 
-def test_reasons_studio_skips_fuzzy():
+def test_reasons_round_skips_fuzzy():
     llm_result = {"run_id": "llm-run", "groups_classified": 2, "anomalies": 0, "total": 2}
 
     db = FakeSession(coding_type="reasons")
     with (
         patch("app.pipeline.process._process_brands") as fuzzy_mock,
-        patch("app.pipeline.process.classify_studio", return_value=llm_result) as llm_mock,
+        patch("app.pipeline.process.classify_round", return_value=llm_result) as llm_mock,
     ):
-        result = process_studio(db, uuid.uuid4())
+        result = process_round(db, uuid.uuid4())
 
     fuzzy_mock.assert_not_called()
     llm_mock.assert_called_once()

@@ -8,8 +8,8 @@ import {
   getMentionGroup,
   getResolutionQueue,
   getResolutionSummary,
-  getStudio,
-  getStudioCodes,
+  getRound,
+  getRoundCodes,
   resolveMentionGroup,
 } from "@/api/client";
 import type {
@@ -18,7 +18,7 @@ import type {
   ResolutionQueueItem,
   ResolutionSummary,
   ResolveDecision,
-  StudioCode,
+  RoundCode,
 } from "@/api/types";
 import { codingTypeNoun } from "@/lib/projectTree";
 import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -69,13 +69,13 @@ function playSound(type: "classify" | "discard") {
  * ResolutionCenter) and embedded (UnifiedStudioView's workspace column).
  */
 export default function ResolutionSidebar({
-  studioId,
+  roundId,
   onResolved,
   onExpand,
   focusGroupId,
   onFocusHandled,
 }: {
-  studioId: string;
+  roundId: string;
   /** Called after each successful resolve — lets a parent (e.g. a queue list) refresh. */
   onResolved?: () => void;
   /** Shows a fullscreen-expand button in the header when provided. */
@@ -94,8 +94,8 @@ export default function ResolutionSidebar({
   const [total, setTotal] = useState(0);
   const [, setSummary] = useState<ResolutionSummary | null>(null);
   const [codingType, setCodingType] = useState<CodingType>("brands");
-  const [codes, setCodes] = useState<StudioCode[]>([]);
-  const [systemCodes, setSystemCodes] = useState<StudioCode[]>([]);
+  const [codes, setCodes] = useState<RoundCode[]>([]);
+  const [systemCodes, setSystemCodes] = useState<RoundCode[]>([]);
   const [detail, setDetail] = useState<MentionGroupDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [resolving, setResolving] = useState(false);
@@ -173,11 +173,11 @@ export default function ResolutionSidebar({
   }, [focusGroupId]);
 
   const loadQueue = useCallback(() => {
-    return getResolutionQueue(studioId, PAGE_SIZE, 0).then((res) => {
+    return getResolutionQueue(roundId, PAGE_SIZE, 0).then((res) => {
       setQueue(res.items);
       setTotal(res.total);
     });
-  }, [studioId]);
+  }, [roundId]);
 
   // La cola local se agota mucho antes que el total del backend porque el fetch
   // inicial trae una sola página: cuando queda poco en memoria pero el backend
@@ -185,31 +185,31 @@ export default function ResolutionSidebar({
   // y se agregan los que falten.
   useEffect(() => {
     if (loading || queue.length >= 10 || queue.length >= total) return;
-    getResolutionQueue(studioId, PAGE_SIZE, 0).then((res) => {
+    getResolutionQueue(roundId, PAGE_SIZE, 0).then((res) => {
       setQueue((q) => {
         const ids = new Set(q.map((g) => g.id));
         return [...q, ...res.items.filter((g) => !ids.has(g.id))];
       });
       setTotal(res.total);
     });
-  }, [studioId, loading, queue.length, total]);
+  }, [roundId, loading, queue.length, total]);
 
   const loadSummary = useCallback(() => {
-    return getResolutionSummary(studioId).then(setSummary);
-  }, [studioId]);
+    return getResolutionSummary(roundId).then(setSummary);
+  }, [roundId]);
 
   useEffect(() => {
     setLoading(true);
     Promise.all([
       loadQueue(),
       loadSummary(),
-      getStudio(studioId).then((s) => setCodingType(s.coding_type)),
-      getStudioCodes(studioId, true).then((allCodes) => {
+      getRound(roundId).then((s) => setCodingType(s.coding_type)),
+      getRoundCodes(roundId, true).then((allCodes) => {
         setCodes(allCodes.filter(c => !c.is_system));
         setSystemCodes(allCodes.filter(c => c.is_system).sort((a, b) => a.code_number - b.code_number));
       }),
     ]).finally(() => setLoading(false));
-  }, [studioId, loadQueue, loadSummary]);
+  }, [roundId, loadQueue, loadSummary]);
 
   useEffect(() => {
     if (!currentCard) {
@@ -625,7 +625,7 @@ export default function ResolutionSidebar({
               <div className="text-sm text-p-text-muted">Podés seguir a la auditoría cuando quieras.</div>
             </div>
             <Link
-              to={`/studios/${studioId}/audit`}
+              to={`/rounds/${roundId}/audit`}
               className="btn-primary text-xs py-1.5 px-3 mt-1"
             >
               Ir a auditoría
