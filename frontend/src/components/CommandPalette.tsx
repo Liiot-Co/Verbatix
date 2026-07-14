@@ -1,13 +1,13 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, Keyboard, ChevronRight } from "lucide-react";
+import { Search, Keyboard, ChevronRight, LayoutDashboard, Sparkles, ArrowLeft, ArrowRight, RefreshCw, Download } from "lucide-react";
 import { modLabel } from "@/hooks/useKeyboardShortcuts";
 
 interface CommandItem {
   label: string;
   description?: string;
-  icon: string;
+  icon: ReactNode;
   shortcut?: string;
   action: () => void;
   keywords: string[];
@@ -20,7 +20,7 @@ function getCommands(): CommandItem[] {
     {
       label: "Ir al Dashboard",
       description: "Ver lista de proyectos",
-      icon: "📊",
+      icon: <LayoutDashboard className="w-4 h-4" />,
       shortcut: `${m()}⇧D`,
       action: () => window.location.href = "/",
       keywords: ["dashboard", "proyectos", "inicio", "home", "index"],
@@ -29,7 +29,7 @@ function getCommands(): CommandItem[] {
     {
       label: "Nuevo proyecto",
       description: "Crear proyecto desde el wizard",
-      icon: "✨",
+      icon: <Sparkles className="w-4 h-4" />,
       shortcut: `${m()}⇧N`,
       action: () => window.location.href = "/wizard",
       keywords: ["nuevo", "crear", "proyecto", "wizard", "asistente"],
@@ -38,7 +38,7 @@ function getCommands(): CommandItem[] {
     {
       label: "Atrás",
       description: "Navegar a la página anterior",
-      icon: "⬅️",
+      icon: <ArrowLeft className="w-4 h-4" />,
       shortcut: `${m()}←`,
       action: () => window.history.back(),
       keywords: ["atras", "back", "anterior", "volver", "retroceder"],
@@ -47,7 +47,7 @@ function getCommands(): CommandItem[] {
     {
       label: "Adelante",
       description: "Navegar a la página siguiente",
-      icon: "➡️",
+      icon: <ArrowRight className="w-4 h-4" />,
       shortcut: `${m()}→`,
       action: () => window.history.forward(),
       keywords: ["adelante", "forward", "siguiente", "avanzar"],
@@ -56,7 +56,7 @@ function getCommands(): CommandItem[] {
     {
       label: "Buscar",
       description: "Enfocar campo de búsqueda",
-      icon: "🔍",
+      icon: <Search className="w-4 h-4" />,
       shortcut: `${modLabel()}F`,
       action: () => {
         const input = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement | null;
@@ -68,7 +68,7 @@ function getCommands(): CommandItem[] {
     {
       label: "Recargar página",
       description: "Actualizar la vista actual",
-      icon: "🔄",
+      icon: <RefreshCw className="w-4 h-4" />,
       shortcut: `${m()}R`,
       action: () => window.location.reload(),
       keywords: ["recargar", "refresh", "actualizar", "reload"],
@@ -76,7 +76,7 @@ function getCommands(): CommandItem[] {
     },
     {
       label: "Exportar resultados",
-      icon: "📥",
+      icon: <Download className="w-4 h-4" />,
       action: () => {},
       keywords: ["exportar", "export", "descargar", "excel"],
       category: "Acciones",
@@ -235,7 +235,7 @@ export function CommandPalette() {
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: idx * 0.02, duration: 0.15 }}
                     >
-                      <span className="text-base shrink-0">{cmd.icon}</span>
+                      <span className="shrink-0 text-p-text-muted">{cmd.icon}</span>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium truncate">{cmd.label}</div>
                         {cmd.description && (
@@ -256,7 +256,7 @@ export function CommandPalette() {
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                 >
-                  <div className="text-2xl mb-2">🔍</div>
+                  <Search className="w-8 h-8 mb-2 text-p-text-faint mx-auto" />
                   <div className="text-sm text-p-text-muted">No se encontraron comandos para "{query}"</div>
                 </motion.div>
               )}

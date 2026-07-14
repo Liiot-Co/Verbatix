@@ -49,25 +49,30 @@ def test_classify_studio_matches_and_flags_anomaly():
     group_matched = {"id": uuid.uuid4(), "sample_text": "muy caro"}
     group_unmatched = {"id": uuid.uuid4(), "sample_text": "asdf"}
     group_low_confidence = {"id": uuid.uuid4(), "sample_text": "algo raro"}
+    group_anomaly = {"id": uuid.uuid4(), "sample_text": "Edan"}
     codes = [
-        {"id": uuid.uuid4(), "code_number": 1, "label": "Precio", "net_name": None},
-        {"id": uuid.uuid4(), "code_number": 97, "label": "Otras menciones", "net_name": None},
+        {"id": uuid.uuid4(), "code_number": 1, "label": "Precio", "net_name": None, "system_type": None, "aliases": []},
+        {"id": uuid.uuid4(), "code_number": 97, "label": "Otras menciones", "net_name": None, "system_type": "other_mentions", "aliases": []},
+        {"id": uuid.uuid4(), "code_number": 95, "label": "Menciones confusas/Incorrectas", "net_name": None, "system_type": "anomaly", "aliases": []},
     ]
-    db = FakeSession(codes=codes, groups=[group_matched, group_unmatched, group_low_confidence])
+    db = FakeSession(codes=codes, groups=[group_matched, group_unmatched, group_low_confidence, group_anomaly])
 
     fake_results = [
         {"verbatim_id": str(group_matched["id"]), "code_numbers": [1], "confidence": 0.95},
         {"verbatim_id": str(group_unmatched["id"]), "code_numbers": [], "confidence": 0.1},
         # Matched a code, but below llm_confidence_threshold — should still go to human review.
         {"verbatim_id": str(group_low_confidence["id"]), "code_numbers": [1], "confidence": 0.3},
+        # High confidence but the code itself is the "anomaly" system code — a human should
+        # still confirm it rather than it auto-closing as a confusing/incorrect mention.
+        {"verbatim_id": str(group_anomaly["id"]), "code_numbers": [95], "confidence": 0.9},
     ]
 
     with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results):
         summary = classify_studio(db, uuid.uuid4())
 
     assert summary["groups_classified"] == 1
-    assert summary["anomalies"] == 2
-    assert summary["total"] == 3
+    assert summary["anomalies"] == 3
+    assert summary["total"] == 4
 
     def has_param(key, value, stmt_filter=""):
         for sql, p in db.executed:
@@ -83,4 +88,5 @@ def test_classify_studio_matches_and_flags_anomaly():
 
     assert has_param("id", group_unmatched["id"], "anomaly")
     assert has_param("id", group_low_confidence["id"], "anomaly")
+    assert has_param("id", group_anomaly["id"], "anomaly")
     assert has_param("code", codes[0]["id"])

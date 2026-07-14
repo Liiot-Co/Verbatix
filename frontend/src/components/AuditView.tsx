@@ -581,7 +581,7 @@ export default function AuditView() {
                     whileTap={{ scale: 0.98 }}
                     onClick={handleApproveSection}
                     disabled={busy}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-green-200 bg-green-50 text-xs font-bold text-green-700 disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg project-row-icon-5 text-xs font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150 disabled:opacity-50"
                   >
                     <Check className="w-3.5 h-3.5" /> Aprobar sección
                   </motion.button>
@@ -608,12 +608,12 @@ export default function AuditView() {
                 <table className="w-full text-sm" aria-label="Verbatims muestreados">
                   <thead>
                     <tr className="text-left text-[11px] uppercase tracking-wide text-p-text-faint border-b border-p-border">
-                      <th className="px-4 py-2 font-semibold">Respuesta</th>
-                      <th className="px-4 py-2 font-semibold">Normalizado</th>
-                      <th className="px-4 py-2 font-semibold">Código actual</th>
-                      <th className="px-4 py-2 font-semibold">Qué se hizo</th>
-                      <th className="px-4 py-2 font-semibold">Comentario</th>
-                      <th className="px-4 py-2 font-semibold text-right">Acciones</th>
+                      <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Respuesta</th>
+                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Normalizado</th>
+                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Código actual</th>
+                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Qué se hizo</th>
+                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Comentario</th>
+                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider text-right">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -746,7 +746,7 @@ function AuditRow({
               {item.current_codes.map((c) => (
                 <span
                   key={c.code_id}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-p-border text-xs text-p-text"
+                  className="chip text-xs gap-1"
                 >
                   <span className="w-1.5 h-1.5 rounded-full" style={{ background: codeColor(c.code_number) }} />
                   {c.label}
@@ -851,7 +851,7 @@ function AuditRow({
                 <button
                   onClick={onSubmitReassign}
                   disabled={!reassignCodeId && !newCodeLabel.trim()}
-                  className="px-2.5 py-1 rounded-lg border border-blue-200 bg-blue-50 text-xs font-bold text-blue-700 disabled:opacity-50"
+                  className="px-2.5 py-1 rounded-lg project-row-icon-2 text-xs font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150 disabled:opacity-50"
                 >
                   Aplicar
                 </button>
@@ -874,7 +874,7 @@ function AuditRow({
                 />
                 <button
                   onClick={onSubmitComment}
-                  className="px-2.5 py-1 rounded-lg border border-blue-200 bg-blue-50 text-xs font-bold text-blue-700"
+                  className="px-2.5 py-1 rounded-lg project-row-icon-2 text-xs font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150"
                 >
                   Guardar
                 </button>

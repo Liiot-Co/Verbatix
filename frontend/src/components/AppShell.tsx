@@ -185,7 +185,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                         </div>
                         <button
                           onClick={() => { logout(); navigate("/login"); }}
-                          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-p-text-muted hover:text-p-error hover:bg-red-50 transition-colors"
+                          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-p-text-muted hover:text-p-error hover:bg-p-error/10 transition-colors"
                         >
                           <LogOut className="w-3.5 h-3.5" />
                           Cerrar sesión
@@ -220,12 +220,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
         <button
           onClick={() => setCollapsed((v) => !v)}
+          className="absolute top-[26px] z-20 -translate-x-1/2 w-6 h-6 rounded-full bg-p-surface border border-p-border shadow-sm flex items-center justify-center text-p-text-faint hover:text-p-text hover:bg-p-bg-subtle transition-all duration-200"
           style={{ left: collapsed ? 64 : 220 }}
-          className="absolute top-[26px] z-20 -translate-x-1/2 w-6 h-6 rounded-full bg-p-surface border border-p-border shadow-sm flex items-center justify-center text-p-text-faint hover:text-p-text hover:bg-p-bg-subtle transition-[left] duration-200"
           title={collapsed ? "Expandir menú" : "Colapsar menú"}
           aria-label={collapsed ? "Expandir menú" : "Colapsar menú"}
         >
-          {collapsed ? <PanelLeft className="w-3 h-3" /> : <PanelLeftClose className="w-3 h-3" />}
+          {collapsed ? <PanelLeft className="w-3.5 h-3.5" /> : <PanelLeftClose className="w-3.5 h-3.5" />}
         </button>
 
         {/* Main content area */}

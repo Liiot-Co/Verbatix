@@ -249,10 +249,8 @@ export default function ProjectDashboard() {
                         </div>
                         <span
                           className={[
-                            "shrink-0 text-[10px] font-semibold tracking-wide uppercase px-2.5 py-1 rounded-full border",
-                            project.rounds_count > 0
-                              ? "text-emerald-700 bg-emerald-50 border-emerald-200"
-                              : "text-amber-700 bg-amber-50 border-amber-200",
+                            "shrink-0 uppercase tracking-wide",
+                            project.rounds_count > 0 ? "badge-success" : "badge-warning",
                           ].join(" ")}
                         >
                           {project.studies_count > 0 ? "Activo" : "Sin estudios"}
