@@ -453,7 +453,7 @@ export default function ResolutionSidebar({
         description: "Descartar / Navegar izquierda",
         category: "Acciones",
       },
-      { key: "d", action: discardCurrent, description: "Sin dato (código de sistema)", category: "Acciones" },
+
       {
         key: "ArrowRight",
         action: () => {
@@ -514,9 +514,9 @@ export default function ResolutionSidebar({
         category: "Códigos rápidos",
       })),
       // Filtro por escritura: solo con el foco en la grilla (zone "list"), cualquier
-      // letra (menos "d"/"n", ya reservadas) agrega texto al filtro. ponytail: sin
+      // letra (menos "n", ya reservada) agrega texto al filtro. ponytail: sin
       // soporte de mayúsculas acentuadas ni click-to-focus — basta con substring en minúsculas.
-      ..."abcefghijklmopqrstuvwxyz".split("").map((letter) => ({
+      ..."abcdefghijklmnopqrstuvwxyz".split("").map((letter) => ({
         key: letter,
         action: () => {
           if (showDiscardMenu || zone !== "list") return;
@@ -719,7 +719,7 @@ export default function ResolutionSidebar({
                       title="Asigna un código de sistema (NS/NC, Ninguna, Confusas...)"
                       className="btn-ghost-sm flex-1 justify-center gap-1"
                     >
-                      <kbd className="kbd-hint">d</kbd>
+                      <kbd className="kbd-hint">←</kbd>
                       <span>Sin dato</span>
                     </button>
                     
@@ -854,17 +854,19 @@ export default function ResolutionSidebar({
                       disabled={resolving}
                       className={[
                         "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-all",
-                        isNavSel ? "border-2" : "border",
-                        isNavSel ? "" : "border-p-border bg-p-surface",
+                        isNavSel && zone === "list" ? "border-2" : "border",
+                        isNavSel && zone === "list" ? "" : "border-p-border bg-p-surface",
                       ].join(" ")}
                       style={
-                        isNavSel
+                        isNavSel && zone === "list"
                           ? {
                               borderColor: codeColor(c.code_number),
-                              background: zone === "list" ? `${codeColor(c.code_number)}18` : undefined,
-                              opacity: zone === "list" ? 1 : 0.6,
+                              background: `${codeColor(c.code_number)}18`,
+                              opacity: 1,
                             }
-                          : undefined
+                          : zone === "header"
+                            ? { opacity: 0.6 }
+                            : undefined
                       }
                     >
                       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: codeColor(c.code_number) }} />

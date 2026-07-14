@@ -32,6 +32,7 @@ interface VerbatixState {
 }
 
 let toastId = 0;
+const MAX_VISIBLE_TOASTS = 5;
 
 const ACTIVE_PROJECT_KEY = "verbatix:activeProjectId";
 const TOKEN_KEY = "verbatix:token";
@@ -84,7 +85,13 @@ export const useVerbatixStore = create<VerbatixState>((set) => ({
     const toast: Toast = action
       ? { id, message, type, actionLabel: action.label, onAction: action.onAction }
       : { id, message, type };
-    set((s) => ({ toasts: [...s.toasts, toast] }));
+    set((s) => {
+      const toasts = [...s.toasts, toast];
+      if (toasts.length > MAX_VISIBLE_TOASTS) {
+        return { toasts: toasts.slice(toasts.length - MAX_VISIBLE_TOASTS) };
+      }
+      return { toasts };
+    });
     setTimeout(
       () => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
       action ? 5000 : 4000
