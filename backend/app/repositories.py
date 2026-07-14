@@ -1011,3 +1011,260 @@ def log_action(
             "new": json.dumps(new_value) if new_value is not None else None,
         },
     )
+
+
+# =====================================================================
+# Reporte final + export Libro de Códigos (Fase 5)
+# =====================================================================
+
+def get_studio_report(db: Session, studio_id: uuid.UUID) -> dict:
+    """Métricas del reporte: totales, % auto/manual (coding_status) y frecuencia por código."""
+    total = db.execute(
+        text("select count(*) from verbatims where studio_id = :studio"),
+        {"studio": studio_id},
+    ).scalar() or 0
+
+    status_rows = db.execute(
+        text("""
+            select coding_status, count(*) as n
+            from verbatims
+            where studio_id = :studio
+            group by coding_status
+        """),
+        {"studio": studio_id},
+    ).mappings().all()
+    by_status = {r["coding_status"]: r["n"] for r in status_rows}
+    auto = by_status.get("auto_coded", 0)
+    manual = by_status.get("manually_coded", 0)
+
+    processed_at = db.execute(
+        text("""
+            select finished_at from processing_runs
+            where studio_id = :studio and status = 'completed'
+            order by finished_at desc nulls last
+            limit 1
+        """),
+        {"studio": studio_id},
+    ).scalar()
+
+    code_rows = db.execute(
+        text("""
+            select c.id, c.code_number, c.label, n.name as net,
+                   count(distinct v.id) as frequency
+            from codes c
+            join codebooks cb on cb.id = c.codebook_id
+            left join net_codes nc on nc.code_id = c.id
+            left join nets n on n.id = nc.net_id
+            left join verbatim_codes vc on vc.code_id = c.id and vc.is_active
+            left join verbatims v on v.id = vc.verbatim_id
+            where cb.studio_id = :studio and c.is_active and not c.is_system
+            group by c.id, c.code_number, c.label, n.name
+            order by frequency desc, c.code_number
+        """),
+        {"studio": studio_id},
+    ).mappings().all()
+
+    codes = []
+    for row in code_rows:
+        samples = db.execute(
+            text("""
+                select v.original_text
+                from verbatims v
+                join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
+                where vc.code_id = :code_id
+                order by v.created_at
+                limit 3
+            """),
+            {"code_id": row["id"]},
+        ).scalars().all()
+        freq = row["frequency"]
+        codes.append({
+            "id": str(row["id"]),
+            "code_number": row["code_number"],
+            "label": row["label"],
+            "net": row["net"],
+            "frequency": freq,
+            "pct": round(freq / total, 4) if total else 0.0,
+            "samples": list(samples),
+        })
+
+    return {
+        "verbatims_total": total,
+        "auto_coded": auto,
+        "auto_coded_pct": round(auto / total * 100, 1) if total else 0.0,
+        "manually_coded": manual,
+        "manually_coded_pct": round(manual / total * 100, 1) if total else 0.0,
+        "processed_at": processed_at.isoformat() if processed_at else None,
+        "codes": codes,
+    }
+
+
+def get_codebook_export_data(db: Session, studio_id: uuid.UUID) -> dict:
+    """Datos para armar el Excel del Libro de Códigos (LC + Verbatims)."""
+    studio_row = db.execute(
+        text("""
+            select s.*, r.round_number, p.external_code as project_external_code
+            from studio s
+            join rounds r on r.id = s.round_id
+            join projects p on p.id = r.project_id
+            where s.id = :id
+        """),
+        {"id": studio_id},
+    ).mappings().first()
+    if not studio_row:
+        return {}
+
+    cb_id = _current_codebook_id(db, studio_id)
+    total_verbatims = db.execute(
+        text("select count(*) from verbatims where studio_id = :studio"),
+        {"studio": studio_id},
+    ).scalar() or 0
+
+    freq_rows = db.execute(
+        text("""
+            select c.id, count(distinct v.id) as frequency
+            from codes c
+            join codebooks cb on cb.id = c.codebook_id
+            left join verbatim_codes vc on vc.code_id = c.id and vc.is_active
+            left join verbatims v on v.id = vc.verbatim_id
+            where cb.studio_id = :studio and c.is_active
+            group by c.id
+        """),
+        {"studio": studio_id},
+    ).mappings().all()
+    freq_by_id = {r["id"]: r["frequency"] for r in freq_rows}
+
+    alias_rows = db.execute(
+        text("""
+            select code_id, alias_sample
+            from (
+                select code_id, alias_sample,
+                       row_number() over (partition by code_id order by occurrences desc) as rn
+                from code_aliases
+                where codebook_id = :cb
+            ) ranked
+            where rn <= 3
+        """),
+        {"cb": cb_id},
+    ).mappings().all() if cb_id else []
+    aliases_by_code: dict[uuid.UUID, list[str]] = {}
+    for row in alias_rows:
+        aliases_by_code.setdefault(row["code_id"], []).append(row["alias_sample"])
+
+    code_rows = db.execute(
+        text("""
+            select c.id, c.code_number, c.label, n.name as net_name, n.display_order as net_order
+            from codes c
+            left join net_codes nc on nc.code_id = c.id
+            left join nets n on n.id = nc.net_id
+            where c.codebook_id = :cb and c.is_active
+            order by coalesce(n.display_order, 999), c.code_number
+        """),
+        {"cb": cb_id},
+    ).mappings().all() if cb_id else []
+
+    def _code_entry(row) -> dict:
+        cid = row["id"]
+        freq = freq_by_id.get(cid, 0)
+        samples = [s for s in aliases_by_code.get(cid, []) if s]
+        return {
+            "code_number": row["code_number"],
+            "label": row["label"],
+            "content": "/".join(samples[:3]) if samples else "",
+            "frequency": freq,
+            "pct": round(freq / total_verbatims, 6) if total_verbatims else 0.0,
+            "net_name": row["net_name"],
+        }
+
+    net_rows = db.execute(
+        text("""
+            select name, display_order
+            from nets
+            where codebook_id = :cb
+            order by display_order, name
+        """),
+        {"cb": cb_id},
+    ).mappings().all() if cb_id else []
+
+    def _by_frequency_desc(c: dict):
+        return (-c["frequency"], c["code_number"])
+
+    fallback_net = f"NETO {studio_row['name'].upper()}"
+    if net_rows:
+        nets = []
+        for net in net_rows:
+            codes_in_net = [
+                _code_entry(r) for r in code_rows if r["net_name"] == net["name"]
+            ]
+            nets.append({
+                "name": net["name"],
+                "codes": sorted(codes_in_net, key=_by_frequency_desc),
+            })
+        orphans = [_code_entry(r) for r in code_rows if not r["net_name"]]
+        if orphans:
+            nets.append({
+                "name": fallback_net,
+                "codes": sorted(orphans, key=_by_frequency_desc),
+            })
+    else:
+        nets = [{
+            "name": fallback_net,
+            "codes": sorted([_code_entry(r) for r in code_rows], key=_by_frequency_desc),
+        }]
+
+    verbatim_rows = db.execute(
+        text("""
+            select v.respondent_external_id, v.question_key, v.original_text,
+                   coalesce(
+                     jsonb_agg(
+                       jsonb_build_object(
+                         'output_index', vc.output_index,
+                         'code_number', c.code_number,
+                         'label', c.label
+                       ) order by vc.output_index
+                     ) filter (where vc.id is not null),
+                     '[]'::jsonb
+                   ) as codes
+            from verbatims v
+            left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
+            left join codes c on c.id = vc.code_id
+            where v.studio_id = :studio
+            group by v.id, v.respondent_external_id, v.question_key, v.original_text
+            order by v.created_at
+        """),
+        {"studio": studio_id},
+    ).mappings().all()
+
+    max_output = db.execute(
+        text("""
+            select coalesce(max(vc.output_index), 0)
+            from verbatim_codes vc
+            join verbatims v on v.id = vc.verbatim_id
+            where v.studio_id = :studio and vc.is_active
+        """),
+        {"studio": studio_id},
+    ).scalar() or 0
+
+    verbatims = []
+    for row in verbatim_rows:
+        raw_codes = row["codes"]
+        if isinstance(raw_codes, str):
+            raw_codes = json.loads(raw_codes)
+        verbatims.append({
+            "respondent_external_id": row["respondent_external_id"],
+            "question_key": row["question_key"],
+            "original_text": row["original_text"],
+            "codes": raw_codes or [],
+        })
+
+    return {
+        "project_external_code": studio_row["project_external_code"],
+        "round_number": studio_row["round_number"],
+        "survey_question": studio_row["survey_question"],
+        "coding_type": studio_row["coding_type"],
+        "studio_name": studio_row["name"],
+        "total_verbatims": total_verbatims,
+        "nets": nets,
+        "verbatims": verbatims,
+        "max_output_index": max_output,
+    }

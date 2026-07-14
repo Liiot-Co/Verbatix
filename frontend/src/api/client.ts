@@ -28,6 +28,7 @@ import type {
   SignupResponse,
   Studio,
   StudioCode,
+  StudioReport,
   StudioStatus,
   UploadedFile,
   UserProfile,
@@ -361,4 +362,41 @@ export async function deleteAuditItem(itemId: string): Promise<AuditReviewResult
 
 export async function approveAudit(studioId: string): Promise<AuditApproveResult> {
   return request<AuditApproveResult>(`/studios/${studioId}/audit/approve`, { method: "POST" });
+}
+
+/* ── Reporte final (Fase 5) ── */
+
+export async function getStudioReport(studioId: string): Promise<StudioReport> {
+  return request<StudioReport>(`/studios/${studioId}/report`);
+}
+
+export async function downloadCodebookExport(studioId: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`${BASE}/studios/${studioId}/report/export`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem("verbatix:token");
+      localStorage.removeItem("verbatix:user");
+      window.location.href = "/login";
+    }
+    const text = await res.text();
+    throw new ApiError(res.status, text);
+  }
+  const buffer = await res.arrayBuffer();
+  const contentType = res.headers.get("Content-Type") ?? "application/zip";
+  const blob = new Blob([buffer], { type: contentType });
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename="?([^";\n]+)"?/);
+  const filename = match?.[1] ?? "LC_export.zip";
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => URL.revokeObjectURL(url), 200);
 }

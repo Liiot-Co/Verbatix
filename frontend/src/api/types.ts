@@ -407,3 +407,26 @@ export interface AuditSectionApproveResult {
 }
 
 export type AuditApproveResult = AuditSessionSummary & { already_approved: boolean };
+
+/* ── Reporte final (Fase 5) ── */
+
+export interface ReportCodeStat {
+  id: string;
+  code_number: number;
+  label: string;
+  net: string | null;
+  frequency: number;
+  pct: number;
+  samples: string[];
+}
+
+// GET /studios/{id}/report
+export interface StudioReport {
+  verbatims_total: number;
+  auto_coded: number;
+  auto_coded_pct: number;
+  manually_coded: number;
+  manually_coded_pct: number;
+  processed_at: string | null;
+  codes: ReportCodeStat[];
+}

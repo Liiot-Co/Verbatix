@@ -7,6 +7,7 @@ import type { CodingStatus, PreliminarySummary, ResolutionSummary, StudioStatus,
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 import ResolutionCenter from "./ResolutionCenter";
+import { PhaseCompleteChoice } from "./PhaseCompleteChoice";
 import { studyDisplayName, studyKey } from "@/lib/projectTree";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
@@ -80,6 +81,7 @@ export default function UnifiedStudioView() {
   const [search, setSearch] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fullscreenResolution, setFullscreenResolution] = useState(false);
+  const [phaseChoiceOpen, setPhaseChoiceOpen] = useState(false);
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
   const loadData = useCallback(() => {
@@ -146,14 +148,18 @@ export default function UnifiedStudioView() {
     return () => clearInterval(id);
   }, [autoProcessing, loadData, loadVerbatims]);
 
-  // Solo al cerrar la resolución (false → true) se avanza a auditoría.
-  // Si el usuario vuelve a procesamiento por breadcrumb, no se lo expulsa.
+  // Tras cerrar resolución: elegir reporte o auditoría. Si ya estaba cerrada al entrar, ir al reporte.
   const wasCloseable = useRef<boolean | null>(null);
   useEffect(() => {
     if (!studioId || resolution == null) return;
     const canClose = resolution.can_close;
-    if (wasCloseable.current === false && canClose) {
-      navigate(`/studios/${studioId}/audit`);
+
+    if (canClose && wasCloseable.current === null) {
+      navigate(`/studios/${studioId}/report`, { replace: true });
+      return;
+    }
+    if (canClose && wasCloseable.current === false) {
+      setPhaseChoiceOpen(true);
     }
     wasCloseable.current = canClose;
   }, [studioId, resolution, navigate]);
@@ -459,6 +465,14 @@ export default function UnifiedStudioView() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {phaseChoiceOpen && studioId && (
+        <PhaseCompleteChoice
+          studioId={studioId}
+          variant="modal"
+          onDismiss={() => setPhaseChoiceOpen(false)}
+        />
+      )}
     </div>
   );
 }

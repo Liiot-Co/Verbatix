@@ -1,7 +1,8 @@
-import { RefreshCw } from "lucide-react";
+import { Link } from "react-router-dom";
+import { RefreshCw, BarChart3 } from "lucide-react";
 import { motion } from "framer-motion";
 import type { StudioStatus } from "@/api/types";
-import { studyDisplayName } from "@/lib/projectTree";
+import { hasReportAccess, studyDisplayName } from "@/lib/projectTree";
 import { studioStatusLabel } from "@/lib/studioStatus";
 
 interface StudioHeaderProps {
@@ -30,6 +31,15 @@ export function StudioHeader({
         </p>
       </div>
       <div className="flex items-center gap-2">
+        {hasReportAccess(studio.status) && (
+          <Link
+            to={`/studios/${studio.id}/report`}
+            className="btn-ghost text-sm py-2 inline-flex items-center gap-1.5"
+          >
+            <BarChart3 className="w-4 h-4" />
+            Ver reporte
+          </Link>
+        )}
         {autoProcessing && (
           <span className="flex items-center gap-1.5 text-xs text-p-accent">
             <motion.span

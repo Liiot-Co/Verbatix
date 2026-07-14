@@ -4,6 +4,7 @@ import { Sparkles, X } from "lucide-react";
 import { bulkResolve, getResolutionQueue, getResolutionSummary, getStudioCodes } from "@/api/client";
 import type { ResolutionQueueItem, ResolutionSummary, StudioCode } from "@/api/types";
 import ResolutionSidebar from "./ResolutionSidebar";
+import { PhaseCompleteChoice } from "./PhaseCompleteChoice";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { STATUS_CHIP } from "@/lib/resolutionStatus";
@@ -228,6 +229,16 @@ export default function ResolutionCenter({ studioId, onClose }: { studioId: stri
           />
         </div>
       </div>
+
+      {summary?.can_close && (
+        <div className="px-6 pb-4 shrink-0">
+          <PhaseCompleteChoice
+            studioId={studioId}
+            variant="inline"
+            onDismiss={onClose}
+          />
+        </div>
+      )}
     </div>,
     document.body
   );

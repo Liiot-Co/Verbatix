@@ -105,8 +105,32 @@ export function findStudyGroup(project: ProjectDetail, key: string): StudyGroup 
   );
 }
 
-/** Ruta de la fase actual de una ronda: auditoría si está en audit_pending. */
+/** Estados con preliminar procesado — el reporte es consultable. */
+const REPORT_ACCESS_STATUSES = new Set([
+  "preliminary_ready",
+  "manual_coding",
+  "audit_pending",
+  "audit_approved",
+  "nets_review",
+  "ready_to_export",
+  "completed",
+]);
+
+/** Tras resolución manual completa, el reporte es la fase principal. */
+const REPORT_PRIMARY_STATUSES = new Set([
+  "audit_pending",
+  "audit_approved",
+  "nets_review",
+  "ready_to_export",
+  "completed",
+]);
+
+export function hasReportAccess(status: string): boolean {
+  return REPORT_ACCESS_STATUSES.has(status);
+}
+
+/** Ruta de la fase actual de una ronda. */
 export function studioPhasePath(studioId: string, status: string): string {
-  if (status === "audit_pending") return `/studios/${studioId}/audit`;
+  if (REPORT_PRIMARY_STATUSES.has(status)) return `/studios/${studioId}/report`;
   return `/studios/${studioId}`;
 }

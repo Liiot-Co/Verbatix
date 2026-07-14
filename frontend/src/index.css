@@ -246,6 +246,54 @@
     background-color: #fff;
   }
 
+  /* Flat at rest; corner glow only on hover */
+  .glow-card-hover {
+    @apply relative overflow-hidden border border-p-border rounded-[16px] shadow-card;
+    background-color: #fff;
+    background-image: none;
+    transition: box-shadow 0.25s ease, transform 0.25s ease, background-image 0.3s ease;
+  }
+
+  .glow-card-hover:hover {
+    box-shadow:
+      0 8px 24px -8px oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.25),
+      0 4px 12px -4px oklch(0.05 0.02 280 / 0.08);
+  }
+
+  .glow-card-hover-1:hover {
+    background-image: radial-gradient(
+      ellipse 90% 100% at 100% 0%,
+      #e0d4ff 0%,
+      rgba(224, 212, 255, 0.35) 40%,
+      transparent 70%
+    );
+  }
+
+  .glow-card-hover-2:hover {
+    background-image: radial-gradient(
+      ellipse 90% 100% at 100% 0%,
+      #ffdcc8 0%,
+      rgba(255, 220, 200, 0.4) 40%,
+      transparent 70%
+    );
+  }
+
+  .glow-card-hover-3:hover {
+    background-image:
+      radial-gradient(
+        ellipse 85% 95% at 100% 0%,
+        #e0d4ff 0%,
+        rgba(224, 212, 255, 0.3) 40%,
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse 85% 95% at 0% 100%,
+        #ffdcc8 0%,
+        rgba(255, 220, 200, 0.35) 40%,
+        transparent 70%
+      );
+  }
+
   /* Project list row — horizontal table-style card */
   .project-row {
     @apply flex items-center gap-3 bg-p-surface border border-p-border rounded-xl px-3.5 py-3

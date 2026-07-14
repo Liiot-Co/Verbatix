@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ':*)",
+      "Bash(/c/Python312/python -c ':*)",
+      "Bash(/c/Python312/python -m pytest tests/ -q)",
+      "Bash(/c/Python312/python -m pytest tests/test_report.py -q)",
+      "Bash(/c/Python312/python -m pytest tests/test_report.py tests/test_repositories.py -q)"
+    ]
+  }
+}

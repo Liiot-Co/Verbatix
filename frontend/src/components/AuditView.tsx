@@ -110,7 +110,7 @@ export default function AuditView() {
         setStudio(s);
         setSummary(session);
         if (session.status === "approved") {
-          navigate("/", { replace: true });
+          navigate(`/studios/${studioId}/report`, { replace: true });
           return;
         }
         const [list] = await Promise.all([
@@ -272,8 +272,7 @@ export default function AuditView() {
       setSummary(res);
       playSuccess();
       showToast("Auditoría aprobada — el estudio quedó auditado.", "success");
-      // Siguiente paso del flujo: dashboard (export Excel llega después).
-      navigate("/");
+      navigate(`/studios/${studioId}/report`, { replace: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "";
       showToast(
@@ -400,7 +399,7 @@ export default function AuditView() {
             { label: "Proyectos", to: "/" },
             ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
             studyCrumb,
-            { label: "Procesamiento", to: `/studios/${studioId}` },
+            { label: "Reporte", to: `/studios/${studioId}/report` },
             { label: "Auditoría" },
           ]}
         />
@@ -408,8 +407,8 @@ export default function AuditView() {
           <AlertTriangle className="w-8 h-8 text-p-warning mx-auto" />
           <h1 className="font-heading text-xl font-semibold text-p-text">Auditoría no disponible</h1>
           <p className="text-sm text-p-text-muted">{blockedReason}</p>
-          <Link to={`/studios/${studioId}`} className="btn-primary inline-flex justify-center">
-            Ir al procesamiento
+          <Link to={`/studios/${studioId}/report`} className="btn-primary inline-flex justify-center">
+            Ir al reporte
           </Link>
         </div>
       </div>
@@ -429,7 +428,7 @@ export default function AuditView() {
           { label: "Proyectos", to: "/" },
           ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
           studyCrumb,
-          { label: "Procesamiento", to: `/studios/${studioId}` },
+          { label: "Reporte", to: `/studios/${studioId}/report` },
           { label: "Auditoría" },
         ]}
       />
@@ -454,7 +453,17 @@ export default function AuditView() {
               </button>
             )}
           </div>
-          {!approved && (
+          <div className="flex items-center gap-2">
+            {!approved && (
+              <button
+                type="button"
+                className="btn-ghost text-sm py-2"
+                onClick={() => navigate(`/studios/${studioId}/report`)}
+              >
+                Ver reporte
+              </button>
+            )}
+            {!approved && (
             <motion.button
               whileHover={{ scale: summary.target_met ? 1.02 : 1 }}
               whileTap={{ scale: summary.target_met ? 0.98 : 1 }}
@@ -465,7 +474,8 @@ export default function AuditView() {
             >
               <Check className="w-4 h-4" /> Aprobar auditoría
             </motion.button>
-          )}
+            )}
+          </div>
         </div>
 
         <div className="space-y-1.5">
