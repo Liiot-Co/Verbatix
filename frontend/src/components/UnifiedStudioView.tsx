@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ChevronLeft, ChevronRight, Keyboard, Search } from "lucide-react";
+import { ArrowLeft, Keyboard, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { getPreliminary, getResolutionSummary, getRound, getVerbatims, processRound } from "@/api/client";
-import type { CodingStatus, PreliminarySummary, ResolutionSummary, RoundStatus, Verbatim } from "@/api/types";
+import { getPreliminary, getResolutionSummary, getRound, getVerbatimsSummary, processRound } from "@/api/client";
+import type { PreliminarySummary, ResolutionSummary, RoundStatus, VerbatimSummaryRow } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 import ResolutionCenter from "./ResolutionCenter";
@@ -61,8 +61,6 @@ function playProcessingFinishedSound() {
   }
 }
 
-const PAGE_SIZE = 50;
-
 export default function UnifiedStudioView() {
   const { roundId } = useParams<{ roundId: string }>();
   const navigate = useNavigate();
@@ -72,12 +70,10 @@ export default function UnifiedStudioView() {
   const [round, setRound] = useState<RoundStatus | null>(null);
   const [preliminary, setPreliminary] = useState<PreliminarySummary | null>(null);
   const [resolution, setResolution] = useState<ResolutionSummary | null>(null);
-  const [verbatims, setVerbatims] = useState<Verbatim[]>([]);
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
+  const [summaryView, setSummaryView] = useState<"pending" | "coded">("pending");
+  const [summaryRows, setSummaryRows] = useState<VerbatimSummaryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<CodingStatus | "">("");
   const [search, setSearch] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fullscreenResolution, setFullscreenResolution] = useState(false);
@@ -95,12 +91,8 @@ export default function UnifiedStudioView() {
 
   const loadVerbatims = useCallback(() => {
     if (!roundId) return;
-    getVerbatims(roundId, PAGE_SIZE, (page - 1) * PAGE_SIZE, statusFilter || undefined)
-      .then((res) => {
-        setVerbatims(res.items);
-        setTotal(res.total);
-      });
-  }, [roundId, page, statusFilter]);
+    getVerbatimsSummary(roundId, summaryView).then((res) => setSummaryRows(res.items));
+  }, [roundId, summaryView]);
 
   useEffect(() => {
     setLoading(true);
@@ -115,13 +107,10 @@ export default function UnifiedStudioView() {
   useEffect(() => {
     if (!roundId) return;
     setLoading(true);
-    getVerbatims(roundId, PAGE_SIZE, (page - 1) * PAGE_SIZE, statusFilter || undefined)
-      .then((res) => {
-        setVerbatims(res.items);
-        setTotal(res.total);
-      })
+    getVerbatimsSummary(roundId, summaryView)
+      .then((res) => setSummaryRows(res.items))
       .finally(() => setLoading(false));
-  }, [roundId, page, statusFilter]);
+  }, [roundId, summaryView]);
 
   const autoProcessing = round?.status === "processing" || round?.status === "files_uploaded";
   const wasProcessing = useRef(false);
@@ -178,15 +167,13 @@ export default function UnifiedStudioView() {
     }
   };
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
   const visible = useMemo(() => {
-    if (!search.trim()) return verbatims;
+    if (!search.trim()) return summaryRows;
     const q = search.trim().toLowerCase();
-    return verbatims.filter((v) => v.original_text.toLowerCase().includes(q));
-  }, [verbatims, search]);
-
-  useEffect(() => { setPage(1); }, [statusFilter]);
+    return summaryRows.filter(
+      (r) => r.content?.toLowerCase().includes(q) || r.label?.toLowerCase().includes(q)
+    );
+  }, [summaryRows, search]);
 
   useEffect(() => {
     registerShortcuts("unified-studio", [
@@ -198,14 +185,14 @@ export default function UnifiedStudioView() {
       { key: "e", meta: true, action: () => showToast("Exportar en desarrollo", "info"),
         description: "Exportar resultados", category: "Acciones" },
       { key: "Escape", meta: false, action: () => {
-          setSearch(""); setStatusFilter(""); setShowShortcuts(false);
+          setSearch(""); setShowShortcuts(false);
           searchRef.current?.blur();
         },
         description: "Limpiar filtros / Cerrar", category: "Navegación" },
       { key: "?", meta: false, action: () => setShowShortcuts((v) => !v),
         description: "Mostrar atajos de teclado", category: "Navegación" },
     ]);
-  }, [totalPages, showToast]);
+  }, [showToast]);
 
   useKeyboardShortcuts("unified-studio");
 
@@ -307,7 +294,7 @@ export default function UnifiedStudioView() {
           <input
             ref={searchRef}
             className="input w-full text-sm pl-10 pr-12"
-            placeholder="Buscar en esta página..."
+            placeholder="Buscar..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -315,20 +302,22 @@ export default function UnifiedStudioView() {
             {modLabel()}F
           </kbd>
         </div>
-        <motion.select
-          whileHover={{ scale: 1.01 }}
-          whileFocus={{ scale: 1.01 }}
-          className="input w-full sm:w-52 text-sm"
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as CodingStatus | "")}
-        >
-          <option value="">Todos los estados</option>
-          <option value="pending">Pendiente</option>
-          <option value="auto_coded">Auto-codificado</option>
-          <option value="needs_review">Necesita revisión</option>
-          <option value="manually_coded">Codificado a mano</option>
-          <option value="unknown">Desconocida</option>
-        </motion.select>
+        <div className="inline-flex rounded-lg border border-p-border p-0.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setSummaryView("pending")}
+            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${summaryView === "pending" ? "bg-p-accent-soft text-p-accent font-medium" : "text-p-text-muted hover:text-p-text"}`}
+          >
+            Pendientes
+          </button>
+          <button
+            type="button"
+            onClick={() => setSummaryView("coded")}
+            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${summaryView === "coded" ? "bg-p-accent-soft text-p-accent font-medium" : "text-p-text-muted hover:text-p-text"}`}
+          >
+            Codificados
+          </button>
+        </div>
         <motion.button
           type="button"
           onClick={() => setShowShortcuts(true)}
@@ -351,38 +340,9 @@ export default function UnifiedStudioView() {
 
       <VerbatimsTable
         loading={loading}
-        verbatims={visible}
+        rows={visible}
         search={search}
-        startIndex={(page - 1) * PAGE_SIZE}
       />
-
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between text-xs text-p-text-muted">
-          <span>Página {page} de {totalPages} · {total} verbatims</span>
-          <div className="flex items-center gap-1.5">
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="btn-ghost text-xs py-1 px-2"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              aria-label="Página anterior"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-            </motion.button>
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="btn-ghost text-xs py-1 px-2"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              aria-label="Página siguiente"
-            >
-              <ChevronRight className="w-3.5 h-3.5" />
-            </motion.button>
-          </div>
-        </div>
-      )}
 
       </div>
 

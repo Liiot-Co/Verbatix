@@ -19,6 +19,8 @@ from app.repositories import (
     build_mention_groups,
     clone_codebook,
     create_codebook,
+    get_coded_summary,
+    get_pending_summary,
     insert_codebook_from_excel,
     insert_verbatims,
     seed_system_codes,
@@ -341,6 +343,22 @@ def list_verbatims(
             for r in rows
         ],
     }
+
+
+@router.get("/rounds/{round_id}/verbatims/summary")
+def verbatims_summary(
+    round_id: uuid.UUID,
+    view: str = "pending",
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Tabla CÓDIGO/MENCIÓN PRINCIPAL/CONTENIDO/FRECUENCIA/% — agrupada por código
+    (codificados) o por mención (pendientes), nunca por verbatim individual."""
+    require_round(db, round_id, user["id"])
+    if view not in ("pending", "coded"):
+        raise HTTPException(400, "view debe ser 'pending' o 'coded'")
+    items = get_pending_summary(db, round_id) if view == "pending" else get_coded_summary(db, round_id)
+    return {"items": items}
 
 
 @router.post("/rounds/{round_id}/files", status_code=201)

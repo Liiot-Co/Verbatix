@@ -33,6 +33,7 @@ import type {
   UploadedFile,
   UserProfile,
   VerbatimList,
+  VerbatimSummary,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -232,6 +233,13 @@ export async function getVerbatims(
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (status) qs.set("status", status);
   return request<VerbatimList>(`/rounds/${roundId}/verbatims?${qs.toString()}`);
+}
+
+export async function getVerbatimsSummary(
+  roundId: string,
+  view: "pending" | "coded"
+): Promise<VerbatimSummary> {
+  return request<VerbatimSummary>(`/rounds/${roundId}/verbatims/summary?view=${view}`);
 }
 
 export async function processRound(roundId: string): Promise<ProcessResult> {

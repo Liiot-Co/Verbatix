@@ -183,6 +183,22 @@ export interface VerbatimList {
   items: Verbatim[];
 }
 
+// GET /rounds/{id}/verbatims/summary?view=pending|coded — one row per
+// mention/código, never per verbatim. `code_number`/`label` are null for a
+// pending row with no engine suggestion yet.
+export interface VerbatimSummaryRow {
+  code_id: string | null;
+  code_number: number | null;
+  label: string | null;
+  content: string | null;
+  frequency: number;
+  percentage: number;
+}
+
+export interface VerbatimSummary {
+  items: VerbatimSummaryRow[];
+}
+
 export interface Paginated<T> {
   items: T[];
   page: number;
