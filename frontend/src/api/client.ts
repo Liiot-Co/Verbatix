@@ -24,6 +24,7 @@ import type {
   UploadedFile,
   UserProfile,
   VerbatimList,
+  VerbatimSummary,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -221,6 +222,13 @@ export async function getVerbatims(
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (status) qs.set("status", status);
   return request<VerbatimList>(`/studios/${studioId}/verbatims?${qs.toString()}`);
+}
+
+export async function getVerbatimsSummary(
+  studioId: string,
+  view: "pending" | "coded"
+): Promise<VerbatimSummary> {
+  return request<VerbatimSummary>(`/studios/${studioId}/verbatims/summary?view=${view}`);
 }
 
 export async function processStudio(studioId: string): Promise<ProcessResult> {

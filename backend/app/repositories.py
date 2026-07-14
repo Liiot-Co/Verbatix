@@ -333,6 +333,75 @@ def get_resolution_summary(db: Session, studio_id: uuid.UUID) -> dict:
     }
 
 
+def get_pending_summary(db: Session, studio_id: uuid.UUID) -> list[dict]:
+    """Menciones aún sin resolver — una fila por mention_group (ya son únicas por
+    texto), con el código que el motor sugirió si lo hay."""
+    rows = db.execute(
+        text("""
+            select g.normalized_text, g.sample_text, g.frequency_count,
+                   c.code_number as suggested_code_number, c.label as suggested_code_label
+            from mention_groups g
+            left join codes c on c.id = g.suggested_code_id
+            where g.studio_id = :studio and g.status in ('anomaly', 'below_threshold', 'pending_review')
+            order by g.frequency_count desc, g.normalized_text
+        """),
+        {"studio": studio_id},
+    ).mappings().all()
+
+    total = sum(r["frequency_count"] for r in rows) or 1
+    return [
+        {
+            "code_id": None,
+            "code_number": r["suggested_code_number"],
+            "label": r["suggested_code_label"],
+            "content": r["sample_text"] or r["normalized_text"],
+            "frequency": r["frequency_count"],
+            "percentage": round(r["frequency_count"] / total * 100, 1),
+        }
+        for r in rows
+    ]
+
+
+def get_coded_summary(db: Session, studio_id: uuid.UUID) -> list[dict]:
+    """Menciones ya codificadas (auto_coded/resolved), agrupadas por código —una fila
+    por código, no por verbatim. `frequency` suma frequency_count de cada mention_group
+    distinto asignado a ese código (el código real vía verbatim_codes, no la sugerencia
+    del motor, porque resolver a mano puede cambiar el código sugerido)."""
+    rows = db.execute(
+        text("""
+            select c.id as code_id, c.code_number, c.label,
+                   sum(g.frequency_count) as frequency,
+                   (array_agg(g.sample_text order by g.frequency_count desc))[1] as content
+            from (
+                select distinct on (mg.id)
+                       mg.id, mg.frequency_count, mg.sample_text, vc.code_id
+                from mention_groups mg
+                join verbatims v on v.mention_group_id = mg.id
+                join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active and vc.output_index = 1
+                where mg.studio_id = :studio and mg.status in ('auto_coded', 'resolved')
+                order by mg.id, v.id
+            ) g
+            join codes c on c.id = g.code_id
+            group by c.id, c.code_number, c.label
+            order by frequency desc
+        """),
+        {"studio": studio_id},
+    ).mappings().all()
+
+    total = sum(r["frequency"] for r in rows) or 1
+    return [
+        {
+            "code_id": str(r["code_id"]),
+            "code_number": r["code_number"],
+            "label": r["label"],
+            "content": r["content"],
+            "frequency": r["frequency"],
+            "percentage": round(r["frequency"] / total * 100, 1),
+        }
+        for r in rows
+    ]
+
+
 def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) -> dict | None:
     group = db.execute(
         text("""

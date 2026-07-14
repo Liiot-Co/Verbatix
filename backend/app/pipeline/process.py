@@ -19,8 +19,9 @@ from app.pipeline.fuzzy import (
     load_catalog_aliases,
     run_fuzzy_matching,
 )
-from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD
+from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD, SYSTEM_ALIAS_VARIANTS
 from app.pipeline.llm import classify_studio
+from app.repositories import _current_codebook_id
 
 
 def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict:
@@ -138,21 +139,73 @@ def _process_brands(db: Session, studio_id: uuid.UUID, threshold: float) -> dict
 
 
 def _prefilter_garbage(db: Session, studio_id: uuid.UUID) -> int:
-    # Filter short strings or meaningless stopwords
-    res = db.execute(
+    # Ruido real (largo <= 2 o números sueltos): no hay nada que resolver, a revisión manual.
+    garbage_res = db.execute(
         text("""
             update mention_groups
             set status = 'anomaly'
-            where studio_id = :studio 
+            where studio_id = :studio
             and status = 'pending_review'
             and (
                 length(normalized_text) <= 2
-                or normalized_text in ('uno', 'dos', 'tres', 'ninguna', 'nada', 'no se', 'ninguno', 'na', 'nc')
+                or normalized_text in ('uno', 'dos', 'tres')
             )
         """),
         {"studio": studio_id},
     )
-    return res.rowcount
+
+    # "ninguna"/"no sabe"/"no recuerda" y sus variantes (SYSTEM_ALIAS_VARIANTS) sí
+    # dicen algo: van directo a su código de sistema (96/98/99), auto_coded, en vez
+    # de esperar revisión manual en la cola.
+    resolved = 0
+    cb_id = _current_codebook_id(db, studio_id)
+    if cb_id is not None:
+        system_codes = db.execute(
+            text("select id, system_type from codes where codebook_id = :cb and is_system = true"),
+            {"cb": cb_id},
+        ).mappings().all()
+        code_by_type = {c["system_type"]: c["id"] for c in system_codes}
+
+        for system_type, variants in SYSTEM_ALIAS_VARIANTS.items():
+            code_id = code_by_type.get(system_type)
+            if not code_id:
+                continue
+            groups = db.execute(
+                text("""
+                    select id from mention_groups
+                    where studio_id = :studio and status = 'pending_review'
+                    and normalized_text = any(:variants)
+                """),
+                {"studio": studio_id, "variants": list(variants)},
+            ).mappings().all()
+            if not groups:
+                continue
+            group_ids = [g["id"] for g in groups]
+
+            db.execute(
+                text("""
+                    update mention_groups
+                    set status = 'auto_coded', suggested_code_id = :code
+                    where id = any(:ids)
+                """),
+                {"code": code_id, "ids": group_ids},
+            )
+            db.execute(
+                text("""
+                    insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias)
+                    select gen_random_uuid(), v.id, :code, 1, 'engine_exact', 1.0, v.normalized_text
+                    from verbatims v where v.mention_group_id = any(:ids)
+                    on conflict (verbatim_id, code_id) do nothing
+                """),
+                {"code": code_id, "ids": group_ids},
+            )
+            db.execute(
+                text("update verbatims set coding_status = 'auto_coded' where mention_group_id = any(:ids)"),
+                {"ids": group_ids},
+            )
+            resolved += len(group_ids)
+
+    return garbage_res.rowcount + resolved
 
 
 def process_studio(db: Session, studio_id: uuid.UUID, threshold: float = SCORE_THRESHOLD) -> dict:
