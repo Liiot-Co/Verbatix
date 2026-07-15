@@ -14,7 +14,7 @@ $(if $(filter prod,$(APP_ENV)),\
   docker compose -f docker-compose.yml -f docker-compose.override.yml)
 endef
 
-.PHONY: help build up down restart rebuild logs logs-backend logs-frontend \
+.PHONY: help build up down ps restart rebuild logs logs-backend logs-frontend \
        shell-backend shell-frontend install run-backend run-frontend test lint \
        typecheck db-reset db-shell clean env
 
@@ -42,6 +42,9 @@ down: ## Stop all services
 
 restart: ## Restart all services
 	$(COMPOSE_CMD) restart
+
+ps: ## List running containers
+	$(COMPOSE_CMD) ps
 
 rebuild: ## Force rebuild and start
 	$(COMPOSE_CMD) up -d --build
