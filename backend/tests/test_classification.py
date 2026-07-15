@@ -122,3 +122,30 @@ def test_classify_round_applies_threshold_per_coding_type():
     assert summary_brands["groups_classified"] == 0
     assert summary_reasons["groups_classified"] == 1
     assert summary_reasons["anomalies"] == 0
+
+
+def test_classify_round_promotes_brand_over_threshold_not_reasons():
+    """Solo coding_type=='brands' con confidence >= umbral de promoción llama a
+    promote_llm_result_to_alias; razones nunca lo tocan (van al caché semántico)."""
+    group = {"id": uuid.uuid4(), "sample_text": "Gloria"}
+    code_id = uuid.uuid4()
+    codes = [
+        {"id": code_id, "code_number": 1, "label": "Gloria", "net_name": None, "system_type": None, "aliases": []},
+    ]
+    fake_results = [{"verbatim_id": str(group["id"]), "code_numbers": [1], "confidence": 0.95}]
+
+    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
+         patch("app.pipeline.llm.classify.promote_llm_result_to_alias") as promote_mock:
+        classify_round(FakeSession(codes=codes, groups=[group], coding_type="brands"), uuid.uuid4())
+
+    promote_mock.assert_called_once()
+    _, kwargs = promote_mock.call_args
+    assert kwargs["code_id"] == code_id
+    assert kwargs["alias_normalized"] == "gloria"
+    assert kwargs["match_score"] == 0.95
+
+    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
+         patch("app.pipeline.llm.classify.promote_llm_result_to_alias") as promote_mock_reasons:
+        classify_round(FakeSession(codes=codes, groups=[group], coding_type="reasons"), uuid.uuid4())
+
+    promote_mock_reasons.assert_not_called()

@@ -7,6 +7,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.pipeline.llm.client import classify_batch
+from app.pipeline.fuzzy.catalog import promote_llm_result_to_alias
+from app.pipeline.normalize import normalize
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,7 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
     update_verbatims_params = []
     update_anomalies_groups = []
     update_anomalies_verbatims = []
+    promotions = []
 
     # Los batches son independientes entre sí (cada uno lleva el codebook completo
     # y sus propios grupos), así que van al LLM en paralelo: el cuello de botella
@@ -183,6 +186,16 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
             update_verbatims_params.append({"id": group_id})
             auto_coded += 1
 
+            # Solo marcas: para razones el fuzzy da falsos positivos (ver
+            # fuzzy/matcher.py) — esas van al caché semántico (Task C2), no aquí.
+            if coding_type == "brands" and confidence >= settings.llm_promotion_confidence_threshold:
+                promotions.append({
+                    "code_id": matched_code_ids[0],
+                    "alias_normalized": normalize(group["sample_text"]),
+                    "alias_sample": group["sample_text"],
+                    "match_score": confidence,
+                })
+
     if update_groups_params:
         db.execute(
             text("""
@@ -214,6 +227,15 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
         db.execute(
             text("update verbatims set coding_status = 'needs_review' where mention_group_id = :id"),
             update_anomalies_verbatims,
+        )
+
+    for promotion in promotions:
+        promote_llm_result_to_alias(
+            db,
+            code_id=promotion["code_id"],
+            alias_normalized=promotion["alias_normalized"],
+            alias_sample=promotion["alias_sample"],
+            match_score=promotion["match_score"],
         )
 
     db.commit()

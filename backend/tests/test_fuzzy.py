@@ -8,6 +8,7 @@ from app.pipeline.fuzzy import (
     discover_catalog_from_frequency,
     run_fuzzy_matching,
 )
+from app.pipeline.fuzzy.catalog import promote_llm_result_to_alias
 from app.pipeline.fuzzy.models import Cols
 
 
@@ -239,3 +240,35 @@ def test_discover_catalog_numbering_skips_system_range():
     discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=5)
 
     assert [c["n"] for c in db.inserted_codes] == [100, 101]
+
+
+class _PromoteSession:
+    """Captura el INSERT ... ON CONFLICT de promote_llm_result_to_alias."""
+
+    def __init__(self):
+        self.executed = []
+
+    def execute(self, stmt, params=None):
+        self.executed.append((str(stmt), params))
+        return _FreqResult()
+
+
+def test_promote_llm_result_to_alias_inserts_with_llm_promoted_origin():
+    db = _PromoteSession()
+    code_id = str(uuid.uuid4())
+
+    promote_llm_result_to_alias(db, code_id, "gloria", "Gloria!", 0.95)
+
+    sql, params = db.executed[0]
+    assert "llm_promoted" in sql
+    assert "on conflict" in sql
+    assert "occurrences = code_aliases.occurrences + 1" in sql
+    assert params == {"code": code_id, "norm": "gloria", "sample": "Gloria!", "score": 0.95}
+
+
+def test_promote_llm_result_to_alias_skips_blank_alias():
+    db = _PromoteSession()
+
+    promote_llm_result_to_alias(db, str(uuid.uuid4()), "   ", "sample", 0.95)
+
+    assert db.executed == []

@@ -73,6 +73,35 @@ def load_catalog_aliases(db: Session, round_id: uuid.UUID) -> list[CodeAlias]:
     return catalog
 
 
+def promote_llm_result_to_alias(
+    db: Session,
+    code_id: str,
+    alias_normalized: str,
+    alias_sample: str | None,
+    match_score: float,
+) -> None:
+    """Promociona una marca clasificada por LLM sobre el umbral de promoción a
+    alias fuzzy reutilizable, para que rondas futuras la capturen sin volver a
+    tocar el LLM. codebook_id se resuelve desde code_id (no se pide al caller)
+    porque classify.py ya conoce el code_id pero no arrastra codebook_id.
+    Reprocesar el mismo texto no duplica fila: incrementa occurrences.
+    """
+    alias_normalized = (alias_normalized or "").strip()
+    if not alias_normalized:
+        return
+    db.execute(
+        text("""
+            insert into code_aliases (id, codebook_id, code_id, alias_normalized,
+                                      alias_sample, occurrences, origin, match_score)
+            select gen_random_uuid(), c.codebook_id, :code, :norm, :sample, 1, 'llm_promoted', :score
+            from codes c where c.id = :code
+            on conflict (codebook_id, alias_normalized, code_id) do update
+              set occurrences = code_aliases.occurrences + 1
+        """),
+        {"code": code_id, "norm": alias_normalized, "sample": alias_sample, "score": match_score},
+    )
+
+
 def _brand_code_numbers(start: int):
     """Genera code_numbers correlativos saltando el rango 95-99 (reservado
     para códigos de sistema: colisionar ahí viola el unique del codebook)."""
