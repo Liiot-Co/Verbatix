@@ -17,8 +17,14 @@ class Settings(BaseSettings):
     # so this divides wall-clock time almost linearly (each call is ~20-25s of I/O).
     llm_parallel_requests: int = 5
     # Below this, an LLM classification goes to human review (anomaly) instead of
-    # auto_coded, regardless of which code_numbers it returned.
-    llm_confidence_threshold: float = 0.6
+    # auto_coded, regardless of which code_numbers it returned. Separate per coding_type
+    # so reasons (more prone to semantic false positives) can be tightened via env without
+    # touching brands.
+    llm_confidence_threshold_brands: float = 0.6
+    llm_confidence_threshold_reasons: float = 0.6
+    # Stricter gate for promoting an auto-accepted result into a reusable catalog
+    # (fuzzy alias / semantic cache) rather than just auto-coding this one verbatim.
+    llm_promotion_confidence_threshold: float = 0.9
 
     # Resolution Center (Fase 4): grupo descartado -> este code_number del codebook.
     discard_code_number: int = 95

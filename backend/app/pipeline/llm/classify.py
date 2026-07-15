@@ -156,9 +156,14 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
             group_id = group["id"]
             matched_code_ids = [codes_by_number[n] for n in result["code_numbers"] if n in codes_by_number]
             confidence = result.get("confidence")
+            confidence_threshold = (
+                settings.llm_confidence_threshold_brands
+                if coding_type == "brands"
+                else settings.llm_confidence_threshold_reasons
+            )
             # No confidence in the response is treated as low confidence, not high — a case
             # the LLM won't rate shouldn't get auto-coded any more than one it rates poorly.
-            below_threshold = confidence is None or confidence < settings.llm_confidence_threshold
+            below_threshold = confidence is None or confidence < confidence_threshold
             is_anomaly = any(cid in anomaly_code_ids for cid in matched_code_ids)
 
             if not matched_code_ids or below_threshold or is_anomaly:

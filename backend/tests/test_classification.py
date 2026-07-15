@@ -8,6 +8,7 @@ SQL params sent, not real persistence.
 import uuid
 from unittest.mock import patch
 
+from app.core.config import settings
 from app.pipeline import classify_round
 
 
@@ -27,14 +28,17 @@ class FakeResult:
 
 
 class FakeSession:
-    def __init__(self, codes, groups):
+    def __init__(self, codes, groups, coding_type=None):
         self._codes = codes
         self._groups = groups
+        self._coding_type = coding_type
         self.executed = []
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
         self.executed.append((sql, params))
+        if "select st.coding_type" in sql:
+            return FakeResult(scalar=self._coding_type)
         if "from codes c" in sql:
             return FakeResult(rows=self._codes)
         if "from mention_groups" in sql and "select id, sample_text" in sql:
@@ -94,3 +98,27 @@ def test_classify_round_matches_and_flags_anomaly():
     insert_sql = next(sql for sql, p in db.executed if "insert into verbatim_codes" in sql)
     assert "'llm_classified'" in insert_sql
     assert "'engine_fuzzy'" not in insert_sql
+
+
+def test_classify_round_applies_threshold_per_coding_type():
+    """Same confidence score, different coding_type -> different threshold applied."""
+    group = {"id": uuid.uuid4(), "sample_text": "algo"}
+    codes = [
+        {"id": uuid.uuid4(), "code_number": 1, "label": "Precio", "net_name": None, "system_type": None, "aliases": []},
+    ]
+    fake_results = [{"verbatim_id": str(group["id"]), "code_numbers": [1], "confidence": 0.7}]
+
+    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
+         patch.object(settings, "llm_confidence_threshold_brands", 0.9), \
+         patch.object(settings, "llm_confidence_threshold_reasons", 0.5):
+        db_brands = FakeSession(codes=codes, groups=[group], coding_type="brands")
+        summary_brands = classify_round(db_brands, uuid.uuid4())
+
+        db_reasons = FakeSession(codes=codes, groups=[group], coding_type="reasons")
+        summary_reasons = classify_round(db_reasons, uuid.uuid4())
+
+    # 0.7 < brands threshold (0.9) -> anomaly; 0.7 >= reasons threshold (0.5) -> auto-coded.
+    assert summary_brands["anomalies"] == 1
+    assert summary_brands["groups_classified"] == 0
+    assert summary_reasons["groups_classified"] == 1
+    assert summary_reasons["anomalies"] == 0
