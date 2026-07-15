@@ -190,7 +190,7 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
         db.execute(
             text("""
                 insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, processing_run_id)
-                select gen_random_uuid(), v.id, :code, :idx, 'engine_fuzzy', :run
+                select gen_random_uuid(), v.id, :code, :idx, 'llm_classified', :run
                 from verbatims v where v.mention_group_id = :group_id
                 on conflict (verbatim_id, code_id) do nothing
             """),

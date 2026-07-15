@@ -90,3 +90,7 @@ def test_classify_round_matches_and_flags_anomaly():
     assert has_param("id", group_low_confidence["id"], "anomaly")
     assert has_param("id", group_anomaly["id"], "anomaly")
     assert has_param("code", codes[0]["id"])
+
+    insert_sql = next(sql for sql, p in db.executed if "insert into verbatim_codes" in sql)
+    assert "'llm_classified'" in insert_sql
+    assert "'engine_fuzzy'" not in insert_sql
