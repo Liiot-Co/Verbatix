@@ -1,18 +1,17 @@
 """CRUD de Estudio (Marcas/Razones, persistente en el proyecto) y Ronda (ola de
 datos de un estudio: su propio Excel, verbatims, codebook y procesamiento)."""
 import hashlib
-import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.access import require_project, require_round, require_study
 from app.core.auth import CurrentUser, current_user
-from app.core.database import SessionLocal, get_db
-from app.core import storage
+from app.core.database import get_db
+from app.core import scheduler, storage
 from app.pipeline import process_round
 from app.pipeline.ingest import excel
 from app.repositories import (
@@ -25,8 +24,6 @@ from app.repositories import (
     insert_verbatims,
     seed_system_codes,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["studies & rounds"])
 
@@ -407,49 +404,11 @@ class ImportIn(BaseModel):
     column_map: dict[str, str] | None = None
 
 
-def _mark_round_failed(db: Session, round_id: uuid.UUID, message: str) -> None:
-    """Deja la ronda y cualquier run colgado en un estado terminal 'failed'.
-
-    Sin esto, una excepción en el background task dejaba la ronda en
-    'files_uploaded' y el run en 'running' para siempre — el frontend hace polling
-    infinito y el usuario ve "procesando" que nunca termina.
-    """
-    try:
-        db.execute(
-            text("""
-                update processing_runs set status = 'failed', finished_at = now(),
-                    error_message = :msg
-                where round_id = :id and status = 'running'
-            """),
-            {"id": round_id, "msg": message[:2000]},
-        )
-        db.execute(
-            text("update rounds set status = 'failed', updated_at = now() where id = :id"),
-            {"id": round_id},
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-
-
-def _process_round_task(round_id: uuid.UUID) -> None:
-    db = SessionLocal()
-    try:
-        process_round(db, round_id)
-    except Exception as exc:
-        logger.exception("process_round falló para ronda %s", round_id)
-        db.rollback()
-        _mark_round_failed(db, round_id, str(exc))
-    finally:
-        db.close()
-
-
 @router.post("/rounds/{round_id}/files/{file_id}/import")
 def import_file(
     round_id: uuid.UUID,
     file_id: uuid.UUID,
     payload: ImportIn,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
@@ -499,11 +458,12 @@ def import_file(
     db.commit()
 
     # Auto-process right after import so the user never has to notice/click a
-    # separate "Procesar" step. Runs as a background task (own DB session) instead
-    # of inline — the LLM pass can take minutes and blocking the response left the
-    # frontend with nothing but a spinner. Round stays 'files_uploaded' until the
-    # task flips it to 'preliminary_ready'; the frontend polls GET /rounds/{id}.
-    background_tasks.add_task(_process_round_task, round_id)
+    # separate "Procesar" step. Submitted to the in-process scheduler (own DB
+    # session, bounded concurrency across rounds) instead of running inline —
+    # the LLM pass can take minutes and blocking the response left the frontend
+    # with nothing but a spinner. Round stays 'files_uploaded' until the worker
+    # flips it to 'preliminary_ready'; the frontend polls GET /rounds/{id}.
+    scheduler.submit(round_id)
 
     return {
         "imported": {

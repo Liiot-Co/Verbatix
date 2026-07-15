@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.auth import CurrentUser, current_user
 from app.core.config import settings
 from app.core.database import check_db, get_db
+from app.core import scheduler
 from app.routers import audit, auth, projects, report, resolution, studios
 from app.routers.auth import get_me
 
@@ -13,7 +14,9 @@ from app.routers.auth import get_me
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_db()
+    scheduler.start()
     yield
+    scheduler.stop()
 
 
 app = FastAPI(

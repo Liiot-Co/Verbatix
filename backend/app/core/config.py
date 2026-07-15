@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     # Concurrent classify_batch calls against the LLM API. Batches are independent,
     # so this divides wall-clock time almost linearly (each call is ~20-25s of I/O).
     llm_parallel_requests: int = 5
+    # Rounds processed concurrently by the in-process scheduler (core/scheduler.py).
+    # Combined with llm_parallel_requests this bounds total concurrent LLM calls;
+    # kept conservative since DeepSeek's real rate limits are unknown.
+    round_parallel_workers: int = 2
     # Below this, an LLM classification goes to human review (anomaly) instead of
     # auto_coded, regardless of which code_numbers it returned. Separate per coding_type
     # so reasons (more prone to semantic false positives) can be tightened via env without
