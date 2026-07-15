@@ -164,7 +164,7 @@ create table code_aliases (
   alias_sample     text,
   occurrences      int  default 1,
   origin           text not null default 'analyst_manual'
-                   check (origin in ('inherited','engine_fuzzy','analyst_manual','imported_xlsx')),
+                   check (origin in ('inherited','engine_fuzzy','analyst_manual','imported_xlsx','llm_promoted')),
   match_score      numeric(4,3),
   approved_by      uuid references profiles(id),
   created_at       timestamptz not null default now(),
@@ -263,7 +263,7 @@ create table verbatim_codes (
   code_id            uuid not null references codes(id) on delete cascade,
   output_index       int  not null default 1,
   source             text not null
-                     check (source in ('engine_exact','engine_fuzzy','homologation','analyst_manual','audit_correction')),
+                     check (source in ('engine_exact','engine_fuzzy','llm_classified','homologation','analyst_manual','audit_correction')),
   confidence_score   numeric(4,3),
   matched_alias      text,  -- alias del catálogo que matcheó (transparencia: por qué el fuzzy asignó este código)
   processing_run_id  uuid references processing_runs(id) on delete set null,
