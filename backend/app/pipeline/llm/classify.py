@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.pipeline.llm.client import classify_batch
 from app.pipeline.fuzzy.catalog import promote_llm_result_to_alias
 from app.pipeline.normalize import normalize
+from app.pipeline.semantic.cache import write as write_reason_cache
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,7 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
     update_anomalies_groups = []
     update_anomalies_verbatims = []
     promotions = []
+    reason_promotions = []
 
     # Los batches son independientes entre sí (cada uno lleva el codebook completo
     # y sus propios grupos), así que van al LLM en paralelo: el cuello de botella
@@ -186,15 +188,22 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
             update_verbatims_params.append({"id": group_id})
             auto_coded += 1
 
-            # Solo marcas: para razones el fuzzy da falsos positivos (ver
-            # fuzzy/matcher.py) — esas van al caché semántico (Task C2), no aquí.
-            if coding_type == "brands" and confidence >= settings.llm_promotion_confidence_threshold:
-                promotions.append({
-                    "code_id": matched_code_ids[0],
-                    "alias_normalized": normalize(group["sample_text"]),
-                    "alias_sample": group["sample_text"],
-                    "match_score": confidence,
-                })
+            if confidence >= settings.llm_promotion_confidence_threshold:
+                if coding_type == "brands":
+                    # Para razones el fuzzy da falsos positivos (ver fuzzy/matcher.py)
+                    # — esas van al caché semántico, no al catálogo fuzzy.
+                    promotions.append({
+                        "code_id": matched_code_ids[0],
+                        "alias_normalized": normalize(group["sample_text"]),
+                        "alias_sample": group["sample_text"],
+                        "match_score": confidence,
+                    })
+                elif coding_type == "reasons":
+                    reason_promotions.append({
+                        "code_id": matched_code_ids[0],
+                        "source_text": group["sample_text"],
+                        "confidence": confidence,
+                    })
 
     if update_groups_params:
         db.execute(
@@ -236,6 +245,14 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
             alias_normalized=promotion["alias_normalized"],
             alias_sample=promotion["alias_sample"],
             match_score=promotion["match_score"],
+        )
+
+    for reason_promotion in reason_promotions:
+        write_reason_cache(
+            db,
+            code_id=reason_promotion["code_id"],
+            source_text=reason_promotion["source_text"],
+            confidence=reason_promotion["confidence"],
         )
 
     db.commit()

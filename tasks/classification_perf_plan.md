@@ -37,8 +37,8 @@ Reparar la topología del pipeline de clasificación (`backend/app/pipeline/`) p
 
 ### Phase C: Caché semántico local — razones
 
-- [ ] **Task C1** (S): Infra pgvector (imagen docker, extensión, dependencia de embeddings)
-- [ ] **Task C2** (M): Esquema + escritura del caché semántico (promoción de razones)
+- [x] **Task C1** (S): Infra pgvector (imagen docker, extensión, dependencia de embeddings) — fastembed confirmado, 384-dim
+- [x] **Task C2** (M): Esquema + escritura del caché semántico (promoción de razones)
 - [ ] **Task C3** (M): Lectura del caché antes de despachar a LLM
 - [ ] **Task C4** (S): Arranque en caliente vía `source_round_id`
 - [ ] **Task C5** (S): Dataset y script de calibración del umbral de similitud coseno
@@ -293,6 +293,6 @@ Reparar la topología del pipeline de clasificación (`backend/app/pipeline/`) p
 ## Open Questions
 
 - ¿Se quiere backfillear `verbatim_codes.source` histórico (hoy mal etiquetado como `'engine_fuzzy'` para resultados LLM) o se deja como está y el fix solo aplica hacia adelante?
-- Confirmar librería de embeddings final (`fastembed` recomendado) — depende de si el equipo prefiere evitar cualquier dependencia ML nueva vs. aceptar una ligera (ONNX-only, sin `torch`).
+- ~~Confirmar librería de embeddings final~~ Resuelto: `fastembed` (ONNX-only, sin `torch`; modelo default produce vectores 384-dim, confirmado con smoke test en Task C1).
 - Valor inicial seguro de `round_parallel_workers` × `llm_parallel_requests` combinado — sin rate limits conocidos de DeepSeek, se parte conservador (2 rondas × 5 requests = máx 10 concurrentes) y se ajusta con métricas reales tras el primer despliegue.
 - ¿El endpoint síncrono `POST /rounds/{round_id}/process` debe seguir siendo bloqueante, o pasa a encolar y devolver estado `queued` de inmediato una vez existe el scheduler (Task A3)? Afecta el contrato de API consumido por el frontend.

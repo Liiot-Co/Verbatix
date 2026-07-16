@@ -145,7 +145,36 @@ def test_classify_round_promotes_brand_over_threshold_not_reasons():
     assert kwargs["match_score"] == 0.95
 
     with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
-         patch("app.pipeline.llm.classify.promote_llm_result_to_alias") as promote_mock_reasons:
+         patch("app.pipeline.llm.classify.promote_llm_result_to_alias") as promote_mock_reasons, \
+         patch("app.pipeline.llm.classify.write_reason_cache"):
         classify_round(FakeSession(codes=codes, groups=[group], coding_type="reasons"), uuid.uuid4())
 
     promote_mock_reasons.assert_not_called()
+
+
+def test_classify_round_writes_reason_cache_over_threshold_not_brands():
+    """Solo coding_type=='reasons' con confidence >= umbral de promoción llama a
+    write_reason_cache; marcas nunca lo tocan (van al catálogo fuzzy)."""
+    group = {"id": uuid.uuid4(), "sample_text": "muy fresco"}
+    code_id = uuid.uuid4()
+    codes = [
+        {"id": code_id, "code_number": 1, "label": "Frescura", "net_name": None, "system_type": None, "aliases": []},
+    ]
+    fake_results = [{"verbatim_id": str(group["id"]), "code_numbers": [1], "confidence": 0.95}]
+
+    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
+         patch("app.pipeline.llm.classify.write_reason_cache") as write_mock:
+        classify_round(FakeSession(codes=codes, groups=[group], coding_type="reasons"), uuid.uuid4())
+
+    write_mock.assert_called_once()
+    _, kwargs = write_mock.call_args
+    assert kwargs["code_id"] == code_id
+    assert kwargs["source_text"] == "muy fresco"
+    assert kwargs["confidence"] == 0.95
+
+    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
+         patch("app.pipeline.llm.classify.promote_llm_result_to_alias"), \
+         patch("app.pipeline.llm.classify.write_reason_cache") as write_mock_brands:
+        classify_round(FakeSession(codes=codes, groups=[group], coding_type="brands"), uuid.uuid4())
+
+    write_mock_brands.assert_not_called()
