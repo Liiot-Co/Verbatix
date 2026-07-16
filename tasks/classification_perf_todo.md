@@ -25,7 +25,7 @@ Alcance: Fase 1 (V4+V7 ajustadas) + Fase 2 (V1+V2+V3) del ideation. Fase 3 (Rust
 - [x] **C1** Infra pgvector: imagen docker + extensión + dependencia de embeddings — S (fastembed, 384-dim, confirmado)
 - [x] **C2** Esquema `reason_embeddings` + escritura al aprobar razón LLM — M
 - [x] **C3** Lookup de caché antes de despachar razones a LLM — M
-- [ ] **C4** Arranque en caliente vía `source_round_id` entre rondas del mismo estudio — S
+- [x] **C4** Arranque en caliente vía `source_round_id` entre rondas del mismo estudio — S
 - [ ] **C5** Script de calibración del umbral de similitud coseno (dataset no existe, se construye) — S
 
 ### Checkpoint C (final)

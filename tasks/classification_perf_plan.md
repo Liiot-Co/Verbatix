@@ -40,7 +40,7 @@ Reparar la topología del pipeline de clasificación (`backend/app/pipeline/`) p
 - [x] **Task C1** (S): Infra pgvector (imagen docker, extensión, dependencia de embeddings) — fastembed confirmado, 384-dim
 - [x] **Task C2** (M): Esquema + escritura del caché semántico (promoción de razones)
 - [x] **Task C3** (M): Lectura del caché antes de despachar a LLM
-- [ ] **Task C4** (S): Arranque en caliente vía `source_round_id`
+- [x] **Task C4** (S): Arranque en caliente vía `source_round_id`
 - [ ] **Task C5** (S): Dataset y script de calibración del umbral de similitud coseno
 
 ### Checkpoint C (final)
