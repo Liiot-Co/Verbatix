@@ -272,3 +272,38 @@ def test_promote_llm_result_to_alias_skips_blank_alias():
     promote_llm_result_to_alias(db, str(uuid.uuid4()), "   ", "sample", 0.95)
 
     assert db.executed == []
+
+
+def test_discover_catalog_clusters_sub_threshold_typos_by_combined_frequency():
+    """Regresión: 'kraf' (1 mención) y 'kraft' (1 mención) son la misma marca
+    real, pero ninguna por separado alcanza min_mentions=3. Antes se perdían
+    ambas (nunca se comparaban entre sí porque el filtro de frecuencia las
+    excluía de la query antes de intentar agruparlas). Ahora se agrupan primero
+    por similitud y el mínimo se evalúa sobre la suma del cluster."""
+    seeds = [
+        {"normalized_text": "kraft", "sample_text": "Kraft", "frequency_count": 1},
+        {"normalized_text": "kraf", "sample_text": "Kraf", "frequency_count": 1},
+    ]
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
+
+    catalog = discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=3)
+
+    # Un solo code para ambas variantes: la suma (1+1=2) alcanza el mínimo...
+    assert len(db.inserted_codes) == 0  # 1+1=2 < 3: no alcanza ni sumado, sigue sin code (correcto)
+
+
+def test_discover_catalog_promotes_cluster_when_combined_frequency_reaches_minimum():
+    seeds = [
+        {"normalized_text": "kraft", "sample_text": "Kraft", "frequency_count": 2},
+        {"normalized_text": "kraf", "sample_text": "Kraf", "frequency_count": 1},
+    ]
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
+
+    catalog = discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=3)
+
+    # 2+1=3 alcanza el mínimo: un solo code para ambas variantes (antes se
+    # perdían las dos por no comparase entre sí al ser individualmente < 3).
+    assert len(db.inserted_codes) == 1
+    assert db.inserted_codes[0]["label"] == "Kraft"
+    by_alias = {c.alias_normalized: c.code_id for c in catalog}
+    assert by_alias["kraft"] == by_alias["kraf"] == db.inserted_codes[0]["id"]

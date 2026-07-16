@@ -131,17 +131,24 @@ def discover_catalog_from_frequency(
     """Fallback cuando la ronda no trae codebook: deriva las marcas 'semilla'
     de la frecuencia.
 
-    Cada mention_group cuyo frequency_count alcanza el mínimo de la ronda se
-    promueve a un code nuevo (origin engine_auto) y su texto normalizado queda
-    como alias, con dos filtros de precisión:
+    El mínimo de menciones se evalúa por CLUSTER, no por texto individual:
+    variantes/typos de una misma marca se agrupan primero por similitud fuzzy
+    entre sí (sin importar la frecuencia de cada una por separado) y luego se
+    suman sus frecuencias. Sin esto, una marca real dicha de dos formas
+    distintas (p.ej. 'kraf' 1 mención + 'kraft' 1 mención) se perdía entera:
+    ninguna de las dos individualmente alcanzaba el mínimo, y al no compararse
+    entre sí tampoco se detectaban como la misma marca — quedaban ambas sin
+    código, en vez de una sola marca con 2 menciones.
+
+    Filtros de precisión sobre el cluster ya formado:
 
     - Respuestas de sistema ("no se", "ninguna"...) no se promueven como marcas:
       se vuelven aliases del código de sistema (96/98/99) y el fuzzy las codifica
       directo ahí. Sin esto, al ser de los textos más frecuentes, terminaban como
       marcas falsas en el codebook.
-    - Un candidato que ya matchea (>= threshold) contra una semilla aceptada es
-      un typo de esa marca: se agrega como alias del code existente en vez de
-      crear un code duplicado.
+    - Un candidato que ya matchea (>= threshold) contra el representante de un
+      cluster existente es un typo de esa marca: se une a ese cluster en vez de
+      abrir uno nuevo.
 
     Con ese catálogo el fuzzy arrastra los typos poco frecuentes hacia las
     semillas; lo que no se parezca a ninguna sigue al LLM (flujo normal).
@@ -157,19 +164,21 @@ def discover_catalog_from_frequency(
     if codebook_id is None:
         return []
 
-    seeds = db.execute(
+    # Sin el corte por frequency_count aquí: se necesita ver TODOS los
+    # candidatos para poder agruparlos entre sí antes de decidir qué cluster
+    # alcanza el mínimo (ver docstring).
+    candidates = db.execute(
         text("""
             select normalized_text, sample_text, frequency_count
             from mention_groups
             where round_id = :round
               and status = 'pending_review'
               and normalized_text <> ''
-              and frequency_count >= :min
             order by frequency_count desc, normalized_text
         """),
-        {"round": round_id, "min": min_mentions},
+        {"round": round_id},
     ).mappings().all()
-    if not seeds:
+    if not candidates:
         return []
 
     def _persist_alias(code_id, alias_normalized: str, alias_sample: str | None, occurrences: int | None) -> None:
@@ -217,39 +226,59 @@ def discover_catalog_from_frequency(
     ).scalar()
     numbers = _brand_code_numbers(next_number)
 
-    seed_aliases: list[str] = []
-    for seed in seeds:
-        norm = seed["normalized_text"]
+    # Fase 1: agrupar candidatos por similitud fuzzy entre sí, sin filtrar
+    # todavía por mínimo de menciones. Recorridos en orden de frecuencia desc.
+    # (ya viene así de la query) para que el representante de cada cluster sea
+    # su miembro más frecuente.
+    cluster_reprs: list[str] = []
+    clusters: dict[str, list] = {}
+    for cand in candidates:
+        norm = cand["normalized_text"]
 
-        # Respuesta de sistema disfrazada de marca frecuente -> alias de 96/98/99.
+        # Respuesta de sistema disfrazada de marca -> alias de 96/98/99, nunca
+        # entra al clustering de marcas.
         sys_hit = _best_match(norm, system_aliases, threshold)
         if sys_hit:
             code_id = alias_to_code[sys_hit[0]]
-            _persist_alias(code_id, norm, seed["sample_text"], seed["frequency_count"])
+            _persist_alias(code_id, norm, cand["sample_text"], cand["frequency_count"])
             catalog.append(CodeAlias(code_id=code_id, alias_normalized=norm))
             continue
 
-        # Typo de una semilla ya aceptada -> alias del code existente.
-        seed_hit = _best_match(norm, seed_aliases, threshold)
-        if seed_hit:
-            code_id = alias_to_code[seed_hit[0]]
+        cluster_hit = _best_match(norm, cluster_reprs, threshold)
+        if cluster_hit:
+            clusters[cluster_hit[0]].append(cand)
         else:
-            code_id = str(uuid.uuid4())
-            raw_label = seed["sample_text"] or norm
-            formatted_label = raw_label.strip().capitalize() if raw_label else raw_label
-            db.execute(
-                text("""
-                    insert into codes (id, codebook_id, code_number, label, origin)
-                    values (:id, :cb, :n, :label, 'engine_auto')
-                """),
-                {
-                    "id": code_id, "cb": codebook_id, "n": next(numbers),
-                    "label": formatted_label,
-                },
-            )
-        _persist_alias(code_id, norm, seed["sample_text"], seed["frequency_count"])
-        catalog.append(CodeAlias(code_id=code_id, alias_normalized=norm))
-        alias_to_code[norm] = code_id
-        seed_aliases.append(norm)
+            clusters[norm] = [cand]
+            cluster_reprs.append(norm)
+
+    # Fase 2: solo se promueven a code nuevo los clusters cuya frecuencia
+    # SUMADA alcanza el mínimo — el resto sigue como pending_review para el LLM.
+    for representative, members in clusters.items():
+        total = sum(m["frequency_count"] for m in members)
+        if total < min_mentions:
+            continue
+
+        code_id = str(uuid.uuid4())
+        raw_label = representative
+        for m in members:
+            if m["normalized_text"] == representative and m["sample_text"]:
+                raw_label = m["sample_text"]
+                break
+        formatted_label = raw_label.strip().capitalize() if raw_label else raw_label
+        db.execute(
+            text("""
+                insert into codes (id, codebook_id, code_number, label, origin)
+                values (:id, :cb, :n, :label, 'engine_auto')
+            """),
+            {
+                "id": code_id, "cb": codebook_id, "n": next(numbers),
+                "label": formatted_label,
+            },
+        )
+        for m in members:
+            norm = m["normalized_text"]
+            _persist_alias(code_id, norm, m["sample_text"], m["frequency_count"])
+            catalog.append(CodeAlias(code_id=code_id, alias_normalized=norm))
+            alias_to_code[norm] = code_id
 
     return catalog
