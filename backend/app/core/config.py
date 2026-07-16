@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # Stricter gate for promoting an auto-accepted result into a reusable catalog
     # (fuzzy alias / semantic cache) rather than just auto-coding this one verbatim.
     llm_promotion_confidence_threshold: float = 0.9
+    # Cosine similarity floor for a reason_embeddings hit to auto-code a group
+    # without ever reaching the LLM. Unvalidated (Task C5 calibrates this against
+    # real data) — starts conservative since false positives here are worse than
+    # in brands (semantic ambiguity).
+    semantic_cache_similarity_threshold: float = 0.9
 
     # Resolution Center (Fase 4): grupo descartado -> este code_number del codebook.
     discard_code_number: int = 95

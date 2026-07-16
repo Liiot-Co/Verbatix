@@ -7,7 +7,7 @@ test_fuzzy.py/test_classification.py) — this only proves process_round calls b
 import uuid
 from unittest.mock import patch
 
-from app.pipeline.process import _prefilter_garbage, process_round
+from app.pipeline.process import _apply_semantic_cache, _prefilter_garbage, process_round
 
 
 class FakeResult:
@@ -103,3 +103,82 @@ def test_reasons_round_skips_fuzzy():
     fuzzy_mock.assert_not_called()
     llm_mock.assert_called_once()
     assert result == llm_result
+
+
+def test_semantic_cache_skipped_for_brands():
+    """coding_type != 'reasons' -> no DB access at all, no LLM cost paid on the check."""
+    calls = []
+    db = FakeSession(coding_type="brands", execute=lambda stmt, params=None: calls.append(stmt) or FakeResult())
+
+    result = _apply_semantic_cache(db, uuid.uuid4(), "brands")
+
+    assert result == {"groups_classified": 0}
+    assert calls == []
+
+
+def test_semantic_cache_hit_auto_codes_group_before_llm_sees_it():
+    """A group with a near-identical reason_embeddings hit gets marked
+    'auto_coded' by the cache pass — so classify_round's own pending_review
+    query (and therefore _classify_batch_with_retry/classify_batch) never
+    sees it, without needing to spy on the LLM call itself."""
+    group_id = "group-1"
+    mention_groups = {group_id: {"normalized_text": "muy fresco", "status": "pending_review"}}
+    inserted_verbatim_codes = []
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "from codebooks" in sql:
+            return FakeResult(scalar="cb-1")
+        if "select id, normalized_text from mention_groups" in sql:
+            rows = [
+                {"id": gid, "normalized_text": g["normalized_text"]}
+                for gid, g in mention_groups.items()
+                if g["status"] == "pending_review"
+            ]
+            return FakeResult(mapping_rows=rows)
+        if sql.strip().startswith("update mention_groups"):
+            for p in params:
+                mention_groups[p["id"]]["status"] = "auto_coded"
+            return FakeResult()
+        if sql.strip().startswith("insert into verbatim_codes"):
+            inserted_verbatim_codes.extend(params)
+            return FakeResult()
+        return FakeResult()
+
+    db = FakeSession(coding_type="reasons", execute=fake_execute)
+
+    with patch("app.pipeline.process.semantic_cache.lookup", return_value={"code_id": "code-1", "similarity": 0.95}), \
+         patch("app.repositories._current_codebook_id", return_value="cb-1"):
+        result = _apply_semantic_cache(db, uuid.uuid4(), "reasons")
+
+    assert result == {"groups_classified": 1}
+    assert mention_groups[group_id]["status"] == "auto_coded"
+    assert inserted_verbatim_codes[0]["code"] == "code-1"
+
+    # classify_round filters on status='pending_review' via its own query — this
+    # group is no longer in that set, so it never reaches the LLM.
+    remaining_pending = [gid for gid, g in mention_groups.items() if g["status"] == "pending_review"]
+    assert remaining_pending == []
+
+
+def test_semantic_cache_miss_leaves_group_pending():
+    group_id = "group-1"
+    mention_groups = {group_id: {"normalized_text": "algo nuevo", "status": "pending_review"}}
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "from codebooks" in sql:
+            return FakeResult(scalar="cb-1")
+        if "select id, normalized_text from mention_groups" in sql:
+            rows = [{"id": gid, "normalized_text": g["normalized_text"]} for gid, g in mention_groups.items()]
+            return FakeResult(mapping_rows=rows)
+        return FakeResult()
+
+    db = FakeSession(coding_type="reasons", execute=fake_execute)
+
+    with patch("app.pipeline.process.semantic_cache.lookup", return_value=None), \
+         patch("app.repositories._current_codebook_id", return_value="cb-1"):
+        result = _apply_semantic_cache(db, uuid.uuid4(), "reasons")
+
+    assert result == {"groups_classified": 0}
+    assert mention_groups[group_id]["status"] == "pending_review"

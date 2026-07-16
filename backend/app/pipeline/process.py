@@ -21,6 +21,7 @@ from app.pipeline.fuzzy import (
 )
 from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD, SYSTEM_ALIAS_VARIANTS
 from app.pipeline.llm import classify_round
+from app.pipeline.semantic import cache as semantic_cache
 
 
 def _process_brands(db: Session, round_id: uuid.UUID, threshold: float) -> dict:
@@ -133,6 +134,81 @@ def _process_brands(db: Session, round_id: uuid.UUID, threshold: float) -> dict:
     return {"run_id": str(run_id), "groups_classified": auto_coded, "anomalies": anomalies, "total": len(groups)}
 
 
+def _apply_semantic_cache(db: Session, round_id: uuid.UUID, coding_type: str) -> dict:
+    """Antes de mandar razones al LLM, busca cada mention_group pendiente en el
+    caché semántico (Task C2 lo escribe): un hit por encima del umbral se
+    auto-codifica sin tocar el LLM. Solo aplica a razones — para marcas el
+    catálogo fuzzy ya cumple ese rol (ver fuzzy/matcher.py).
+    """
+    if coding_type != "reasons":
+        return {"groups_classified": 0}
+
+    # Import local: mismo motivo que en _prefilter_garbage (evita import circular).
+    from app.repositories import _current_codebook_id
+
+    codebook_id = _current_codebook_id(db, round_id)
+    if codebook_id is None:
+        return {"groups_classified": 0}
+
+    groups = db.execute(
+        text("""
+            select id, normalized_text from mention_groups
+            where round_id = :round and status = 'pending_review'
+        """),
+        {"round": round_id},
+    ).mappings().all()
+
+    hits = []
+    for g in groups:
+        match = semantic_cache.lookup(db, codebook_id, g["normalized_text"])
+        if match:
+            hits.append({"id": g["id"], "code": match["code_id"], "score": match["similarity"]})
+
+    if not hits:
+        return {"groups_classified": 0}
+
+    run_id = uuid.uuid4()
+    db.execute(
+        text("""
+            insert into processing_runs (id, round_id, run_type, algorithm, status, started_at)
+            values (:id, :round, 'initial', 'semantic_cache', 'running', now())
+        """),
+        {"id": run_id, "round": round_id},
+    )
+    db.execute(
+        text("""
+            update mention_groups
+            set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
+            where id = :id
+        """),
+        [{"code": h["code"], "run": run_id, "id": h["id"]} for h in hits],
+    )
+    db.execute(
+        text("""
+            insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, processing_run_id)
+            select gen_random_uuid(), v.id, :code, 1, 'semantic_cache', :score, :run
+            from verbatims v where v.mention_group_id = :id
+            on conflict (verbatim_id, code_id) do nothing
+        """),
+        [{"code": h["code"], "score": h["score"], "run": run_id, "id": h["id"]} for h in hits],
+    )
+    db.execute(
+        text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :id"),
+        [{"id": h["id"]} for h in hits],
+    )
+    db.execute(
+        text("""
+            update processing_runs
+            set status = 'completed', finished_at = now(), total_verbatims = :total, auto_coded_count = :auto
+            where id = :id
+        """),
+        {"total": len(groups), "auto": len(hits), "id": run_id},
+    )
+    db.commit()
+
+    return {"groups_classified": len(hits)}
+
+
 def _prefilter_garbage(db: Session, round_id: uuid.UUID) -> int:
     # Ruido real (largo <= 2 o números sueltos): no hay nada que resolver, a revisión manual.
     garbage_res = db.execute(
@@ -227,13 +303,19 @@ def process_round(db: Session, round_id: uuid.UUID, threshold: float = SCORE_THR
     # Step 1: Run fuzzy matching to auto-code exact/close matches from the catalog
     fuzzy_result = _process_brands(db, round_id, threshold)
 
-    # Step 2: Whatever didn't match stays 'pending_review'. Hand those to the LLM.
+    # Step 2 (reasons only): near-identical text already seen and LLM-approved
+    # before -> auto-code from the semantic cache without spending an LLM call.
+    cache_result = _apply_semantic_cache(db, round_id, coding_type)
+
+    # Step 3: Whatever didn't match stays 'pending_review'. Hand those to the LLM.
     llm_result = classify_round(db, round_id)
 
     result = {
         "run_id": fuzzy_result["run_id"],
         "llm_run_id": llm_result["run_id"],
-        "groups_classified": fuzzy_result["groups_classified"] + llm_result["groups_classified"],
+        "groups_classified": (
+            fuzzy_result["groups_classified"] + cache_result["groups_classified"] + llm_result["groups_classified"]
+        ),
         "anomalies": llm_result["anomalies"],
         "total": fuzzy_result["total"],
     }
