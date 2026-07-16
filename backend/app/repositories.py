@@ -584,6 +584,33 @@ def mark_group_resolved(db: Session, group_id: uuid.UUID, user_id) -> None:
     )
 
 
+def unresolve_group(db: Session, group_id: uuid.UUID, user_id) -> None:
+    """Deshace la resolución de un grupo: apaga las asignaciones activas hechas por
+    este usuario, reabre el grupo a 'pending_review' y revierte el coding_status de
+    sus verbatims. NO borra códigos ni alias aprendidos (pueden reusarse)."""
+    db.execute(
+        text("""
+            update verbatim_codes set is_active = false
+            where is_active and assigned_by = :u and verbatim_id in (
+                select id from verbatims where mention_group_id = :gid
+            )
+        """),
+        {"gid": group_id, "u": user_id},
+    )
+    db.execute(
+        text("""
+            update mention_groups
+            set status = 'pending_review', resolved_by = null, resolved_at = null
+            where id = :gid
+        """),
+        {"gid": group_id},
+    )
+    db.execute(
+        text("update verbatims set coding_status = 'pending' where mention_group_id = :gid"),
+        {"gid": group_id},
+    )
+
+
 def add_alias_from_group(db: Session, codebook_id: uuid.UUID, code_id: uuid.UUID, group: dict) -> None:
     norm = group["normalized_text"]
     if not norm:

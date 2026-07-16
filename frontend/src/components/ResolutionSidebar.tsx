@@ -11,6 +11,7 @@ import {
   getRound,
   getRoundCodes,
   resolveMentionGroup,
+  unresolveMentionGroup,
 } from "@/api/client";
 import type {
   CodingType,
@@ -100,6 +101,10 @@ export default function ResolutionSidebar({
   const [loading, setLoading] = useState(true);
   const [resolving, setResolving] = useState(false);
   const [resolvedThisSession, setResolvedThisSession] = useState(0);
+
+  // Último grupo resuelto (ya enviado al backend) para poder deshacerlo con
+  // Ctrl/Cmd+Z aunque haya pasado la ventana de 4s del "undo" en memoria.
+  const lastResolvedRef = useRef<string | null>(null);
 
   const [cardExiting, setCardExiting] = useState<"up" | "down" | null>(null);
   const [cardVisible, setCardVisible] = useState(true);
@@ -292,6 +297,7 @@ export default function ResolutionSidebar({
           parts.push(`${result.auto_resolved_groups.length} grupo(s) auto-clasificados`);
         }
         if (parts.length > 0) showToast(parts.join(" · "), "success");
+        lastResolvedRef.current = groupId;
         loadSummary();
         onResolved?.();
       } catch (err) {
@@ -317,6 +323,35 @@ export default function ResolutionSidebar({
     pendingRef.current = null;
     sendResolve(pending.groupId, pending.decision, pending.rollback);
   }, [sendResolve]);
+
+  // Deshacer la última clasificación. Primero intenta el "undo" en memoria
+  // (ventana de 4s antes del POST real, comparte lógica con el botón del toast).
+  // Si ya se envió al backend, lo deshace vía API (reabre el grupo).
+  const doUndo = useCallback(async () => {
+    const pending = pendingRef.current;
+    if (pending) {
+      clearTimeout(pending.timer);
+      pendingRef.current = null;
+      pending.rollback();
+      setResolvedThisSession((n) => Math.max(0, n - 1));
+      return true;
+    }
+    const lastId = lastResolvedRef.current;
+    if (!lastId) return false;
+    try {
+      await unresolveMentionGroup(lastId);
+      lastResolvedRef.current = null;
+      setResolvedThisSession((n) => Math.max(0, n - 1));
+      setTotal((t) => t + 1);
+      await loadQueue();
+      await loadSummary();
+      onResolved?.();
+      return true;
+    } catch {
+      showToast("No se pudo deshacer la clasificación.", "error");
+      return false;
+    }
+  }, [loadQueue, loadSummary, showToast, onResolved]);
 
   useEffect(() => {
     window.addEventListener("beforeunload", flushPending);
@@ -407,10 +442,14 @@ export default function ResolutionSidebar({
     (label: string) => {
       if (!currentCard) return;
       const trimmed = label.trim() || currentCard.normalized_text;
+      const capitalized = trimmed.replace(
+        /\b\w+\b/g,
+        (w) => w.charAt(0).toUpperCase() + w.slice(1),
+      );
       playAndResolve("down", currentCard.id, {
         action: "approve",
         code_ids: [],
-        new_code: { label: trimmed },
+        new_code: { label: capitalized },
         add_alias: addAlias,
       });
     },
@@ -470,7 +509,6 @@ export default function ResolutionSidebar({
         description: `${newCodeHint} / Navegar derecha`,
         category: "Acciones",
       },
-      { key: "n", action: openNewCodeInput, description: newCodeHint, category: "Acciones" },
       {
         key: "ArrowUp",
         action: () => {
@@ -514,7 +552,8 @@ export default function ResolutionSidebar({
         category: "Códigos rápidos",
       })),
       // Filtro por escritura: solo con el foco en la grilla (zone "list"), cualquier
-      // letra (menos "n", ya reservada) agrega texto al filtro. ponytail: sin
+      // letra agrega texto al filtro. "n" ya no tiene shortcut propio (antes
+      // colisionaba con el filtrado), así que ahora también filtra. ponytail: sin
       // soporte de mayúsculas acentuadas ni click-to-focus — basta con substring en minúsculas.
       ..."abcdefghijklmnopqrstuvwxyz".split("").map((letter) => ({
         key: letter,
@@ -545,8 +584,17 @@ export default function ResolutionSidebar({
         description: "Cerrar menús",
         category: "Acciones",
       },
+      {
+        key: "z",
+        ctrl: true,
+        action: async () => {
+          if (await doUndo()) showToast("Clasificación deshecha", "info");
+        },
+        description: "Deshacer última clasificación",
+        category: "Acciones",
+      },
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, filteredCodes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols, newCodeHint, codingType]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, filteredCodes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols, newCodeHint, codingType, doUndo, showToast, loadQueue, loadSummary, onResolved]);
 
   useKeyboardShortcuts("resolution-sidebar");
 

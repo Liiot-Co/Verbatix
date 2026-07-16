@@ -16,6 +16,8 @@ from app.repositories import (
     get_resolution_queue,
     get_resolution_summary,
     list_round_codes,
+    log_action,
+    unresolve_group,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["resolution"])
@@ -160,3 +162,26 @@ def bulk_resolve(
             db.rollback()
             failed.append({"group_id": str(gid), "error": str(exc)})
     return {"resolved": resolved, "failed": failed}
+
+
+@router.post("/mention-groups/{group_id}/unresolve")
+def unresolve_mention_group(
+    group_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Deshace la última resolución de un grupo (atajo Ctrl/Cmd+Z en el sidebar)."""
+    require_mention_group(db, group_id, user["id"])
+    detail = get_group_detail(db, group_id)
+    if not detail:
+        raise HTTPException(404, "Grupo no encontrado")
+
+    unresolve_group(db, group_id, user["id"])
+    log_action(
+        db, user["id"], uuid.UUID(detail["round_id"]), "mention_group", group_id,
+        "unresolve",
+        old_value={"status": "resolved"},
+        new_value={"status": "pending_review"},
+    )
+    db.commit()
+    return {"group_id": str(group_id), "status": "pending_review"}

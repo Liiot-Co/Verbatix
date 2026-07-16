@@ -292,6 +292,13 @@ export async function resolveMentionGroup(groupId: string, decision: ResolveDeci
   });
 }
 
+export async function unresolveMentionGroup(groupId: string): Promise<{ group_id: string; status: string }> {
+  return request<{ group_id: string; status: string }>(`/mention-groups/${groupId}/unresolve`, {
+    method: "POST",
+    headers: jsonHeaders,
+  });
+}
+
 export async function bulkResolve(
   roundId: string,
   groupIds: string[],
