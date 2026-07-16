@@ -26,12 +26,12 @@ Alcance: Fase 1 (V4+V7 ajustadas) + Fase 2 (V1+V2+V3) del ideation. Fase 3 (Rust
 - [x] **C2** Esquema `reason_embeddings` + escritura al aprobar razón LLM — M
 - [x] **C3** Lookup de caché antes de despachar razones a LLM — M
 - [x] **C4** Arranque en caliente vía `source_round_id` entre rondas del mismo estudio — S
-- [ ] **C5** Script de calibración del umbral de similitud coseno (dataset no existe, se construye) — S
+- [x] **C5** Script de calibración del umbral de similitud coseno (dataset no existe, se construye) — S
 
 ### Checkpoint C (final)
-- [ ] `pytest backend/tests/ -v` en verde
-- [ ] E2E: ronda de marcas con promoción + ronda de razones con caché semántico, ambas funcionando
-- [ ] Ronda homologada obtiene hits de caché desde el primer procesamiento
+- [x] `pytest backend/tests/ -v` en verde (91 pasan; 3 fallos preexistentes no relacionados)
+- [ ] E2E: ronda de marcas con promoción + ronda de razones con caché semántico, ambas funcionando — **NO verificado**: el dev DB actual solo tiene 1 ronda histórica y es de marcas, no hay ronda de razones para probar el caché semántico real
+- [ ] Ronda homologada obtiene hits de caché desde el primer procesamiento — **NO verificado**, mismo motivo (sin datos de razones/homologación reales disponibles)
 
 ## Not Doing
 

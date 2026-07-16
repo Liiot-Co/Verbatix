@@ -41,12 +41,12 @@ Reparar la topología del pipeline de clasificación (`backend/app/pipeline/`) p
 - [x] **Task C2** (M): Esquema + escritura del caché semántico (promoción de razones)
 - [x] **Task C3** (M): Lectura del caché antes de despachar a LLM
 - [x] **Task C4** (S): Arranque en caliente vía `source_round_id`
-- [ ] **Task C5** (S): Dataset y script de calibración del umbral de similitud coseno
+- [x] **Task C5** (S): Dataset y script de calibración del umbral de similitud coseno — ejecutado contra la única ronda real disponible (marcas); precision=1.0/recall=0.12 a threshold=0.90, sin falsos positivos. No hay ronda de razones real todavía para calibrar el caso que de verdad importa — revisitar cuando exista una.
 
 ### Checkpoint C (final)
-- [ ] `pytest backend/tests/ -v` pasa completo
-- [ ] Flujo E2E de prueba: ronda de marcas con promoción activa + ronda de razones con caché semántico activo, ambas dentro del NFR medido en un entorno de prueba (no garantizado hasta calibrar, ver Open Questions)
-- [ ] Ronda homologada (`source_round_id` set) muestra hits de caché desde el primer procesamiento
+- [x] `pytest backend/tests/ -v` pasa completo (91 pasan; 3 fallos preexistentes no relacionados con Fase C)
+- [ ] Flujo E2E de prueba: ronda de marcas con promoción activa + ronda de razones con caché semántico activo — **NO verificado**: el dev DB solo tiene 1 ronda histórica (marcas, status='failed'), no hay ronda de razones para ejercitar el caché semántico end-to-end
+- [ ] Ronda homologada (`source_round_id` set) muestra hits de caché desde el primer procesamiento — **NO verificado**, mismo motivo
 
 ---
 
