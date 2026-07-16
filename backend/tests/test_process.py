@@ -25,6 +25,9 @@ class FakeResult:
     def all(self):
         return self._mapping_rows
 
+    def first(self):
+        return self._mapping_rows[0] if self._mapping_rows else None
+
 
 class FakeSession:
     def __init__(self, coding_type, execute=None):
@@ -147,8 +150,10 @@ def test_semantic_cache_hit_auto_codes_group_before_llm_sees_it():
 
     db = FakeSession(coding_type="reasons", execute=fake_execute)
 
-    with patch("app.pipeline.process.semantic_cache.lookup", return_value={"code_id": "code-1", "similarity": 0.95}), \
-         patch("app.repositories._current_codebook_id", return_value="cb-1"):
+    with patch(
+        "app.pipeline.process.semantic_cache.lookup",
+        return_value={"code_id": "code-1", "codebook_id": "cb-1", "similarity": 0.95},
+    ), patch("app.repositories._current_codebook_id", return_value="cb-1"):
         result = _apply_semantic_cache(db, uuid.uuid4(), "reasons")
 
     assert result == {"groups_classified": 1}
@@ -179,6 +184,90 @@ def test_semantic_cache_miss_leaves_group_pending():
     with patch("app.pipeline.process.semantic_cache.lookup", return_value=None), \
          patch("app.repositories._current_codebook_id", return_value="cb-1"):
         result = _apply_semantic_cache(db, uuid.uuid4(), "reasons")
+
+    assert result == {"groups_classified": 0}
+    assert mention_groups[group_id]["status"] == "pending_review"
+
+
+def test_semantic_cache_searches_source_round_when_homologated():
+    """Task C4: a homologated round with source_round_id also searches the
+    origin round's codebook, and remaps the hit's code_id to the equivalent
+    inherited code in its own codebook (code ids aren't shared across cloned
+    codebooks — see repositories.clone_codebook)."""
+    group_id = "group-1"
+    mention_groups = {group_id: {"normalized_text": "muy fresco", "status": "pending_review"}}
+    inserted_verbatim_codes = []
+    lookup_calls = []
+
+    def fake_current_codebook_id(db, round_id):
+        return "cb-source" if round_id == "source-round" else "cb-own"
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "origin_mode, source_round_id from rounds" in sql:
+            return FakeResult(mapping_rows=[{"origin_mode": "homologated", "source_round_id": "source-round"}])
+        if "select id, normalized_text from mention_groups" in sql:
+            rows = [
+                {"id": gid, "normalized_text": g["normalized_text"]}
+                for gid, g in mention_groups.items()
+                if g["status"] == "pending_review"
+            ]
+            return FakeResult(mapping_rows=rows)
+        if "inherited_from_code_id" in sql:
+            # The origin round's code "code-source" was cloned into this
+            # round's codebook as "code-own".
+            return FakeResult(scalar="code-own" if params["src"] == "code-source" else None)
+        if sql.strip().startswith("update mention_groups"):
+            for p in params:
+                mention_groups[p["id"]]["status"] = "auto_coded"
+            return FakeResult()
+        if sql.strip().startswith("insert into verbatim_codes"):
+            inserted_verbatim_codes.extend(params)
+            return FakeResult()
+        return FakeResult()
+
+    def fake_lookup(db, codebook_ids, normalized_text):
+        lookup_calls.append(codebook_ids)
+        return {"code_id": "code-source", "codebook_id": "cb-source", "similarity": 0.95}
+
+    db = FakeSession(coding_type="reasons", execute=fake_execute)
+
+    with patch("app.pipeline.process.semantic_cache.lookup", side_effect=fake_lookup), \
+         patch("app.repositories._current_codebook_id", side_effect=fake_current_codebook_id):
+        result = _apply_semantic_cache(db, "own-round", "reasons")
+
+    assert lookup_calls == [["cb-own", "cb-source"]]
+    assert result == {"groups_classified": 1}
+    assert inserted_verbatim_codes[0]["code"] == "code-own"  # remapped, not the origin round's code_id
+
+
+def test_semantic_cache_skips_hit_when_no_inherited_code_found():
+    """Cross-codebook hit with no equivalent inherited code -> falls through to
+    the LLM instead of writing a code_id from a different codebook."""
+    group_id = "group-1"
+    mention_groups = {group_id: {"normalized_text": "muy fresco", "status": "pending_review"}}
+
+    def fake_current_codebook_id(db, round_id):
+        return "cb-source" if round_id == "source-round" else "cb-own"
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "origin_mode, source_round_id from rounds" in sql:
+            return FakeResult(mapping_rows=[{"origin_mode": "homologated", "source_round_id": "source-round"}])
+        if "select id, normalized_text from mention_groups" in sql:
+            rows = [{"id": gid, "normalized_text": g["normalized_text"]} for gid, g in mention_groups.items()]
+            return FakeResult(mapping_rows=rows)
+        if "inherited_from_code_id" in sql:
+            return FakeResult(scalar=None)
+        return FakeResult()
+
+    db = FakeSession(coding_type="reasons", execute=fake_execute)
+
+    with patch(
+        "app.pipeline.process.semantic_cache.lookup",
+        return_value={"code_id": "code-source", "codebook_id": "cb-source", "similarity": 0.95},
+    ), patch("app.repositories._current_codebook_id", side_effect=fake_current_codebook_id):
+        result = _apply_semantic_cache(db, "own-round", "reasons")
 
     assert result == {"groups_classified": 0}
     assert mention_groups[group_id]["status"] == "pending_review"

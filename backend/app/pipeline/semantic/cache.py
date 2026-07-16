@@ -14,25 +14,32 @@ def _to_pgvector(vector: list[float]) -> str:
     return "[" + ",".join(repr(v) for v in vector) + "]"
 
 
-def lookup(db: Session, codebook_id, normalized_text: str) -> dict | None:
+def lookup(db: Session, codebook_ids, normalized_text: str) -> dict | None:
     """Busca el vecino más cercano en reason_embeddings por similitud coseno,
-    acotado al mismo codebook_id. None si no hay filas o el mejor match no
-    supera semantic_cache_similarity_threshold.
+    acotado a uno o varios codebook_id (Task C4: homologación busca también en
+    el codebook de la ronda origen vía source_round_id). None si no hay filas
+    o el mejor match no supera semantic_cache_similarity_threshold.
+
+    Devuelve también de qué codebook_id vino el match: si no es el propio de
+    la ronda, el caller debe remapear code_id al code inherited_from_code_id
+    equivalente en su propio codebook antes de usarlo (los ids de code no se
+    comparten entre codebooks clonados, ver repositories.clone_codebook).
     """
+    ids = codebook_ids if isinstance(codebook_ids, (list, tuple)) else [codebook_ids]
     vector = _to_pgvector(embed(normalized_text))
     row = db.execute(
         text("""
-            select code_id, 1 - (embedding <=> :vec) as similarity
+            select code_id, codebook_id, 1 - (embedding <=> :vec) as similarity
             from reason_embeddings
-            where codebook_id = :cb
+            where codebook_id = any(:cbs)
             order by embedding <=> :vec
             limit 1
         """),
-        {"vec": vector, "cb": codebook_id},
+        {"vec": vector, "cbs": ids},
     ).mappings().first()
     if row is None or row["similarity"] < settings.semantic_cache_similarity_threshold:
         return None
-    return {"code_id": row["code_id"], "similarity": row["similarity"]}
+    return {"code_id": row["code_id"], "codebook_id": row["codebook_id"], "similarity": row["similarity"]}
 
 
 def write(db: Session, code_id: str, source_text: str, confidence: float) -> None:

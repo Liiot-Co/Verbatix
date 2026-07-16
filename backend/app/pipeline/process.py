@@ -150,6 +150,19 @@ def _apply_semantic_cache(db: Session, round_id: uuid.UUID, coding_type: str) ->
     if codebook_id is None:
         return {"groups_classified": 0}
 
+    # Arranque en caliente (Task C4): una ronda homologada busca también en el
+    # codebook de su ronda origen, para tener hits desde el primer procesamiento
+    # en vez de esperar a que su propio caché se llene.
+    codebook_ids = [codebook_id]
+    round_row = db.execute(
+        text("select origin_mode, source_round_id from rounds where id = :id"),
+        {"id": round_id},
+    ).mappings().first()
+    if round_row and round_row["origin_mode"] == "homologated" and round_row["source_round_id"]:
+        source_codebook_id = _current_codebook_id(db, round_row["source_round_id"])
+        if source_codebook_id:
+            codebook_ids.append(source_codebook_id)
+
     groups = db.execute(
         text("""
             select id, normalized_text from mention_groups
@@ -160,9 +173,24 @@ def _apply_semantic_cache(db: Session, round_id: uuid.UUID, coding_type: str) ->
 
     hits = []
     for g in groups:
-        match = semantic_cache.lookup(db, codebook_id, g["normalized_text"])
-        if match:
-            hits.append({"id": g["id"], "code": match["code_id"], "score": match["similarity"]})
+        match = semantic_cache.lookup(db, codebook_ids, g["normalized_text"])
+        if not match:
+            continue
+        code_id = match["code_id"]
+        if match["codebook_id"] != codebook_id:
+            # code_id no se comparte entre codebooks clonados (ver
+            # repositories.clone_codebook) — hay que remapear al code
+            # equivalente en el propio codebook de esta ronda. Sin match, la
+            # ronda origen no tiene un code inherited de ese id: se deja pasar
+            # al LLM en vez de escribir una referencia cruzada inválida.
+            own_code_id = db.execute(
+                text("select id from codes where codebook_id = :cb and inherited_from_code_id = :src"),
+                {"cb": codebook_id, "src": code_id},
+            ).scalar()
+            if own_code_id is None:
+                continue
+            code_id = own_code_id
+        hits.append({"id": g["id"], "code": code_id, "score": match["similarity"]})
 
     if not hits:
         return {"groups_classified": 0}

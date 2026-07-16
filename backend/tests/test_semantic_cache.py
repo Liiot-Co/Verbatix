@@ -65,21 +65,33 @@ def test_to_pgvector_formats_as_bracketed_csv():
 
 def test_lookup_returns_match_above_threshold():
     code_id = str(uuid.uuid4())
-    db = FakeLookupSession(rows=[{"code_id": code_id, "similarity": 0.95}])
+    db = FakeLookupSession(rows=[{"code_id": code_id, "codebook_id": "cb-1", "similarity": 0.95}])
 
     with patch.object(cache, "embed", return_value=[0.1, 0.2]), \
          patch.object(cache.settings, "semantic_cache_similarity_threshold", 0.9):
         match = cache.lookup(db, "cb-1", "muy fresco")
 
-    assert match == {"code_id": code_id, "similarity": 0.95}
+    assert match == {"code_id": code_id, "codebook_id": "cb-1", "similarity": 0.95}
     sql, params = db.executed[0]
     assert "reason_embeddings" in sql
     assert "<=>" in sql
-    assert params["cb"] == "cb-1"
+    assert params["cbs"] == ["cb-1"]
+
+
+def test_lookup_accepts_multiple_codebook_ids():
+    """Task C4: homologación busca en el codebook propio + el de la ronda origen."""
+    db = FakeLookupSession(rows=[{"code_id": "code-1", "codebook_id": "cb-origin", "similarity": 0.95}])
+
+    with patch.object(cache, "embed", return_value=[0.1, 0.2]):
+        match = cache.lookup(db, ["cb-own", "cb-origin"], "muy fresco")
+
+    assert match["codebook_id"] == "cb-origin"
+    sql, params = db.executed[0]
+    assert params["cbs"] == ["cb-own", "cb-origin"]
 
 
 def test_lookup_returns_none_below_threshold():
-    db = FakeLookupSession(rows=[{"code_id": "code-1", "similarity": 0.8}])
+    db = FakeLookupSession(rows=[{"code_id": "code-1", "codebook_id": "cb-1", "similarity": 0.8}])
 
     with patch.object(cache, "embed", return_value=[0.1, 0.2]), \
          patch.object(cache.settings, "semantic_cache_similarity_threshold", 0.9):
