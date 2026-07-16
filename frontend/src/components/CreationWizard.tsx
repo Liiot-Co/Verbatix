@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useDropzone } from "react-dropzone";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronLeft, FileSpreadsheet, UploadCloud, AlertCircle } from "lucide-react";
+import { Check, ChevronLeft, FileSpreadsheet, UploadCloud, AlertCircle, Files } from "lucide-react";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb, { type Crumb } from "./Breadcrumb";
@@ -30,6 +30,15 @@ import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShor
 import { codingTypeLabel, findStudy, nextRoundNumber } from "@/lib/projectTree";
 
 type WizardStep = "project" | "studio" | "round";
+
+type BatchFileStatus = "pending" | "uploading" | "importing" | "done" | "error";
+
+interface BatchItem {
+  file: File;
+  status: BatchFileStatus;
+  error?: string;
+  roundName?: string;
+}
 
 const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: "project", label: "Proyecto", icon: "📁" },
@@ -140,6 +149,13 @@ export default function CreationWizard() {
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
   const [submitting, setSubmitting] = useState(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
+
+  // Archivos adicionales soltados junto al primero: cada uno se convierte en
+  // una ronda nueva del mismo estudio (mismo min_mentions/auditoría que la
+  // ronda 1), reusando el mapeo de columnas del primer archivo — se asume que
+  // todas las rondas de un estudio comparten la misma plantilla de Excel.
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
+  const [batchRunning, setBatchRunning] = useState(false);
 
   const projectRef = useRef<HTMLInputElement>(null);
   const studyRef = useRef<HTMLInputElement>(null);
@@ -270,7 +286,7 @@ export default function CreationWizard() {
 
   const onDrop = useCallback(
     async (accepted: File[]) => {
-      const file = accepted[0];
+      const [file, ...rest] = accepted;
       if (!file) return;
       const r = await ensureRound();
       if (!r) return;
@@ -281,6 +297,7 @@ export default function CreationWizard() {
       const codebookGuess = result.detected_sheets.find((s) => s.guessed_as === "codebook");
       setVerbatimsSheet(verbatimGuess?.name ?? result.detected_sheets[0]?.name ?? "");
       setCodebookSheet(codebookGuess?.name ?? "");
+      setBatchItems(rest.map((f) => ({ file: f, status: "pending" as const })));
       playTick();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -289,7 +306,7 @@ export default function CreationWizard() {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    multiple: false,
+    multiple: true,
     accept: {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
       "application/vnd.ms-excel": [".xls"],
@@ -299,6 +316,56 @@ export default function CreationWizard() {
   const activeSheet: DetectedSheet | undefined = uploaded?.detected_sheets.find((s) => s.name === verbatimsSheet);
 
   const canImport = !!(round && uploaded && verbatimsSheet && columnMap.verbatim);
+
+  // Cada archivo adicional del lote se convierte en su propia ronda nueva del
+  // mismo estudio: crea la ronda, sube el archivo, adivina sus hojas (mismo
+  // criterio que el primer archivo) y reusa el columnMap del primero. Un
+  // archivo sin hoja de verbatims detectable (o cualquier otro fallo) queda
+  // marcado con error y no bloquea al resto del lote.
+  const runBatch = async (studyId: string) => {
+    setBatchRunning(true);
+    const year = new Date().getFullYear();
+    let nextNumber = rRoundNumber + 1;
+
+    for (const [i, item] of batchItems.entries()) {
+      setBatchItems((items) => items.map((it, idx) => (idx === i ? { ...it, status: "uploading" } : it)));
+      const roundName = `Ronda ${nextNumber} - ${year}`;
+      try {
+        const newRound = await createRound(studyId, {
+          name: roundName,
+          round_number: nextNumber,
+          min_mentions_threshold: rThreshold,
+          audit_percentage: rAudit,
+          origin_mode: "from_scratch",
+          source_round_id: null,
+        });
+        const uploadedBatch = await uploadFile(newRound.id, item.file);
+        setBatchItems((items) =>
+          items.map((it, idx) => (idx === i ? { ...it, status: "importing", roundName: newRound.name } : it))
+        );
+
+        const verbatimGuess = uploadedBatch.detected_sheets.find((s) => s.guessed_as === "verbatims");
+        if (!verbatimGuess) {
+          throw new Error("No se detectó una hoja de verbatims en este archivo");
+        }
+        const codebookGuess = uploadedBatch.detected_sheets.find((s) => s.guessed_as === "codebook");
+
+        await importFile(
+          newRound.id,
+          uploadedBatch.file_id,
+          verbatimGuess.name,
+          columnMap as ColumnMap,
+          codebookGuess?.name
+        );
+        setBatchItems((items) => items.map((it, idx) => (idx === i ? { ...it, status: "done" } : it)));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Error desconocido";
+        setBatchItems((items) => items.map((it, idx) => (idx === i ? { ...it, status: "error", error: message } : it)));
+      }
+      nextNumber += 1;
+    }
+    setBatchRunning(false);
+  };
 
   const handleImport = async () => {
     if (!round || !uploaded || !verbatimsSheet || !columnMap.verbatim) return;
@@ -316,13 +383,26 @@ export default function CreationWizard() {
         "success"
       );
       playSuccess();
-      navigate(`/rounds/${round.id}/preliminary`);
+
+      const studyId = existingStudy?.id ?? study?.id;
+      if (batchItems.length > 0 && studyId) {
+        await runBatch(studyId);
+      } else {
+        navigate(`/rounds/${round.id}/preliminary`);
+      }
     } catch {
       showToast("No se pudo importar el archivo", "error");
     } finally {
       setSubmitting(false);
     }
   };
+
+  const goToStudy = () => {
+    const studyId = existingStudy?.id ?? study?.id;
+    if (project && studyId) navigate(`/projects/${project.id}/studies/${studyId}`);
+  };
+
+  const batchDone = batchItems.length > 0 && !batchRunning && batchItems.every((it) => it.status === "done" || it.status === "error");
 
   const stepIndex = STEPS.findIndex((s) => s.key === step);
 
@@ -708,6 +788,22 @@ export default function CreationWizard() {
                     {uploaded.original_filename}
                   </motion.div>
 
+                  {batchItems.length > 0 && !batchRunning && !batchDone && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="flex items-start gap-2 text-xs text-p-text-muted bg-p-bg-subtle rounded-lg p-2.5"
+                    >
+                      <Files className="w-3.5 h-3.5 shrink-0 mt-0.5 text-p-accent" />
+                      <span>
+                        +{batchItems.length} archivo{batchItems.length > 1 ? "s" : ""} más se importará
+                        {batchItems.length > 1 ? "n" : ""} como ronda{batchItems.length > 1 ? "s" : ""} nueva
+                        {batchItems.length > 1 ? "s" : ""} al confirmar, reusando el mapeo de columnas de abajo:{" "}
+                        {batchItems.map((it) => it.file.name).join(", ")}
+                      </span>
+                    </motion.div>
+                  )}
+
                   <motion.div className="space-y-3">
                     <div>
                       <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de verbatims</motion.label>
@@ -772,36 +868,85 @@ export default function CreationWizard() {
                       </motion.div>
                     )}
 
-                    <motion.div className="flex gap-1.5 pt-1">
-                      <motion.button
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        disabled={!canImport || submitting}
-                        className="btn-primary text-sm py-2 flex-1 justify-center"
-                        onClick={handleImport}
-                      >
-                        {submitting ? (
-                          <>
-                            <motion.span
-                              animate={{ rotate: 360 }}
-                              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                              className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
-                            />
-                            Importando...
-                          </>
-                        ) : (
-                          "Importar"
+                    {!batchRunning && !batchDone && (
+                      <motion.div className="flex gap-1.5 pt-1">
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          disabled={!canImport || submitting}
+                          className="btn-primary text-sm py-2 flex-1 justify-center"
+                          onClick={handleImport}
+                        >
+                          {submitting ? (
+                            <>
+                              <motion.span
+                                animate={{ rotate: 360 }}
+                                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                                className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
+                              />
+                              Importando...
+                            </>
+                          ) : batchItems.length > 0 ? (
+                            `Importar (+${batchItems.length} ronda${batchItems.length > 1 ? "s" : ""})`
+                          ) : (
+                            "Importar"
+                          )}
+                        </motion.button>
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          className="btn-ghost text-sm py-2 px-3"
+                          onClick={() => { setUploaded(null); setColumnMap({}); setSheetError(null); setBatchItems([]); }}
+                        >
+                          Cambiar archivo{batchItems.length > 0 ? "s" : ""}
+                        </motion.button>
+                      </motion.div>
+                    )}
+
+                    {batchItems.length > 0 && (batchRunning || batchDone) && (
+                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-2 pt-1">
+                        <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                          Rondas adicionales
+                        </div>
+                        {batchItems.map((item, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center gap-2 text-xs bg-p-bg-subtle rounded-lg p-2"
+                          >
+                            {item.status === "done" ? (
+                              <Check className="w-3.5 h-3.5 shrink-0 text-p-success" />
+                            ) : item.status === "error" ? (
+                              <AlertCircle className="w-3.5 h-3.5 shrink-0 text-p-error" />
+                            ) : item.status === "pending" ? (
+                              <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-p-text-faint" />
+                            ) : (
+                              <motion.span
+                                animate={{ rotate: 360 }}
+                                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                                className="w-3 h-3 shrink-0 border-2 border-p-accent/30 border-t-p-accent rounded-full"
+                              />
+                            )}
+                            <span className="flex-1 truncate text-p-text">
+                              {item.roundName ?? item.file.name}
+                            </span>
+                            <span className="text-p-text-faint shrink-0">
+                              {item.error ?? (item.status === "pending" ? "En espera" : item.status === "uploading" ? "Subiendo..." : item.status === "importing" ? "Importando..." : "Listo")}
+                            </span>
+                          </div>
+                        ))}
+
+                        {batchDone && (
+                          <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            className="btn-primary text-sm py-2 w-full justify-center mt-1"
+                            onClick={goToStudy}
+                          >
+                            Ir al estudio
+                          </motion.button>
                         )}
-                      </motion.button>
-                      <motion.button
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                        className="btn-ghost text-sm py-2 px-3"
-                        onClick={() => { setUploaded(null); setColumnMap({}); setSheetError(null); }}
-                      >
-                        Cambiar archivo
-                      </motion.button>
-                    </motion.div>
+                      </motion.div>
+                    )}
                   </motion.div>
                 </motion.div>
               )}
