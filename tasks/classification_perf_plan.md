@@ -45,8 +45,8 @@ Reparar la topología del pipeline de clasificación (`backend/app/pipeline/`) p
 
 ### Checkpoint C (final)
 - [x] `pytest backend/tests/ -v` pasa completo (91 pasan; 3 fallos preexistentes no relacionados con Fase C)
-- [ ] Flujo E2E de prueba: ronda de marcas con promoción activa + ronda de razones con caché semántico activo — **NO verificado**: el dev DB solo tiene 1 ronda histórica (marcas, status='failed'), no hay ronda de razones para ejercitar el caché semántico end-to-end
-- [ ] Ronda homologada (`source_round_id` set) muestra hits de caché desde el primer procesamiento — **NO verificado**, mismo motivo
+- [x] Flujo E2E de prueba: ronda de razones con caché semántico activo — verificado con datos sembrados vía script desechable contra el dev DB real (pgvector, sin mocks de DB): ronda 1 clasifica por LLM (mockeado, 1 llamada), auto-codifica y escribe `reason_embeddings`
+- [x] Ronda homologada (`source_round_id` set) muestra hits de caché desde el primer procesamiento — verificado: ronda 2 homologada resuelve su grupo por similitud coseno contra el codebook de la ronda 1 (0 llamadas a `classify_batch`), remapea el code_id vía `inherited_from_code_id` y escribe `verbatim_codes.source='semantic_cache'`. De paso se detectó y corrigió que la migración 004 (`semantic_cache` en el check constraint) no estaba aplicada en este dev DB — gap de despliegue del entorno, no del código; ver nota en Riesgos.
 
 ---
 
@@ -289,6 +289,7 @@ Reparar la topología del pipeline de clasificación (`backend/app/pipeline/`) p
 | Elección de librería de embeddings no confirmada (`fastembed` vs alternativas) | Medio | Confirmar en Task C1 antes de escribir C2; encapsulado en `semantic/embed.py` para poder cambiar de librería sin tocar el resto del pipeline |
 | Promoción automática contamina catálogos con falsos positivos | Alto (degrada calidad futura, difícil de detectar) | Umbral de promoción separado y más estricto que el de auto-aceptación (Task A2); `origin='llm_promoted'`/fila de `reason_embeddings` queda auditable y reversible (se puede borrar por origen) |
 | Migraciones nuevas (002-006) se acumulan sin proceso de migración formal (no hay Alembic) | Medio | Seguir el patrón ya usado en el proyecto (`001_schema_v5.sql` como base, archivos numerados incrementales aplicados por `docker-entrypoint-initdb.d` en dev) — confirmar que este patrón siga sirviendo o si hace falta herramienta de migración antes de que crezca más |
+| `docker-entrypoint-initdb.d` solo aplica migraciones nuevas sobre un volumen de datos vacío — un dev DB con datos previos (o un volumen creado antes de que existiera una migración nueva) se queda desactualizado en silencio hasta que algo falla en runtime | Medio (confirmado durante verificación E2E de Checkpoint C: la migración 004 no estaba aplicada en el dev DB de esta sesión, causando un `CheckViolation` al escribir `source='semantic_cache'`) | Aplicar migraciones pendientes manualmente en dev (`docker compose exec db psql ...`) cuando se sospeche desfase; considerar un healthcheck o script que compare migraciones en disco vs. aplicadas antes de ir a producción |
 
 ## Open Questions
 

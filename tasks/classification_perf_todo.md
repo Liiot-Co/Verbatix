@@ -30,8 +30,8 @@ Alcance: Fase 1 (V4+V7 ajustadas) + Fase 2 (V1+V2+V3) del ideation. Fase 3 (Rust
 
 ### Checkpoint C (final)
 - [x] `pytest backend/tests/ -v` en verde (91 pasan; 3 fallos preexistentes no relacionados)
-- [ ] E2E: ronda de marcas con promoción + ronda de razones con caché semántico, ambas funcionando — **NO verificado**: el dev DB actual solo tiene 1 ronda histórica y es de marcas, no hay ronda de razones para probar el caché semántico real
-- [ ] Ronda homologada obtiene hits de caché desde el primer procesamiento — **NO verificado**, mismo motivo (sin datos de razones/homologación reales disponibles)
+- [x] E2E: ronda de razones con caché semántico, funcionando — verificado con datos sembrados (sin ronda histórica real disponible): ronda 1 (from_scratch) clasifica por LLM y escribe en `reason_embeddings`; script desechable, no comiteado, limpiado después
+- [x] Ronda homologada obtiene hits de caché desde el primer procesamiento — verificado: ronda 2 (`origin_mode='homologated'`, `source_round_id`=ronda 1) resuelve el grupo vía caché semántico de la ronda origen SIN llamar a `classify_batch` (0 llamadas), remapea correctamente al code_id propio vía `inherited_from_code_id`, `verbatim_codes.source='semantic_cache'`
 
 ## Not Doing
 
