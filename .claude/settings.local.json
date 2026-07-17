@@ -5,7 +5,11 @@
       "Bash(/c/Python312/python -c ':*)",
       "Bash(/c/Python312/python -m pytest tests/ -q)",
       "Bash(/c/Python312/python -m pytest tests/test_report.py -q)",
-      "Bash(/c/Python312/python -m pytest tests/test_report.py tests/test_repositories.py -q)"
+      "Bash(/c/Python312/python -m pytest tests/test_report.py tests/test_repositories.py -q)",
+      "Bash(command -v opencode)",
+      "Read(//home/jeanpierre/.config/opencode/**)",
+      "Bash(find / -maxdepth 4 -iname \"*opencode*\")",
+      "Bash(uv --version)"
     ]
   }
 }

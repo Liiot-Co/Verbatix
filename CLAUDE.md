@@ -8,6 +8,7 @@
 - Build FE: `cd frontend && bun run build`
 - Typecheck: `cd frontend && bunx tsc --noEmit`
 - Lint FE: `cd frontend && bun run lint`
+- Agent tooling (once per clone/machine): `./scripts/setup-agent-tools.sh` (macOS/Linux/WSL) or `.\scripts\setup-agent-tools.ps1` (Windows PowerShell) — installs engram/graphify/headroom and builds the local knowledge graph
 
 Frontend package manager is **bun**, not npm — use `bun`/`bunx`, not `npm`/`npx`, everywhere (local, CI, Docker). Inside a running container: `docker compose exec frontend bun run <script>` (e.g. `bun run build`, `bunx tsc --noEmit`). `frontend/Dockerfile` (prod) already builds with `oven/bun:1`; `frontend/Dockerfile.dev` still installs with `node:20-slim` + `npm install` — treat that as the one place still owing a bun migration, not a second convention to follow.
 
@@ -39,3 +40,13 @@ Frontend package manager is **bun**, not npm — use `bun`/`bunx`, not `npm`/`np
 - Tests use SQLite in-memory (StaticPool) or FakeSession — never hit real DB
 - Text normalization source of truth: `app/pipeline/normalize.py`
 - DB schema source of truth: `backend/db/migrations/001_schema_v5.sql`
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
