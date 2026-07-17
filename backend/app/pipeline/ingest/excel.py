@@ -40,7 +40,7 @@ def _header_of(head_rows, *keywords) -> list:
     return []
 
 
-def parse_verbatims(content: bytes, sheet: str) -> list[dict]:
+def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | None = None) -> list[dict]:
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     ws = wb[sheet]
     rows = list(ws.iter_rows(values_only=True))
@@ -65,7 +65,10 @@ def parse_verbatims(content: bytes, sheet: str) -> list[dict]:
 
     i_resp = col("respondent id")
     i_q = col("question id")
-    i_txt = col("verbatim")
+    # column_map.verbatim es explícito (usado por importaciones .dau, donde no
+    # hay header "Verbatim" que adivinar); si no viene, cae al sniffing actual.
+    verbatim_col = (column_map or {}).get("verbatim")
+    i_txt = header.index(verbatim_col.strip().lower()) if verbatim_col and verbatim_col.strip().lower() in header else col("verbatim")
     i_in = col("input id 1", "input id")
     i_out = col("output id 1", "output id")
 

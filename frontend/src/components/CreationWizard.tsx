@@ -239,6 +239,10 @@ export default function CreationWizard() {
       const existing = projectDetail.studies.find(
         (s) => s.coding_type === newStudyCodingType && s.name === studyName
       );
+      // Sin esto, un nombre+coding_type que ya existe en el proyecto pasa de
+      // largo hasta ensureRound(), que intenta crear el estudio de nuevo y
+      // choca con el unique (project_id, name) — en vez de reusar el existente.
+      setExistingStudy(existing ?? null);
       const nextNum = nextRoundNumber(existing?.rounds ?? []);
       setRRoundNumber(nextNum);
       setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
@@ -310,12 +314,18 @@ export default function CreationWizard() {
     accept: {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
       "application/vnd.ms-excel": [".xls"],
+      "application/octet-stream": [".dau"],
     },
   });
 
   const activeSheet: DetectedSheet | undefined = uploaded?.detected_sheets.find((s) => s.name === verbatimsSheet);
+  // Un .dau no tiene columna de verbatim que elegir — el backend
+  // auto-selecciona las respuestas abiertas del registro y descarta la
+  // infraestructura conocida (id, fechas, URLs, metadata) — ver
+  // dau._NON_RESPONSE_FIELDS / dau.parse_verbatims.
+  const isDau = uploaded?.file_type === "dau";
 
-  const canImport = !!(round && uploaded && verbatimsSheet && columnMap.verbatim);
+  const canImport = !!(round && uploaded && verbatimsSheet && (isDau || columnMap.verbatim));
 
   // Cada archivo adicional del lote se convierte en su propia ronda nueva del
   // mismo estudio: crea la ronda, sube el archivo, adivina sus hojas (mismo
@@ -368,7 +378,7 @@ export default function CreationWizard() {
   };
 
   const handleImport = async () => {
-    if (!round || !uploaded || !verbatimsSheet || !columnMap.verbatim) return;
+    if (!round || !uploaded || !verbatimsSheet || !(isDau || columnMap.verbatim)) return;
     setSubmitting(true);
     try {
       const result = await importFile(
@@ -770,7 +780,7 @@ export default function CreationWizard() {
                   >
                     Arrastra el Excel aquí, o haz clic para elegirlo
                   </motion.span>
-                  <span className="text-xs text-p-text-faint">.xlsx o .xls</span>
+                  <span className="text-xs text-p-text-faint">.xlsx, .xls o .dau</span>
                 </div>
               ) : (
                 <motion.div
@@ -819,22 +829,35 @@ export default function CreationWizard() {
                       </motion.select>
                     </div>
 
-                    <div>
-                      <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de libro de códigos (opcional)</motion.label>
-                      <motion.select
-                        className="input w-full text-sm mt-1"
-                        value={codebookSheet}
-                        onChange={(e) => setCodebookSheet(e.target.value)}
-                        whileFocus={{ scale: 1.002 }}
-                      >
-                        <option value="">Ninguna</option>
-                        {uploaded.detected_sheets.map((s) => (
-                          <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
-                        ))}
-                      </motion.select>
-                    </div>
+                    {!isDau && (
+                      <div>
+                        <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de libro de códigos (opcional)</motion.label>
+                        <motion.select
+                          className="input w-full text-sm mt-1"
+                          value={codebookSheet}
+                          onChange={(e) => setCodebookSheet(e.target.value)}
+                          whileFocus={{ scale: 1.002 }}
+                        >
+                          <option value="">Ninguna</option>
+                          {uploaded.detected_sheets.map((s) => (
+                            <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
+                          ))}
+                        </motion.select>
+                      </div>
+                    )}
 
-                    {activeSheet && (
+                    {isDau && activeSheet && (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="text-xs text-p-text-muted bg-p-bg-subtle rounded-lg p-2.5"
+                      >
+                        Se importarán las respuestas abiertas detectadas en cada registro (
+                        {activeSheet.columns.length} campos, excluyendo id/fechas/metadata de la plataforma).
+                      </motion.div>
+                    )}
+
+                    {!isDau && activeSheet && (
                       <motion.div
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}

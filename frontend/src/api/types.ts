@@ -116,6 +116,7 @@ export interface UploadedFile {
   total_rows: number;
   detected_sheets: DetectedSheet[];
   status: string;
+  file_type: string;
 }
 
 export interface ColumnMap {

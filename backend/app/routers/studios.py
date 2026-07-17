@@ -13,7 +13,7 @@ from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.core import scheduler, storage
 from app.pipeline import process_round
-from app.pipeline.ingest import excel
+from app.pipeline.ingest import dau, excel
 from app.repositories import (
     build_mention_groups,
     clone_codebook,
@@ -369,7 +369,8 @@ def upload_file(
     content = file.file.read()
     checksum = hashlib.sha256(content).hexdigest()
 
-    detected_sheets = excel.detect_sheets(content)
+    file_type = "dau" if dau.is_dau(content) else "combined_xlsx"
+    detected_sheets = dau.detect_sheets(content) if file_type == "dau" else excel.detect_sheets(content)
     total_rows = sum(s["rows"] for s in detected_sheets)
 
     file_id = uuid.uuid4()
@@ -380,10 +381,10 @@ def upload_file(
         text("""
             insert into imported_files (id, round_id, file_type, original_filename,
                                         storage_path, checksum, total_rows, status, uploaded_by)
-            values (:id, :round, 'combined_xlsx', :name, :path, :sum, :rows, 'uploaded', :user)
+            values (:id, :round, :file_type, :name, :path, :sum, :rows, 'uploaded', :user)
         """),
         {
-            "id": file_id, "round": round_id, "name": file.filename,
+            "id": file_id, "round": round_id, "file_type": file_type, "name": file.filename,
             "path": f"uploads/{path}", "sum": checksum, "rows": total_rows, "user": user["id"],
         },
     )
@@ -395,6 +396,7 @@ def upload_file(
         "total_rows": total_rows,
         "detected_sheets": detected_sheets,
         "status": "uploaded",
+        "file_type": file_type,
     }
 
 
@@ -419,7 +421,7 @@ def import_file(
     ).scalar()
 
     meta = db.execute(
-        text("select storage_path from imported_files where id = :id and round_id = :round"),
+        text("select storage_path, file_type from imported_files where id = :id and round_id = :round"),
         {"id": file_id, "round": round_id},
     ).mappings().first()
     if not meta:
@@ -429,7 +431,10 @@ def import_file(
     content = storage.download(bucket, path)
 
     try:
-        rows = excel.parse_verbatims(content, payload.verbatims_sheet)
+        if meta["file_type"] == "dau":
+            rows = dau.parse_verbatims(content)
+        else:
+            rows = excel.parse_verbatims(content, payload.verbatims_sheet, payload.column_map)
     except (ValueError, KeyError) as exc:
         # KeyError: la hoja no existe en el workbook; ValueError: no es de verbatims.
         raise HTTPException(400, f"Hoja de verbatims inválida: {exc}") from exc

@@ -10,6 +10,13 @@
       "Read(//home/jeanpierre/.config/opencode/**)",
       "Bash(find / -maxdepth 4 -iname \"*opencode*\")",
       "Bash(uv --version)"
+    ],
+    "additionalDirectories": [
+      "/mnt/h/Mi unidad/Liiot"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "engram",
+    "headroom"
+  ]
 }
