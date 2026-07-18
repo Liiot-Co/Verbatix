@@ -33,18 +33,35 @@ class Profile(Base):
     rounds = relationship("Round", back_populates="creator")
 
 
-class Project(Base):
-    __tablename__ = "projects"
+class Proyecto(Base):
+    """Nivel jerárquico superior: agrupa uno o varios Estudios (projects)."""
+
+    __tablename__ = "proyectos"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    external_code = Column(String, unique=True, nullable=True)
     name = Column(String, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
+    projects = relationship("Project", back_populates="proyecto")
+
+
+class Project(Base):
+    __tablename__ = "projects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    external_code = Column(String, unique=True, nullable=True)
+    name = Column(String, nullable=False)
+    proyecto_id = Column(UUID(as_uuid=True), ForeignKey("proyectos.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
     creator = relationship("Profile", back_populates="projects")
+    proyecto = relationship("Proyecto", back_populates="projects")
     studios = relationship("Studio", back_populates="project", cascade="all, delete-orphan")
 
 
