@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.access import require_audit_code_review, require_audit_item, require_round
+from app.core.access import require_audit_code_review, require_audit_item, require_subproject
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.pipeline.audit import (
@@ -32,17 +32,17 @@ class StartAuditIn(BaseModel):
     resample: bool = False
 
 
-@router.post("/rounds/{round_id}/audit/session", status_code=201)
+@router.post("/subprojects/{subproject_id}/audit/session", status_code=201)
 def create_or_resume_audit_session(
-    round_id: uuid.UUID,
+    subproject_id: uuid.UUID,
     payload: StartAuditIn | None = None,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_round(db, round_id, user["id"])
+    require_subproject(db, subproject_id, user["id"])
     try:
         return start_audit_session(
-            db, round_id, user_id=user["id"], resample=bool(payload and payload.resample)
+            db, subproject_id, user_id=user["id"], resample=bool(payload and payload.resample)
         )
     except AuditPrecondition as exc:
         db.rollback()
@@ -52,29 +52,29 @@ def create_or_resume_audit_session(
         raise HTTPException(404, str(exc)) from exc
 
 
-@router.get("/rounds/{round_id}/audit/session")
+@router.get("/subprojects/{subproject_id}/audit/session")
 def audit_session_summary(
-    round_id: uuid.UUID,
+    subproject_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_round(db, round_id, user["id"])
-    summary = get_audit_summary(db, round_id)
+    require_subproject(db, subproject_id, user["id"])
+    summary = get_audit_summary(db, subproject_id)
     if not summary:
-        raise HTTPException(404, "La ronda no tiene sesión de auditoría")
+        raise HTTPException(404, "El subproyecto no tiene sesión de auditoría")
     return summary
 
 
-@router.get("/rounds/{round_id}/audit/codes")
+@router.get("/subprojects/{subproject_id}/audit/codes")
 def audit_code_reviews(
-    round_id: uuid.UUID,
+    subproject_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_round(db, round_id, user["id"])
-    session = get_audit_session(db, round_id)
+    require_subproject(db, subproject_id, user["id"])
+    session = get_audit_session(db, subproject_id)
     if not session:
-        raise HTTPException(404, "La ronda no tiene sesión de auditoría")
+        raise HTTPException(404, "El subproyecto no tiene sesión de auditoría")
     return list_audit_code_reviews(db, session["id"])
 
 
@@ -191,15 +191,15 @@ def delete_audit_item(
         raise HTTPException(404, str(exc)) from exc
 
 
-@router.post("/rounds/{round_id}/audit/approve")
+@router.post("/subprojects/{subproject_id}/audit/approve")
 def approve_audit(
-    round_id: uuid.UUID,
+    subproject_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_round(db, round_id, user["id"])
+    require_subproject(db, subproject_id, user["id"])
     try:
-        return approve_session(db, round_id, user_id=user["id"])
+        return approve_session(db, subproject_id, user_id=user["id"])
     except AuditPrecondition as exc:
         db.rollback()
         raise HTTPException(422, str(exc)) from exc

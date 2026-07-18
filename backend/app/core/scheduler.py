@@ -30,9 +30,10 @@ def _mark_round_failed(db: Session, round_id: uuid.UUID, message: str) -> None:
     try:
         db.execute(
             text("""
-                update processing_runs set status = 'failed', finished_at = now(),
-                    error_message = :msg
-                where round_id = :id and status = 'running'
+                update processing_runs pr
+                set status = 'failed', finished_at = now(), error_message = :msg
+                from subprojects sp
+                where pr.subproject_id = sp.id and sp.round_id = :id and pr.status = 'running'
             """),
             {"id": round_id, "msg": message[:2000]},
         )
