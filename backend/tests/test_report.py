@@ -68,11 +68,11 @@ class FakeSession:
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
-        if "count(*) from verbatims where round_id" in sql and "group by" not in sql:
+        if "count(*) from verbatims v" in sql and "group by" not in sql:
             return FakeResult(scalar=self.total)
-        if "group by coding_status" in sql:
+        if "group by v.coding_status" in sql:
             return FakeResult(mappings_list=self.status_rows)
-        if "finished_at from processing_runs" in sql:
+        if "from processing_runs pr" in sql:
             return FakeResult(scalar=self.processed_at)
         if "count(distinct v.id) as frequency" in sql and "not c.is_system" in sql:
             return FakeResult(mappings_list=self.code_rows)
