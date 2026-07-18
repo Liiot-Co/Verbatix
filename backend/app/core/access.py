@@ -6,6 +6,23 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
+def is_admin(db: Session, user_id) -> bool:
+    return bool(db.execute(
+        text("select 1 from user_roles where user_id = :u and role_code = 'admin'"),
+        {"u": user_id},
+    ).scalar())
+
+
+def visible_project_ids(db: Session, user_id) -> list[uuid.UUID] | None:
+    """None = sin filtro (admin, ve todo). Lista = solo estos (sección 2.1)."""
+    if is_admin(db, user_id):
+        return None
+    return list(db.execute(
+        text("select project_id from assignments where user_id = :u and status = 'active'"),
+        {"u": user_id},
+    ).scalars().all())
+
+
 def require_project(db: Session, project_id: uuid.UUID, user_id) -> None:
     if not db.execute(
         text("select 1 from projects where id = :id and created_by = :u"),
