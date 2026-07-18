@@ -10,13 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.repositories import (
-    _current_codebook_id,
     add_alias_from_group,
     assign_codes_to_group,
     create_code,
     deactivate_group_codes,
     get_group_detail,
-    list_round_codes,
+    list_codebook_codes,
     log_action,
     mark_group_resolved,
 )
@@ -30,9 +29,19 @@ class BelowThresholdError(Exception):
     """El grupo no supera min_mentions_threshold: no se puede crear un código nuevo para él."""
 
 
+def _subproject_context(db: Session, subproject_id: uuid.UUID) -> dict | None:
+    """round_id + codebook_id del subproyecto — audit_logs.round_id no bajó de
+    nivel en la migración v8, así que loggear una acción necesita resolverlo aparte."""
+    row = db.execute(
+        text("select codebook_id, round_id from subprojects where id = :id"),
+        {"id": subproject_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
 def resolve_group(
     db: Session,
-    round_id: uuid.UUID,
+    subproject_id: uuid.UUID,
     group_id: uuid.UUID,
     decision: dict,
     *,
@@ -40,7 +49,7 @@ def resolve_group(
     expected_status: str | None = None,
 ) -> dict:
     group = get_group_detail(db, group_id)
-    if not group or group["round_id"] != str(round_id):
+    if not group or group["subproject_id"] != str(subproject_id):
         raise LookupError("Grupo no encontrado")
 
     if group["status"] == "resolved":
@@ -55,11 +64,11 @@ def resolve_group(
             f"El grupo cambió de estado ('{group['status']}') mientras se resolvía"
         )
 
-    round_threshold = db.execute(
-        text("select min_mentions_threshold from rounds where id = :id"),
-        {"id": round_id},
-    ).scalar()
-    cb_id = _current_codebook_id(db, round_id)
+    ctx = _subproject_context(db, subproject_id)
+    if not ctx:
+        raise LookupError("Subproyecto no existe")
+    cb_id = ctx["codebook_id"]
+    round_id = ctx["round_id"]
 
     action = decision.get("action")
     new_code_result = None
@@ -94,7 +103,7 @@ def resolve_group(
     auto_resolved = []
     if action == "approve" and decision.get("add_alias") and not is_system_target and code_ids:
         add_alias_from_group(db, cb_id, code_ids[0], group)
-        auto_resolved = _auto_resolve_similar_pending_groups(db, round_id, code_ids[0], group, user_id)
+        auto_resolved = _auto_resolve_similar_pending_groups(db, subproject_id, round_id, code_ids[0], group, user_id)
 
     mark_group_resolved(db, group_id, user_id)
 
@@ -105,7 +114,7 @@ def resolve_group(
     )
     db.commit()
 
-    codes_by_id = {c["id"]: c for c in list_round_codes(db, round_id, include_system=True)}
+    codes_by_id = {c["id"]: c for c in list_codebook_codes(db, cb_id, include_system=True)}
     codes_assigned = [codes_by_id[str(c)] for c in code_ids if str(c) in codes_by_id]
 
     return {
@@ -118,7 +127,7 @@ def resolve_group(
         "auto_resolved_groups": auto_resolved,
     }
 
-def _auto_resolve_similar_pending_groups(db, round_id, code_id, reference_group, user_id):
+def _auto_resolve_similar_pending_groups(db, subproject_id, round_id, code_id, reference_group, user_id):
     from rapidfuzz import fuzz
     from app.pipeline.fuzzy.models import SCORE_THRESHOLD, SHORT_TEXT_EXACT_MAX_LEN
 
@@ -130,8 +139,8 @@ def _auto_resolve_similar_pending_groups(db, round_id, code_id, reference_group,
     # se consolidan al clasificar una manualmente ("Piamonte").
     pending = db.execute(
         text("""SELECT id, normalized_text, status FROM mention_groups
-                WHERE round_id = :rid AND status IN ('pending_review', 'below_threshold')"""),
-        {"rid": round_id}
+                WHERE subproject_id = :sp AND status IN ('pending_review', 'below_threshold')"""),
+        {"sp": subproject_id}
     ).mappings().all()
 
     auto_resolved = []
