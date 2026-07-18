@@ -63,6 +63,19 @@ class Project(Base):
     creator = relationship("Profile", back_populates="projects")
     proyecto = relationship("Proyecto", back_populates="projects")
     studios = relationship("Studio", back_populates="project", cascade="all, delete-orphan")
+    categories = relationship("Category", back_populates="project", cascade="all, delete-orphan")
+
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    # Relationships
+    project = relationship("Project", back_populates="categories")
 
 
 class Studio(Base):
