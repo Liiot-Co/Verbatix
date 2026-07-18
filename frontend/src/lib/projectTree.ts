@@ -1,4 +1,4 @@
-import type { CodingType, ProjectDetail, RoundSummary, StudySummary } from "@/api/types";
+import type { CodingType, RoundSummary } from "@/api/types";
 
 /** Label de tipo para UI: "Marcas" | "Razones". */
 export function codingTypeLabel(codingType: CodingType): string {
@@ -19,17 +19,9 @@ export function codingTypeNoun(codingType: CodingType): string {
   return codingType === "reasons" ? "razón" : "marca";
 }
 
-export function countStudies(project: ProjectDetail): number {
-  return project.studies.length;
-}
-
 export function nextRoundNumber(rounds: RoundSummary[]): number {
   if (rounds.length === 0) return 1;
   return Math.max(...rounds.map((r) => r.round_number)) + 1;
-}
-
-export function findStudy(project: ProjectDetail, studyId: string): StudySummary | undefined {
-  return project.studies.find((s) => s.id === studyId);
 }
 
 /** Estados con preliminar procesado — el reporte es consultable. */

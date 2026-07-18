@@ -2,25 +2,22 @@ export type CodingType = "brands" | "reasons";
 export type OriginMode = "from_scratch" | "homologated";
 export type CodingStatus = "pending" | "auto_coded" | "needs_review" | "manually_coded" | "unknown";
 
-// Matches GET /projects/{id}.studies[].rounds[] — a lightweight progress
-// summary, not the full Round (that's a separate GET /rounds/{id} call).
+// GET /projects/{id}: each persisted `project` is an Estudio in schema v8.
+// A round contains its two coding subprojects (brands and reasons).
 export interface RoundSummary {
   id: string;
   name: string;
   round_number: number;
   status: string;
-  verbatims_total: number;
-  auto_coded: number;
+  category_id?: string | null;
+  subprojects: RoundSubprojectSummary[];
 }
 
-// El Estudio (Marcas / Razones): entidad persistente dentro de un proyecto,
-// fija a través de las rondas. Cada ronda es una ola de datos independiente.
-export interface StudySummary {
+export interface RoundSubprojectSummary {
   id: string;
-  name: string;
   coding_type: CodingType;
-  survey_question: string | null;
-  rounds: RoundSummary[];
+  verbatims_total: number;
+  auto_coded: number;
 }
 
 // GET /projects returns a bare array, no pagination envelope.
@@ -37,31 +34,16 @@ export interface ProjectDetail {
   id: string;
   external_code: string;
   name: string;
-  studies: StudySummary[];
+  rounds: RoundSummary[];
+  categories: { id: string; name: string }[];
   created_at: string;
-}
-
-export interface Codebook {
-  id: string;
-  inherited_codes: number;
-  inherited_aliases: number;
-}
-
-// Un estudio (Marcas / Razones) dentro de un proyecto — persistente a través
-// de sus rondas.
-export interface Study {
-  id: string;
-  project_id: string;
-  name: string;
-  coding_type: CodingType;
-  survey_question: string | null;
 }
 
 // Una ronda es una ola de datos de un estudio: su propio Excel, verbatims,
 // codebook y procesamiento — cuelga del estudio, no del proyecto.
 export interface Round {
   id: string;
-  studio_id: string;
+  project_id: string;
   name: string;
   round_number: number;
   min_mentions_threshold: number;
@@ -69,7 +51,17 @@ export interface Round {
   origin_mode: OriginMode;
   source_round_id: string | null;
   status: string;
-  codebook: Codebook;
+  subprojects: RoundSubproject[];
+}
+
+export interface RoundSubproject {
+  id: string;
+  coding_type: CodingType;
+  codebook_id: string | null;
+  inherited_codes?: number;
+  inherited_aliases?: number;
+  counters?: RoundCounters;
+  audit?: RoundAudit;
 }
 
 // GET /rounds/{id} — la ronda completa + contadores en vivo y contexto de navegación.
@@ -82,8 +74,7 @@ export interface RoundCounters {
 
 export interface RoundNavContext {
   study_name: string;
-  coding_type: CodingType;
-  survey_question: string | null;
+  category_name: string | null;
   project_id: string;
   project_name: string;
   project_external_code: string | null;
@@ -142,7 +133,8 @@ export interface ImportResult {
   // Queued as a background task right after import — the LLM pass can take
   // minutes, so the response doesn't wait for it. Poll GET /rounds/{id} for
   // status: 'processing' (still working) -> 'preliminary_ready' (done).
-  processing: { status: "queued" };
+  pending_questions: string[];
+  processing: { status: "queued" | "blocked_on_classification" };
   warnings: string[];
   round_status: string;
 }

@@ -5,7 +5,6 @@ import SignInPage from "@/components/SignInPage";
 import SignUpPage from "@/components/SignUpPage";
 import ProjectDashboard from "@/components/ProjectDashboard";
 import ProjectDetail from "@/components/ProjectDetail";
-import StudyDetail from "@/components/StudyDetail";
 import CreationWizard from "@/components/CreationWizard";
 import UnifiedStudioView from "@/components/UnifiedStudioView";
 import AuditView from "@/components/AuditView";
@@ -28,7 +27,6 @@ export default function App() {
                   <Routes>
                     <Route path="/" element={<ProjectDashboard />} />
                     <Route path="/projects/:projectId" element={<ProjectDetail />} />
-                    <Route path="/projects/:projectId/studies/:studyId" element={<StudyDetail />} />
                     <Route path="/wizard" element={<CreationWizard />} />
                     <Route path="/rounds/:roundId" element={<UnifiedStudioView />} />
                     <Route path="/rounds/:roundId/preliminary" element={<UnifiedStudioView />} />
