@@ -187,6 +187,19 @@ class Round(Base):
     __table_args__ = (UniqueConstraint("project_id", "round_number", name="rounds_project_id_round_number_key"),)
 
 
+class Respondent(Base):
+    __tablename__ = "respondents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
+    respondent_external_id = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("round_id", "respondent_external_id", name="respondents_round_id_respondent_external_id_key"),
+    )
+
+
 class ImportedFile(Base):
     __tablename__ = "imported_files"
 
