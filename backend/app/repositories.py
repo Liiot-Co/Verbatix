@@ -731,7 +731,7 @@ def add_alias_from_group(db: Session, codebook_id: uuid.UUID, code_id: uuid.UUID
 def _serialize_audit_session(row) -> dict:
     return {
         "id": str(row["id"]),
-        "round_id": str(row["round_id"]),
+        "subproject_id": str(row["subproject_id"]),
         "processing_run_id": str(row["processing_run_id"]) if row["processing_run_id"] else None,
         "target_percentage": float(row["target_percentage"]),
         "total_items": row["total_items"],
@@ -744,31 +744,31 @@ def _serialize_audit_session(row) -> dict:
     }
 
 
-def get_audit_session(db: Session, round_id: uuid.UUID) -> dict | None:
-    """Última sesión de auditoría de la ronda (puede haber más de una tras un reproceso)."""
+def get_audit_session(db: Session, subproject_id: uuid.UUID) -> dict | None:
+    """Última sesión de auditoría del subproyecto (puede haber más de una tras un reproceso)."""
     row = db.execute(
         text("""
-            select id, round_id, processing_run_id, target_percentage, total_items,
+            select id, subproject_id, processing_run_id, target_percentage, total_items,
                    reviewed_items, target_met, status, approved_by, approved_at, created_at
             from audit_sessions
-            where round_id = :round
+            where subproject_id = :sp
             order by created_at desc
             limit 1
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().first()
     return _serialize_audit_session(row) if row else None
 
 
-def get_latest_processing_run(db: Session, round_id: uuid.UUID) -> dict | None:
+def get_latest_processing_run(db: Session, subproject_id: uuid.UUID) -> dict | None:
     row = db.execute(
         text("""
             select id, random_seed from processing_runs
-            where round_id = :round
+            where subproject_id = :sp
             order by created_at desc
             limit 1
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().first()
     return {"id": str(row["id"]), "random_seed": row["random_seed"]} if row else None
 
@@ -789,7 +789,7 @@ def get_round_audit_percentage(db: Session, round_id: uuid.UUID) -> float | None
     return float(pct) if pct is not None else None
 
 
-def get_coded_population(db: Session, round_id: uuid.UUID) -> list[dict]:
+def get_coded_population(db: Session, subproject_id: uuid.UUID) -> list[dict]:
     """La población auditable: un registro por verbatim con ≥1 código activo
     (lo que irá al Excel), con la foto de sus códigos ordenados por output_index."""
     rows = db.execute(
@@ -804,17 +804,17 @@ def get_coded_population(db: Session, round_id: uuid.UUID) -> list[dict]:
             from verbatims v
             join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             join codes c on c.id = vc.code_id
-            where v.round_id = :round
+            where v.subproject_id = :sp
             group by v.id
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
     return [{"verbatim_id": str(r["verbatim_id"]), "codes": r["codes"]} for r in rows]
 
 
 def create_audit_session(
     db: Session,
-    round_id: uuid.UUID,
+    subproject_id: uuid.UUID,
     processing_run_id: str | None,
     target_percentage: float,
     total_items: int,
@@ -822,13 +822,13 @@ def create_audit_session(
     session_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into audit_sessions (id, round_id, processing_run_id, target_percentage,
+            insert into audit_sessions (id, subproject_id, processing_run_id, target_percentage,
                                         total_items, reviewed_items, target_met, status)
-            values (:id, :round, :run, :pct, :total, 0, :met, 'in_progress')
+            values (:id, :sp, :run, :pct, :total, 0, :met, 'in_progress')
         """),
         # target_met arranca en true solo si la muestra es vacía (pct 0 o nada
         # codificado): la auditoría queda trivialmente satisfecha y se puede aprobar.
-        {"id": session_id, "round": round_id, "run": processing_run_id,
+        {"id": session_id, "sp": subproject_id, "run": processing_run_id,
          "pct": target_percentage, "total": total_items, "met": total_items == 0},
     )
     return str(session_id)
@@ -859,10 +859,10 @@ def create_audit_item(db: Session, review_id: str, verbatim_id: str, codes_snaps
     return str(item_id)
 
 
-def get_audit_summary(db: Session, round_id: uuid.UUID) -> dict | None:
+def get_audit_summary(db: Session, subproject_id: uuid.UUID) -> dict | None:
     """Resumen de la última sesión: progreso, contadores por estado de item y si la
     sesión quedó desactualizada por un reproceso posterior del motor."""
-    session = get_audit_session(db, round_id)
+    session = get_audit_session(db, subproject_id)
     if not session:
         return None
 
@@ -878,7 +878,7 @@ def get_audit_summary(db: Session, round_id: uuid.UUID) -> dict | None:
     ).mappings().all()
     by_status = {r["status"]: r["n"] for r in counts}
 
-    latest_run = get_latest_processing_run(db, round_id)
+    latest_run = get_latest_processing_run(db, subproject_id)
     total = session["total_items"]
     reviewed = session["reviewed_items"]
     return {
@@ -980,13 +980,13 @@ def list_audit_items(db: Session, review_id: uuid.UUID, limit: int, offset: int)
 
 
 def get_audit_item(db: Session, item_id: uuid.UUID) -> dict | None:
-    """Item + contexto de su review/sesión/ronda (lo que las mutaciones necesitan validar)."""
+    """Item + contexto de su review/sesión/subproyecto (lo que las mutaciones necesitan validar)."""
     row = db.execute(
         text("""
             select i.id, i.status, i.comment, i.verbatim_id, i.codes_snapshot,
                    r.id as review_id, r.corrections_count,
                    s.id as session_id, s.status as session_status,
-                   s.total_items, s.reviewed_items, s.round_id
+                   s.total_items, s.reviewed_items, s.subproject_id
             from audit_items i
             join audit_code_reviews r on r.id = i.audit_code_review_id
             join audit_sessions s on s.id = r.audit_session_id
@@ -1008,7 +1008,7 @@ def get_audit_item(db: Session, item_id: uuid.UUID) -> dict | None:
         "session_status": row["session_status"],
         "total_items": row["total_items"],
         "reviewed_items": row["reviewed_items"],
-        "round_id": str(row["round_id"]),
+        "subproject_id": str(row["subproject_id"]),
     }
 
 
@@ -1017,7 +1017,7 @@ def get_audit_code_review(db: Session, review_id: uuid.UUID) -> dict | None:
     row = db.execute(
         text("""
             select r.id, r.status, r.items_count, r.corrections_count,
-                   s.id as session_id, s.status as session_status, s.round_id,
+                   s.id as session_id, s.status as session_status, s.subproject_id,
                    (select count(*) from audit_items i
                      where i.audit_code_review_id = r.id and i.status = 'pending') as pending_items
             from audit_code_reviews r
@@ -1036,7 +1036,7 @@ def get_audit_code_review(db: Session, review_id: uuid.UUID) -> dict | None:
         "pending_items": row["pending_items"],
         "session_id": str(row["session_id"]),
         "session_status": row["session_status"],
-        "round_id": str(row["round_id"]),
+        "subproject_id": str(row["subproject_id"]),
     }
 
 
