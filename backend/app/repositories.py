@@ -366,7 +366,7 @@ def _current_codebook_id(db: Session, project_id: uuid.UUID, coding_type: str) -
 
 
 def get_resolution_queue(
-    db: Session, round_id: uuid.UUID, statuses: list[str], limit: int, offset: int
+    db: Session, subproject_id: uuid.UUID, statuses: list[str], limit: int, offset: int
 ) -> tuple[list[dict], int]:
     """Grupos pendientes ordenados por frecuencia (impacto). `statuses` filtra mention_groups.status."""
     rows = db.execute(
@@ -376,19 +376,19 @@ def get_resolution_queue(
                    c.label as suggested_code_label
             from mention_groups g
             left join codes c on c.id = g.suggested_code_id
-            where g.round_id = :round and g.status = any(:statuses)
+            where g.subproject_id = :sp and g.status = any(:statuses)
             order by g.frequency_count desc, g.normalized_text
             limit :lim offset :off
         """),
-        {"round": round_id, "statuses": statuses, "lim": limit, "off": offset},
+        {"sp": subproject_id, "statuses": statuses, "lim": limit, "off": offset},
     ).mappings().all()
 
     total = db.execute(
         text("""
             select count(*) from mention_groups
-            where round_id = :round and status = any(:statuses)
+            where subproject_id = :sp and status = any(:statuses)
         """),
-        {"round": round_id, "statuses": statuses},
+        {"sp": subproject_id, "statuses": statuses},
     ).scalar()
 
     items = [
@@ -413,10 +413,10 @@ def get_resolution_queue(
     return items, total
 
 
-def get_resolution_summary(db: Session, round_id: uuid.UUID) -> dict:
+def get_resolution_summary(db: Session, subproject_id: uuid.UUID) -> dict:
     counts = db.execute(
-        text("select status, count(*) as n from mention_groups where round_id = :round group by status"),
-        {"round": round_id},
+        text("select status, count(*) as n from mention_groups where subproject_id = :sp group by status"),
+        {"sp": subproject_id},
     ).mappings().all()
     by_status = {r["status"]: r["n"] for r in counts}
     pending = by_status.get("anomaly", 0) + by_status.get("below_threshold", 0) + by_status.get("pending_review", 0)
@@ -432,7 +432,7 @@ def get_resolution_summary(db: Session, round_id: uuid.UUID) -> dict:
     }
 
 
-def get_pending_summary(db: Session, round_id: uuid.UUID) -> list[dict]:
+def get_pending_summary(db: Session, subproject_id: uuid.UUID) -> list[dict]:
     """Menciones aún sin resolver — una fila por mention_group (ya son únicas por
     texto), con el código que el motor sugirió si lo hay."""
     rows = db.execute(
@@ -441,10 +441,10 @@ def get_pending_summary(db: Session, round_id: uuid.UUID) -> list[dict]:
                    c.code_number as suggested_code_number, c.label as suggested_code_label
             from mention_groups g
             left join codes c on c.id = g.suggested_code_id
-            where g.round_id = :round and g.status in ('anomaly', 'below_threshold', 'pending_review')
+            where g.subproject_id = :sp and g.status in ('anomaly', 'below_threshold', 'pending_review')
             order by g.frequency_count desc, g.normalized_text
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
 
     total = sum(r["frequency_count"] for r in rows) or 1
@@ -461,7 +461,7 @@ def get_pending_summary(db: Session, round_id: uuid.UUID) -> list[dict]:
     ]
 
 
-def get_coded_summary(db: Session, round_id: uuid.UUID) -> list[dict]:
+def get_coded_summary(db: Session, subproject_id: uuid.UUID) -> list[dict]:
     """Menciones ya codificadas (auto_coded/resolved), agrupadas por código —una fila
     por código, no por verbatim. `frequency` suma frequency_count de cada mention_group
     distinto asignado a ese código (el código real vía verbatim_codes, no la sugerencia
@@ -477,14 +477,14 @@ def get_coded_summary(db: Session, round_id: uuid.UUID) -> list[dict]:
                 from mention_groups mg
                 join verbatims v on v.mention_group_id = mg.id
                 join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active and vc.output_index = 1
-                where mg.round_id = :round and mg.status in ('auto_coded', 'resolved')
+                where mg.subproject_id = :sp and mg.status in ('auto_coded', 'resolved')
                 order by mg.id, v.id
             ) g
             join codes c on c.id = g.code_id
             group by c.id, c.code_number, c.label
             order by frequency desc
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
 
     total = sum(r["frequency"] for r in rows) or 1
@@ -504,7 +504,7 @@ def get_coded_summary(db: Session, round_id: uuid.UUID) -> list[dict]:
 def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) -> dict | None:
     group = db.execute(
         text("""
-            select g.id, g.round_id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
+            select g.id, g.subproject_id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
                    c.id as suggested_code_id, c.code_number as suggested_code_number,
                    c.label as suggested_code_label
             from mention_groups g
@@ -533,7 +533,7 @@ def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) ->
 
     return {
         "id": str(group["id"]),
-        "round_id": str(group["round_id"]),
+        "subproject_id": str(group["subproject_id"]),
         "normalized_text": group["normalized_text"],
         "sample_text": group["sample_text"],
         "frequency_count": group["frequency_count"],
@@ -552,10 +552,10 @@ def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) ->
     }
 
 
-def list_round_codes(db: Session, round_id: uuid.UUID, include_system: bool = False) -> list[dict]:
-    cb_id = _current_codebook_id(db, round_id)
-    if not cb_id:
-        return []
+def list_codebook_codes(db: Session, codebook_id: uuid.UUID, include_system: bool = False) -> list[dict]:
+    """Antes `list_round_codes(round_id)`: el codebook ya no es 1:1 con la ronda (vive
+    a nivel project_id+coding_type, Tarea 3), así que el caller resuelve el codebook_id
+    correcto (vía subproject_id -> subprojects.codebook_id) y lo pasa directo."""
     rows = db.execute(
         text("""
             select c.id, c.code_number, c.label, c.is_system, n.name as net
@@ -566,7 +566,7 @@ def list_round_codes(db: Session, round_id: uuid.UUID, include_system: bool = Fa
               and (:include_system or not c.is_system)
             order by c.code_number
         """),
-        {"cb": cb_id, "include_system": include_system},
+        {"cb": codebook_id, "include_system": include_system},
     ).mappings().all()
     return [
         {
