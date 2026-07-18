@@ -8,7 +8,6 @@ import {
   getMentionGroup,
   getResolutionQueue,
   getResolutionSummary,
-  getRound,
   getRoundCodes,
   resolveMentionGroup,
   unresolveMentionGroup,
@@ -70,13 +69,17 @@ function playSound(type: "classify" | "discard") {
  * ResolutionCenter) and embedded (UnifiedStudioView's workspace column).
  */
 export default function ResolutionSidebar({
-  roundId,
+  subprojectId,
+  codingType,
+  auditRoundId,
   onResolved,
   onExpand,
   focusGroupId,
   onFocusHandled,
 }: {
-  roundId: string;
+  subprojectId: string;
+  codingType: CodingType;
+  auditRoundId?: string;
   /** Called after each successful resolve — lets a parent (e.g. a queue list) refresh. */
   onResolved?: () => void;
   /** Shows a fullscreen-expand button in the header when provided. */
@@ -94,7 +97,6 @@ export default function ResolutionSidebar({
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
   const [total, setTotal] = useState(0);
   const [, setSummary] = useState<ResolutionSummary | null>(null);
-  const [codingType, setCodingType] = useState<CodingType>("brands");
   const [codes, setCodes] = useState<RoundCode[]>([]);
   const [systemCodes, setSystemCodes] = useState<RoundCode[]>([]);
   const [detail, setDetail] = useState<MentionGroupDetail | null>(null);
@@ -178,11 +180,11 @@ export default function ResolutionSidebar({
   }, [focusGroupId]);
 
   const loadQueue = useCallback(() => {
-    return getResolutionQueue(roundId, PAGE_SIZE, 0).then((res) => {
+    return getResolutionQueue(subprojectId, PAGE_SIZE, 0).then((res) => {
       setQueue(res.items);
       setTotal(res.total);
     });
-  }, [roundId]);
+  }, [subprojectId]);
 
   // La cola local se agota mucho antes que el total del backend porque el fetch
   // inicial trae una sola página: cuando queda poco en memoria pero el backend
@@ -190,31 +192,30 @@ export default function ResolutionSidebar({
   // y se agregan los que falten.
   useEffect(() => {
     if (loading || queue.length >= 10 || queue.length >= total) return;
-    getResolutionQueue(roundId, PAGE_SIZE, 0).then((res) => {
+    getResolutionQueue(subprojectId, PAGE_SIZE, 0).then((res) => {
       setQueue((q) => {
         const ids = new Set(q.map((g) => g.id));
         return [...q, ...res.items.filter((g) => !ids.has(g.id))];
       });
       setTotal(res.total);
     });
-  }, [roundId, loading, queue.length, total]);
+  }, [subprojectId, loading, queue.length, total]);
 
   const loadSummary = useCallback(() => {
-    return getResolutionSummary(roundId).then(setSummary);
-  }, [roundId]);
+    return getResolutionSummary(subprojectId).then(setSummary);
+  }, [subprojectId]);
 
   useEffect(() => {
     setLoading(true);
     Promise.all([
       loadQueue(),
       loadSummary(),
-      getRound(roundId).then((s) => setCodingType(s.coding_type)),
-      getRoundCodes(roundId, true).then((allCodes) => {
+      getRoundCodes(subprojectId, true).then((allCodes) => {
         setCodes(allCodes.filter(c => !c.is_system));
         setSystemCodes(allCodes.filter(c => c.is_system).sort((a, b) => a.code_number - b.code_number));
       }),
     ]).finally(() => setLoading(false));
-  }, [roundId, loadQueue, loadSummary]);
+  }, [subprojectId, loadQueue, loadSummary]);
 
   useEffect(() => {
     if (!currentCard) {
@@ -672,12 +673,11 @@ export default function ResolutionSidebar({
               <div className="font-semibold text-sm text-p-text mb-0.5">¡Todo clasificado!</div>
               <div className="text-sm text-p-text-muted">Podés seguir a la auditoría cuando quieras.</div>
             </div>
-            <Link
-              to={`/rounds/${roundId}/audit`}
-              className="btn-primary text-xs py-1.5 px-3 mt-1"
-            >
-              Ir a auditoría
-            </Link>
+            {auditRoundId && (
+              <Link to={`/rounds/${auditRoundId}/audit`} className="btn-primary text-xs py-1.5 px-3 mt-1">
+                Ir a auditoría
+              </Link>
+            )}
           </div>
         </div>
       ) : currentCard && detail ? (

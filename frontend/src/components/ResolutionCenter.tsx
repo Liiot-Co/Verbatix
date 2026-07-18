@@ -4,7 +4,6 @@ import { Sparkles, X } from "lucide-react";
 import { bulkResolve, getResolutionQueue, getResolutionSummary, getRoundCodes } from "@/api/client";
 import type { ResolutionQueueItem, ResolutionSummary, RoundCode } from "@/api/types";
 import ResolutionSidebar from "./ResolutionSidebar";
-import { PhaseCompleteChoice } from "./PhaseCompleteChoice";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { STATUS_CHIP } from "@/lib/resolutionStatus";
@@ -12,7 +11,17 @@ import { STATUS_CHIP } from "@/lib/resolutionStatus";
 const PAGE_SIZE = 50;
 
 /** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
-export default function ResolutionCenter({ roundId, onClose }: { roundId: string; onClose: () => void }) {
+export default function ResolutionCenter({
+  subprojectId,
+  roundId,
+  codingType,
+  onClose,
+}: {
+  subprojectId: string;
+  roundId: string;
+  codingType: "brands" | "reasons";
+  onClose: () => void;
+}) {
   const showToast = useVerbatixStore((s) => s.showToast);
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -26,21 +35,21 @@ export default function ResolutionCenter({ roundId, onClose }: { roundId: string
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
   const loadQueue = useCallback(() => {
-    if (!roundId) return;
+    if (!subprojectId) return;
     Promise.all([
-      getResolutionQueue(roundId, PAGE_SIZE, 0).then((res) => {
+      getResolutionQueue(subprojectId, PAGE_SIZE, 0).then((res) => {
         setQueue(res.items);
         setTotal(res.total);
       }),
-      getResolutionSummary(roundId).then(setSummary),
+      getResolutionSummary(subprojectId).then(setSummary),
     ]).finally(() => setLoading(false));
-  }, [roundId]);
+  }, [subprojectId]);
 
   useEffect(() => {
     setLoading(true);
     loadQueue();
-    getRoundCodes(roundId, false).then(setCodes);
-  }, [loadQueue, roundId]);
+    getRoundCodes(subprojectId, false).then(setCodes);
+  }, [loadQueue, subprojectId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -78,7 +87,7 @@ export default function ResolutionCenter({ roundId, onClose }: { roundId: string
       if (selected.size === 0) return;
       setBulkAssigning(true);
       try {
-        const result = await bulkResolve(roundId, Array.from(selected), {
+        const result = await bulkResolve(subprojectId, Array.from(selected), {
           action: "approve",
           code_ids: [codeId],
           new_code: null,
@@ -103,7 +112,7 @@ export default function ResolutionCenter({ roundId, onClose }: { roundId: string
         setBulkAssigning(false);
       }
     },
-    [selected, roundId, showToast, loadQueue]
+    [selected, subprojectId, showToast, loadQueue]
   );
 
   return createPortal(
@@ -222,7 +231,9 @@ export default function ResolutionCenter({ roundId, onClose }: { roundId: string
             <div className="w-1 h-12 bg-p-text-muted/30 group-hover:bg-p-accent rounded-full transition-colors" />
           </div>
           <ResolutionSidebar
-            roundId={roundId}
+            subprojectId={subprojectId}
+            codingType={codingType}
+            auditRoundId={roundId}
             onResolved={loadQueue}
             focusGroupId={focusGroupId}
             onFocusHandled={() => setFocusGroupId(null)}
@@ -230,15 +241,6 @@ export default function ResolutionCenter({ roundId, onClose }: { roundId: string
         </div>
       </div>
 
-      {summary?.can_close && (
-        <div className="px-6 pb-4 shrink-0">
-          <PhaseCompleteChoice
-            roundId={roundId}
-            variant="inline"
-            onDismiss={onClose}
-          />
-        </div>
-      )}
     </div>,
     document.body
   );

@@ -22,7 +22,6 @@ import { motion } from "framer-motion";
 import { downloadCodebookExport, getRound, getRoundReport } from "@/api/client";
 import type { CodingType, ReportCodeStat, RoundReport, RoundStatus } from "@/api/types";
 import { glowVariantForIndex } from "@/components/GlowCard";
-import { studyDisplayName } from "@/lib/projectTree";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import Breadcrumb from "./Breadcrumb";
 
@@ -230,7 +229,7 @@ export default function ReportView() {
       .finally(() => setLoading(false));
   }, [roundId, showToast]);
 
-  const codingType: CodingType = studio?.coding_type ?? "brands";
+  const codingType: CodingType = studio?.subprojects.find((subproject) => subproject.coding_type === "brands")?.coding_type ?? "brands";
   const typeLabel = codingType === "brands" ? "marcas" : "razones";
   const topCodes = useMemo(() => (report?.codes ?? []).slice(0, 5), [report?.codes]);
 
@@ -263,8 +262,8 @@ export default function ReportView() {
 
   const studyCrumb = studio
     ? {
-        label: studyDisplayName(studio.study_name, studio.coding_type),
-        to: `/projects/${studio.project_id}/studies/${studio.studio_id}`,
+        label: studio.project_name,
+        to: `/projects/${studio.project_id}`,
       }
     : { label: "Estudio", to: `/rounds/${roundId}` };
 
@@ -277,9 +276,7 @@ export default function ReportView() {
     );
   }
 
-  const studyTitle = studio
-    ? studyDisplayName(studio.study_name, studio.coding_type)
-    : "Reporte del estudio";
+  const studyTitle = studio?.project_name ?? "Reporte del estudio";
 
   return (
     <div className="space-y-5 max-w-6xl">

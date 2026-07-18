@@ -7,8 +7,6 @@ import type { PreliminarySummary, ResolutionSummary, RoundStatus, VerbatimSummar
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 import ResolutionCenter from "./ResolutionCenter";
-import { PhaseCompleteChoice } from "./PhaseCompleteChoice";
-import { studyDisplayName } from "@/lib/projectTree";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -68,8 +66,9 @@ export default function UnifiedStudioView() {
   const showToast = useVerbatixStore((s) => s.showToast);
 
   const [round, setRound] = useState<RoundStatus | null>(null);
+  const [activeSubprojectId, setActiveSubprojectId] = useState<string | null>(null);
   const [preliminary, setPreliminary] = useState<PreliminarySummary | null>(null);
-  const [resolution, setResolution] = useState<ResolutionSummary | null>(null);
+  const [, setResolution] = useState<ResolutionSummary | null>(null);
   const [summaryView, setSummaryView] = useState<"pending" | "coded">("pending");
   const [summaryRows, setSummaryRows] = useState<VerbatimSummaryRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -77,40 +76,41 @@ export default function UnifiedStudioView() {
   const [search, setSearch] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fullscreenResolution, setFullscreenResolution] = useState(false);
-  const [phaseChoiceOpen, setPhaseChoiceOpen] = useState(false);
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
-  const loadData = useCallback(() => {
+  const loadData = useCallback(async () => {
     if (!roundId) return Promise.resolve();
-    return Promise.all([
-      getRound(roundId).then(setRound),
+    const currentRound = await getRound(roundId);
+    setRound(currentRound);
+    const subprojectId = activeSubprojectId
+      ?? currentRound.subprojects.find((subproject) => subproject.coding_type === "brands")?.id
+      ?? currentRound.subprojects[0]?.id;
+    if (!subprojectId) return;
+    if (!activeSubprojectId) setActiveSubprojectId(subprojectId);
+    await Promise.all([
       getPreliminary(roundId).then(setPreliminary),
-      getResolutionSummary(roundId).then(setResolution),
+      getResolutionSummary(subprojectId).then(setResolution),
     ]);
-  }, [roundId]);
+  }, [roundId, activeSubprojectId]);
 
   const loadVerbatims = useCallback(() => {
-    if (!roundId) return;
-    getVerbatimsSummary(roundId, summaryView).then((res) => setSummaryRows(res.items));
-  }, [roundId, summaryView]);
+    if (!activeSubprojectId) return;
+    getVerbatimsSummary(activeSubprojectId, summaryView).then((res) => setSummaryRows(res.items));
+  }, [activeSubprojectId, summaryView]);
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([
-      getRound(roundId!).then(setRound),
-      getPreliminary(roundId!).then(setPreliminary),
-      getResolutionSummary(roundId!).then(setResolution),
-    ]).finally(() => setLoading(false));
+    void loadData().finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roundId]);
+  }, [roundId, loadData]);
 
   useEffect(() => {
-    if (!roundId) return;
+    if (!activeSubprojectId) return;
     setLoading(true);
-    getVerbatimsSummary(roundId, summaryView)
+    getVerbatimsSummary(activeSubprojectId, summaryView)
       .then((res) => setSummaryRows(res.items))
       .finally(() => setLoading(false));
-  }, [roundId, summaryView]);
+  }, [activeSubprojectId, summaryView]);
 
   const autoProcessing = round?.status === "processing" || round?.status === "files_uploaded";
   const wasProcessing = useRef(false);
@@ -135,22 +135,6 @@ export default function UnifiedStudioView() {
     }, 8000);
     return () => clearInterval(id);
   }, [autoProcessing, loadData, loadVerbatims]);
-
-  // Tras cerrar resolución: elegir reporte o auditoría. Si ya estaba cerrada al entrar, ir al reporte.
-  const wasCloseable = useRef<boolean | null>(null);
-  useEffect(() => {
-    if (!roundId || resolution == null) return;
-    const canClose = resolution.can_close;
-
-    if (canClose && wasCloseable.current === null) {
-      navigate(`/rounds/${roundId}/report`, { replace: true });
-      return;
-    }
-    if (canClose && wasCloseable.current === false) {
-      setPhaseChoiceOpen(true);
-    }
-    wasCloseable.current = canClose;
-  }, [roundId, resolution, navigate]);
 
   const handleProcess = async () => {
     if (!roundId) return;
@@ -226,6 +210,8 @@ export default function UnifiedStudioView() {
   const justFinished = totalGroups > 0 && codedPct === 100;
 
   const isProcessingNow = autoProcessing || processing;
+  const activeSubproject = round.subprojects.find((subproject) => subproject.id === activeSubprojectId)
+    ?? round.subprojects[0];
 
   const momentum = autoProcessing
     ? "Procesando en el motor — esto puede tardar unos minutos."
@@ -244,7 +230,7 @@ export default function UnifiedStudioView() {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => navigate(`/projects/${round.project_id}/studies/${round.studio_id}`)}
+          onClick={() => navigate(`/projects/${round.project_id}`)}
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-p-text-faint hover:text-p-text hover:bg-p-bg-subtle transition-colors"
           title="Volver"
           aria-label="Volver"
@@ -255,10 +241,6 @@ export default function UnifiedStudioView() {
           items={[
             { label: "Proyectos", to: "/" },
             { label: round.project_name, to: `/projects/${round.project_id}` },
-            {
-              label: studyDisplayName(round.study_name, round.coding_type),
-              to: `/projects/${round.project_id}/studies/${round.studio_id}`,
-            },
             { label: "Procesamiento" },
           ]}
         />
@@ -277,6 +259,19 @@ export default function UnifiedStudioView() {
         isProcessingNow={isProcessingNow}
         onProcess={handleProcess}
       />
+
+      <div className="inline-flex rounded-lg border border-p-border p-0.5 self-start">
+        {round.subprojects.map((subproject) => (
+          <button
+            key={subproject.id}
+            type="button"
+            onClick={() => setActiveSubprojectId(subproject.id)}
+            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${activeSubproject?.id === subproject.id ? "bg-p-accent-soft text-p-accent font-medium" : "text-p-text-muted hover:text-p-text"}`}
+          >
+            {subproject.coding_type === "brands" ? "Marcas" : "Razones"}
+          </button>
+        ))}
+      </div>
 
       {preliminary && (
         <StudioSummaryCards
@@ -361,7 +356,9 @@ export default function UnifiedStudioView() {
             <div className="w-1 h-12 bg-p-text-muted/30 group-hover:bg-p-accent rounded-full transition-colors" />
           </div>
           <ResolutionSidebar
-            roundId={roundId}
+            subprojectId={activeSubproject?.id ?? ""}
+            codingType={activeSubproject?.coding_type ?? "brands"}
+            auditRoundId={roundId}
             onResolved={() => { loadData(); loadVerbatims(); }}
             onExpand={() => setFullscreenResolution(true)}
           />
@@ -369,8 +366,13 @@ export default function UnifiedStudioView() {
       )}
       </div>
 
-      {fullscreenResolution && !isProcessingNow && (
-        <ResolutionCenter roundId={roundId} onClose={() => setFullscreenResolution(false)} />
+      {fullscreenResolution && !isProcessingNow && activeSubproject && (
+        <ResolutionCenter
+          subprojectId={activeSubproject.id}
+          codingType={activeSubproject.coding_type}
+          roundId={roundId}
+          onClose={() => setFullscreenResolution(false)}
+        />
       )}
 
       <AnimatePresence>
@@ -426,13 +428,6 @@ export default function UnifiedStudioView() {
         )}
       </AnimatePresence>
 
-      {phaseChoiceOpen && roundId && (
-        <PhaseCompleteChoice
-          roundId={roundId}
-          variant="modal"
-          onDismiss={() => setPhaseChoiceOpen(false)}
-        />
-      )}
     </div>
   );
 }

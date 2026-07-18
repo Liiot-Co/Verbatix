@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { RefreshCw, BarChart3 } from "lucide-react";
 import { motion } from "framer-motion";
 import type { RoundStatus } from "@/api/types";
-import { hasReportAccess, studyDisplayName } from "@/lib/projectTree";
+import { hasReportAccess } from "@/lib/projectTree";
 import { studioStatusLabel } from "@/lib/studioStatus";
 
 interface StudioHeaderProps {
@@ -20,7 +20,7 @@ export function StudioHeader({
   isProcessingNow,
   onProcess,
 }: StudioHeaderProps) {
-  const title = studyDisplayName(studio.study_name, studio.coding_type);
+  const title = studio.project_name;
 
   return (
     <div className="flex items-start justify-between gap-4 flex-wrap">
