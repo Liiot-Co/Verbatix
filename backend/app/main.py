@@ -7,7 +7,7 @@ from app.core.auth import CurrentUser, current_user
 from app.core.config import settings
 from app.core.database import check_db, get_db
 from app.core import scheduler
-from app.routers import audit, auth, projects, report, resolution, studios
+from app.routers import assignments, audit, auth, categories, projects, proyectos, report, resolution, studios
 from app.routers.auth import get_me
 
 
@@ -34,7 +34,10 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(proyectos.router)
 app.include_router(projects.router)
+app.include_router(categories.router)
+app.include_router(assignments.router)
 app.include_router(studios.router)
 app.include_router(resolution.router)
 app.include_router(audit.router)

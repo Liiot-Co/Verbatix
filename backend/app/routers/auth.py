@@ -1,14 +1,19 @@
+import uuid
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.access import require_admin
 from app.core.auth import CurrentUser, current_user
 from app.core.config import settings
 from app.core.database import get_db
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+ROLE_CODES = ("admin", "codificador", "supervisor")
 
 
 class LoginIn(BaseModel):
@@ -98,15 +103,18 @@ def login(payload: LoginIn):
 @router.get("/me")
 def get_me(user: CurrentUser = Depends(current_user), db: Session = Depends(get_db)):
     row = db.execute(
-        text("select id, email, name, role, is_active, created_at from profiles where id = :id"),
+        text("select id, email, name, is_active, created_at from users where id = :id"),
         {"id": user["id"]},
     ).mappings().first()
 
     if not row:
+        # Normalmente lo crea el trigger handle_new_user() al registrarse en
+        # Supabase Auth (001_schema_v8.sql); esto es solo el respaldo si /me
+        # se llama antes de que esa fila exista todavía.
         db.execute(
             text("""
-                insert into profiles (id, email, name, role)
-                values (:id, :email, :name, 'analyst')
+                insert into users (id, email, name)
+                values (:id, :email, :name)
                 on conflict (id) do nothing
             """),
             {
@@ -115,17 +123,71 @@ def get_me(user: CurrentUser = Depends(current_user), db: Session = Depends(get_
                 "name": (user.get("email") or "User").split("@")[0],
             },
         )
+        db.execute(
+            text("""
+                insert into user_roles (id, user_id, role_code)
+                values (gen_random_uuid(), :id, 'codificador')
+                on conflict (user_id, role_code) do nothing
+            """),
+            {"id": user["id"]},
+        )
         db.commit()
         row = db.execute(
-            text("select id, email, name, role, is_active, created_at from profiles where id = :id"),
+            text("select id, email, name, is_active, created_at from users where id = :id"),
             {"id": user["id"]},
         ).mappings().first()
+
+    roles = db.execute(
+        text("select role_code from user_roles where user_id = :id"),
+        {"id": user["id"]},
+    ).scalars().all()
 
     return {
         "id": str(row["id"]),
         "email": row["email"],
         "name": row["name"],
-        "role": row["role"],
+        "roles": list(roles),
         "is_active": row["is_active"],
         "created_at": row["created_at"],
     }
+
+
+class RoleIn(BaseModel):
+    role_code: str
+
+
+@router.post("/users/{user_id}/roles", status_code=201)
+def assign_role(
+    user_id: uuid.UUID,
+    payload: RoleIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_admin(db, user["id"])
+    if payload.role_code not in ROLE_CODES:
+        raise HTTPException(400, f"role_code debe ser uno de {ROLE_CODES}")
+    db.execute(
+        text("""
+            insert into user_roles (id, user_id, role_code)
+            values (gen_random_uuid(), :uid, :role)
+            on conflict (user_id, role_code) do nothing
+        """),
+        {"uid": user_id, "role": payload.role_code},
+    )
+    db.commit()
+    return {"user_id": str(user_id), "role_code": payload.role_code}
+
+
+@router.delete("/users/{user_id}/roles/{role_code}", status_code=204)
+def revoke_role(
+    user_id: uuid.UUID,
+    role_code: str,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_admin(db, user["id"])
+    db.execute(
+        text("delete from user_roles where user_id = :uid and role_code = :role"),
+        {"uid": user_id, "role": role_code},
+    )
+    db.commit()

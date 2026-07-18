@@ -23,6 +23,11 @@ def visible_project_ids(db: Session, user_id) -> list[uuid.UUID] | None:
     ).scalars().all())
 
 
+def require_admin(db: Session, user_id) -> None:
+    if not is_admin(db, user_id):
+        raise HTTPException(403, "Solo un admin puede hacer esto")
+
+
 def require_project(db: Session, project_id: uuid.UUID, user_id) -> None:
     if not db.execute(
         text("select 1 from projects where id = :id and created_by = :u"),
