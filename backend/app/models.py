@@ -91,6 +91,7 @@ class Project(Base):
     proyecto = relationship("Proyecto", back_populates="projects")
     studios = relationship("Studio", back_populates="project", cascade="all, delete-orphan")
     categories = relationship("Category", back_populates="project", cascade="all, delete-orphan")
+    rounds = relationship("Round", back_populates="project", cascade="all, delete-orphan")
 
 
 class Category(Base):
@@ -103,6 +104,7 @@ class Category(Base):
 
     # Relationships
     project = relationship("Project", back_populates="categories")
+    rounds = relationship("Round", back_populates="category")
 
 
 class Question(Base):
@@ -155,7 +157,6 @@ class Studio(Base):
 
     # Relationships
     project = relationship("Project", back_populates="studios")
-    rounds = relationship("Round", back_populates="studio", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("project_id", "name", name="studio_project_id_name_key"),)
 
@@ -164,7 +165,8 @@ class Round(Base):
     __tablename__ = "rounds"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    studio_id = Column(UUID(as_uuid=True), ForeignKey("studio.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
     name = Column(String, nullable=False)
     round_number = Column(Integer, nullable=False)
     status = Column(String, nullable=False, default="created")
@@ -177,13 +179,14 @@ class Round(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    studio = relationship("Studio", back_populates="rounds")
+    project = relationship("Project", back_populates="rounds")
+    category = relationship("Category", back_populates="rounds")
     creator = relationship("User", back_populates="rounds")
     imported_files = relationship("ImportedFile", back_populates="round", cascade="all, delete-orphan")
     verbatims = relationship("Verbatim", back_populates="round", cascade="all, delete-orphan")
     mention_groups = relationship("MentionGroup", back_populates="round", cascade="all, delete-orphan")
 
-    __table_args__ = (UniqueConstraint("studio_id", "round_number", name="rounds_studio_id_round_number_key"),)
+    __table_args__ = (UniqueConstraint("project_id", "round_number", name="rounds_project_id_round_number_key"),)
 
 
 class ImportedFile(Base):
