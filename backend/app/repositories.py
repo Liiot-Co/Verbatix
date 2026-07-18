@@ -1,4 +1,4 @@
-"""Acceso a datos con SQL explícito (fuente de verdad: 001_schema_v5.sql)."""
+"""Acceso a datos con SQL explícito (fuente de verdad: 001_schema_v8.sql)."""
 import json
 import uuid
 
@@ -198,6 +198,40 @@ def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str |
         """),
         {"project": project_id, "qk": question_key},
     ).scalar()
+
+
+def classify_question(
+    db: Session,
+    project_id: uuid.UUID,
+    question_key: str,
+    coding_type: str,
+    single_code_per_response: bool = False,
+    expected_max_mentions: int | None = None,
+) -> uuid.UUID:
+    """El analista responde 'esta variable es Marcas o Razones' una sola vez por
+    estudio (sección 2.5/2.6) — queda guardado en `questions` para siempre; las
+    rondas futuras del mismo estudio la reutilizan sin volver a preguntar. Una vez
+    clasificada, reintentar `insert_verbatims` con las mismas filas ya no las deja
+    pendientes (Tarea 9)."""
+    existing = db.execute(
+        text("select id from questions where project_id = :project and question_key = :qk"),
+        {"project": project_id, "qk": question_key},
+    ).scalar()
+    if existing:
+        return existing
+    qid = uuid.uuid4()
+    db.execute(
+        text("""
+            insert into questions (id, project_id, coding_type, question_key,
+                                   single_code_per_response, expected_max_mentions)
+            values (:id, :project, :ct, :qk, :single, :max_m)
+        """),
+        {
+            "id": qid, "project": project_id, "ct": coding_type, "qk": question_key,
+            "single": single_code_per_response, "max_m": expected_max_mentions,
+        },
+    )
+    return qid
 
 
 def _get_or_create_respondent(db: Session, round_id: uuid.UUID, respondent_external_id: str) -> uuid.UUID:
