@@ -155,6 +155,7 @@ class Subproject(Base):
     # Relationships
     round = relationship("Round", back_populates="subprojects")
     verbatims = relationship("Verbatim", back_populates="subproject", cascade="all, delete-orphan")
+    mention_groups = relationship("MentionGroup", back_populates="subproject", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("round_id", "coding_type", name="subprojects_round_id_coding_type_key"),)
 
@@ -182,7 +183,6 @@ class Round(Base):
     creator = relationship("User", back_populates="rounds")
     subprojects = relationship("Subproject", back_populates="round", cascade="all, delete-orphan")
     imported_files = relationship("ImportedFile", back_populates="round", cascade="all, delete-orphan")
-    mention_groups = relationship("MentionGroup", back_populates="round", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("project_id", "round_number", name="rounds_project_id_round_number_key"),)
 
@@ -304,7 +304,7 @@ class ProcessingRun(Base):
     __tablename__ = "processing_runs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
+    subproject_id = Column(UUID(as_uuid=True), ForeignKey("subprojects.id", ondelete="CASCADE"), nullable=False)
     run_type = Column(String, nullable=False)  # 'initial' | 'homologation' | 'reprocess'
     algorithm = Column(String, nullable=True)
     min_mentions_threshold = Column(Integer, nullable=True)
@@ -328,7 +328,7 @@ class MentionGroup(Base):
     __tablename__ = "mention_groups"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
+    subproject_id = Column(UUID(as_uuid=True), ForeignKey("subprojects.id", ondelete="CASCADE"), nullable=False)
     normalized_text = Column(String, nullable=False)
     sample_text = Column(String, nullable=True)
     frequency_count = Column(Integer, nullable=False, default=0)
@@ -340,10 +340,10 @@ class MentionGroup(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
-    round = relationship("Round", back_populates="mention_groups")
+    subproject = relationship("Subproject", back_populates="mention_groups")
     verbatims = relationship("Verbatim", back_populates="mention_group")
 
-    __table_args__ = (UniqueConstraint("round_id", "normalized_text", name="mention_groups_round_id_normalized_text_key"),)
+    __table_args__ = (UniqueConstraint("subproject_id", "normalized_text", name="mention_groups_subproject_id_normalized_text_key"),)
 
 
 class Verbatim(Base):
