@@ -51,7 +51,7 @@ def _merged_row_border(col: int) -> Border:
     return Border(top=_THIN, bottom=_THIN, left=None, right=None)
 
 
-def _style_lc_sheet(lc_ws, export_data: dict) -> None:
+def _style_lc_sheet(lc_ws, title: str) -> None:
     for letter, width in _LC_COLUMN_WIDTHS.items():
         lc_ws.column_dimensions[letter].width = width
     lc_ws.sheet_view.showGridLines = False
@@ -61,7 +61,7 @@ def _style_lc_sheet(lc_ws, export_data: dict) -> None:
     lc_ws.row_dimensions[2].height = 15
 
     lc_ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=_LC_LAST_COLUMN)
-    lc_ws.cell(row=1, column=1, value=export_data.get("survey_question") or "")
+    lc_ws.cell(row=1, column=1, value=title)
     for col in range(1, _LC_LAST_COLUMN + 1):
         cell = lc_ws.cell(row=1, column=col)
         cell.fill = _HEADER_FILL
@@ -78,22 +78,9 @@ def _style_lc_sheet(lc_ws, export_data: dict) -> None:
         cell.border = _row_border(col)
 
 
-def build_codebook_excel(export_data: dict) -> bytes:
-    """Arma el .xlsx con hojas LC_* y Verbatims_* según coding_type."""
-    wb = Workbook()
-    wb.remove(wb.active)
-
-    suffix = _sheet_suffix(export_data.get("coding_type") or "brands")
-    lc_ws = wb.create_sheet(f"LC {suffix}")
-    verb_ws = wb.create_sheet(f"Verbatims_{suffix}")
-
-    header_fill = _HEADER_FILL
-    header_font = Font(bold=True)
-
-    _style_lc_sheet(lc_ws, export_data)
-
+def _write_lc_sheet(lc_ws, nets: list[dict]) -> None:
     row = 3
-    for net in export_data.get("nets") or []:
+    for net in nets or []:
         lc_ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=_LC_LAST_COLUMN)
         lc_ws.cell(row=row, column=1, value=net["name"])
         for col in range(1, _LC_LAST_COLUMN + 1):
@@ -148,6 +135,28 @@ def build_codebook_excel(export_data: dict) -> bytes:
                 top=border.top, bottom=_MEDIUM, left=border.left, right=border.right
             )
 
+
+def build_codebook_excel(export_data: dict) -> bytes:
+    """Arma el .xlsx: una hoja LC_* por coding_type (Marcas y Razones tienen
+    codebooks independientes, sección 2.7/MetaData.txt real) y UNA sola hoja
+    Verbatims combinando ambos subproyectos por respondent_external_id — igual
+    que el Case real de Ascribe (OnNextCase.txt), confirmado contra el fixture
+    real de HBG Leches."""
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    study_name = export_data.get("study_name") or ""
+    nets_by_coding_type = export_data.get("nets_by_coding_type") or {}
+    for coding_type, nets in nets_by_coding_type.items():
+        suffix = _sheet_suffix(coding_type)
+        lc_ws = wb.create_sheet(f"LC {suffix}")
+        _style_lc_sheet(lc_ws, f"{study_name} — {suffix}".strip(" —"))
+        _write_lc_sheet(lc_ws, nets)
+
+    header_fill = _HEADER_FILL
+    header_font = Font(bold=True)
+
+    verb_ws = wb.create_sheet("Verbatims")
     max_idx = max(export_data.get("max_output_index") or 0, 1)
     headers = ["Study ID", "Question ID", "Respondent ID", "Verbatim"]
     for i in range(1, max_idx + 1):
@@ -177,24 +186,17 @@ def build_codebook_excel(export_data: dict) -> bytes:
     return buf.getvalue()
 
 
-def _all_codes(export_data: dict) -> list[dict]:
-    codes: list[dict] = []
-    for net in export_data.get("nets") or []:
-        codes.extend(net.get("codes") or [])
-    return sorted(codes, key=lambda c: c["code_number"])
-
-
 def build_mdd_txt(export_data: dict, part: int) -> str:
-    """Simulación de archivos .mdd como TXT (hasta definir el formato binario real)."""
+    """Simulación de archivos .mdd como TXT (hasta definir el formato binario real).
+    Combina Marcas y Razones — mismo criterio que build_codebook_excel."""
     ext = export_data.get("project_external_code") or "STUDIO"
     rnd = export_data.get("round_number") or 1
-    suffix = _sheet_suffix(export_data.get("coding_type") or "brands")
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     verbatims = export_data.get("verbatims") or []
 
     if part == 1:
         lines = [
-            f"# Verbatix MDD simulation — coded verbatims ({suffix})",
+            f"# Verbatix MDD simulation — coded verbatims (Marcas + Razones)",
             f"# Study: {ext} | Round: {rnd} | Generated: {stamp}",
             f"# Format: tab-separated (import placeholder)",
             "",
@@ -218,17 +220,18 @@ def build_mdd_txt(export_data: dict, part: int) -> str:
         return "\n".join(lines) + "\n"
 
     lines = [
-        f"# Verbatix MDD simulation — codebook dictionary ({suffix})",
+        f"# Verbatix MDD simulation — codebook dictionary (Marcas + Razones)",
         f"# Study: {ext} | Round: {rnd} | Generated: {stamp}",
         "",
-        "CodeNumber\tLabel\tFrequency\tPct\tNet\tContent",
+        "CodingType\tCodeNumber\tLabel\tFrequency\tPct\tNet\tContent",
     ]
-    for net in export_data.get("nets") or []:
-        for code in net.get("codes") or []:
-            lines.append(
-                f"{code['code_number']}\t{code['label']}\t{code['frequency']}\t"
-                f"{code['pct']}\t{net['name']}\t{code.get('content') or ''}"
-            )
+    for coding_type, nets in (export_data.get("nets_by_coding_type") or {}).items():
+        for net in nets or []:
+            for code in net.get("codes") or []:
+                lines.append(
+                    f"{coding_type}\t{code['code_number']}\t{code['label']}\t{code['frequency']}\t"
+                    f"{code['pct']}\t{net['name']}\t{code.get('content') or ''}"
+                )
     return "\n".join(lines) + "\n"
 
 

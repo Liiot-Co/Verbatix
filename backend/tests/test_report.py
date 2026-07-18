@@ -102,30 +102,30 @@ def test_build_codebook_excel_valid_without_nets():
     export_data = {
         "project_external_code": "32406432",
         "round_number": 1,
-        "survey_question": "¿Qué marca de queso consume?",
-        "coding_type": "brands",
-        "study_name": "Marcas",
+        "study_name": "HBG Leches",
         "total_verbatims": 4,
         "max_output_index": 2,
-        "nets": [{
-            "name": "NETO MARCAS",
-            "codes": [
-                {
-                    "code_number": 1,
-                    "label": "Gloria",
-                    "content": "GLORIA/gloria",
-                    "frequency": 2,
-                    "pct": 0.5,
-                },
-                {
-                    "code_number": 2,
-                    "label": "Alpina",
-                    "content": "",
-                    "frequency": 1,
-                    "pct": 0.25,
-                },
-            ],
-        }],
+        "nets_by_coding_type": {
+            "brands": [{
+                "name": "NETO MARCAS",
+                "codes": [
+                    {
+                        "code_number": 1,
+                        "label": "Gloria",
+                        "content": "GLORIA/gloria",
+                        "frequency": 2,
+                        "pct": 0.5,
+                    },
+                    {
+                        "code_number": 2,
+                        "label": "Alpina",
+                        "content": "",
+                        "frequency": 1,
+                        "pct": 0.25,
+                    },
+                ],
+            }],
+        },
         "verbatims": [
             {
                 "respondent_external_id": "R1",
@@ -150,10 +150,10 @@ def test_build_codebook_excel_valid_without_nets():
 
     wb = load_workbook(io.BytesIO(xlsx), read_only=True, data_only=True)
     assert "LC Marcas" in wb.sheetnames
-    assert "Verbatims_Marcas" in wb.sheetnames
+    assert "Verbatims" in wb.sheetnames
 
     lc = wb["LC Marcas"]
-    assert lc.cell(1, 1).value == "¿Qué marca de queso consume?"
+    assert lc.cell(1, 1).value == "HBG Leches — Marcas"
     assert lc.cell(2, 2).value == "CÓDIGO"
     assert lc.cell(3, 1).value == "NETO MARCAS"
     assert lc.cell(4, 2).value == 1
@@ -161,7 +161,7 @@ def test_build_codebook_excel_valid_without_nets():
     assert lc.cell(4, 5).value == 2
     assert lc.cell(4, 6).value == 0.5
 
-    verbs = wb["Verbatims_Marcas"]
+    verbs = wb["Verbatims"]
     assert verbs.cell(1, 1).value == "Study ID"
     assert verbs.cell(1, 8).value == "Input ID 2"
     assert verbs.cell(2, 1).value == "32406432"
@@ -178,21 +178,21 @@ def test_code_entry_content_filters_null_aliases():
     export_data = {
         "project_external_code": "32406432",
         "round_number": 1,
-        "survey_question": "¿Qué marca de queso consume?",
-        "coding_type": "brands",
-        "study_name": "Marcas",
+        "study_name": "HBG Leches",
         "total_verbatims": 2,
         "max_output_index": 1,
-        "nets": [{
-            "name": "NETO MARCAS",
-            "codes": [{
-                "code_number": 1,
-                "label": "Gloria",
-                "content": "GLORIA",
-                "frequency": 2,
-                "pct": 1.0,
+        "nets_by_coding_type": {
+            "brands": [{
+                "name": "NETO MARCAS",
+                "codes": [{
+                    "code_number": 1,
+                    "label": "Gloria",
+                    "content": "GLORIA",
+                    "frequency": 2,
+                    "pct": 1.0,
+                }],
             }],
-        }],
+        },
         "verbatims": [{
             "respondent_external_id": "R1",
             "question_key": "Q1",
