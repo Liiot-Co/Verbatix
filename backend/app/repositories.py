@@ -17,14 +17,22 @@ SYSTEM_CODES = [
 ]
 
 
-def create_codebook(db: Session, round_id: uuid.UUID, parent_codebook_id=None) -> uuid.UUID:
+def create_codebook(
+    db: Session, project_id: uuid.UUID, coding_type: str, parent_codebook_id=None
+) -> uuid.UUID:
+    """El codebook vive a nivel Estudio (project_id+coding_type), compartido entre
+    categorías/rondas — una Ronda 2 puede heredar el mismo libro sin reprocesarlo."""
     cb_id = uuid.uuid4()
+    version = db.execute(
+        text("select coalesce(max(version), 0) + 1 from codebooks where project_id = :project and coding_type = :ct"),
+        {"project": project_id, "ct": coding_type},
+    ).scalar()
     db.execute(
         text("""
-            insert into codebooks (id, round_id, version, parent_codebook_id, status)
-            values (:id, :round, 1, :parent, 'draft')
+            insert into codebooks (id, project_id, coding_type, version, parent_codebook_id, status)
+            values (:id, :project, :ct, :v, :parent, 'draft')
         """),
-        {"id": cb_id, "round": round_id, "parent": parent_codebook_id},
+        {"id": cb_id, "project": project_id, "ct": coding_type, "v": version, "parent": parent_codebook_id},
     )
     return cb_id
 
@@ -41,10 +49,12 @@ def seed_system_codes(db: Session, codebook_id: uuid.UUID) -> None:
         )
 
 
-def clone_codebook(db: Session, source_round_id: uuid.UUID, target_codebook_id: uuid.UUID) -> dict:
+def clone_codebook(
+    db: Session, source_project_id: uuid.UUID, source_coding_type: str, target_codebook_id: uuid.UUID
+) -> dict:
     src = db.execute(
-        text("select id from codebooks where round_id = :round order by version desc limit 1"),
-        {"round": source_round_id},
+        text("select id from codebooks where project_id = :project and coding_type = :ct order by version desc limit 1"),
+        {"project": source_project_id, "ct": source_coding_type},
     ).scalar()
     if not src:
         return {"codes": 0, "aliases": 0, "nets": 0}
@@ -168,73 +178,162 @@ def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict
     return {"codes": len(parsed["codes"]), "aliases": n_alias, "nets": len(parsed["nets"])}
 
 
+def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str | None) -> uuid.UUID | None:
+    """Resuelve question_key (directo o vía question_aliases) a una fila ya clasificada
+    de `questions`. None si la variable es nueva y todavía no se sabe si es Marcas o
+    Razones (sección 2.5) — el caller debe tratarla como pendiente, no fallar."""
+    if not question_key:
+        return None
+    direct = db.execute(
+        text("select id from questions where project_id = :project and question_key = :qk"),
+        {"project": project_id, "qk": question_key},
+    ).scalar()
+    if direct:
+        return direct
+    return db.execute(
+        text("""
+            select q.id from questions q
+            join question_aliases qa on qa.canonical_question_id = q.id
+            where q.project_id = :project and qa.alias_key = :qk
+        """),
+        {"project": project_id, "qk": question_key},
+    ).scalar()
+
+
+def _get_or_create_respondent(db: Session, round_id: uuid.UUID, respondent_external_id: str) -> uuid.UUID:
+    return db.execute(
+        text("""
+            insert into respondents (id, round_id, respondent_external_id)
+            values (:id, :round, :resp)
+            on conflict (round_id, respondent_external_id) do update set
+              respondent_external_id = excluded.respondent_external_id
+            returning id
+        """),
+        {"id": uuid.uuid4(), "round": round_id, "resp": respondent_external_id},
+    ).scalar()
+
+
 def insert_verbatims(
     db: Session,
     round_id: uuid.UUID,
+    project_id: uuid.UUID,
     file_id: uuid.UUID,
     rows: list[dict],
-    coding_type: str,
-) -> tuple[int, pl.DataFrame]:
-    """Normaliza, inserta verbatims (con original_text) y devuelve DF slim para fuzzy."""
-    df = rows_to_normalized_df(rows, coding_type)
-    n = 0
-    # Index original texts by (respondent, question_key) for DB insert
-    originals: dict[tuple[str, str | None], dict] = {}
-    for r in rows:
-        resp = str(r.get("respondent_external_id") or "").strip()
+) -> tuple[int, pl.DataFrame, list[str]]:
+    """Normaliza, inserta verbatims y devuelve (n_inserted, DF slim para fuzzy,
+    question_keys nuevas sin clasificar). Cada fila se reparte al subproject_id que le
+    corresponde según `questions.coding_type` de su variable de origen (sección 2.5) —
+    no según un coding_type fijo. Filas cuya question_key no tiene fila en `questions`
+    todavía se excluyen (no fallan) y se listan en el 3er valor de retorno para que el
+    caller dispare el flujo de clasificación de variable nueva (Tarea 9)."""
+    subproject_by_coding_type = {
+        r["coding_type"]: r["id"]
+        for r in db.execute(
+            text("select id, coding_type from subprojects where round_id = :round"),
+            {"round": round_id},
+        ).mappings().all()
+    }
+
+    question_cache: dict[str | None, uuid.UUID | None] = {}
+    pending: set[str] = set()
+    rows_by_coding_type: dict[str, list[dict]] = {"brands": [], "reasons": []}
+    question_id_by_key: dict[str | None, uuid.UUID | None] = {}
+
+    for row in rows:
+        resp = str(row.get("respondent_external_id") or "").strip()
         if not resp:
             continue
-        qk = r.get("question_key")
-        originals[(resp, qk)] = r
+        qk = row.get("question_key")
+        if qk not in question_cache:
+            question_cache[qk] = _resolve_question_id(db, project_id, qk)
+        question_id = question_cache[qk]
 
-    for row in df.iter_rows(named=True):
-        key = (row["respondent_external_id"], row.get("question_key"))
-        src = originals.get(key) or originals.get((row["respondent_external_id"], None))
-        original = (src or {}).get("original_text") or row["normalized_text"]
-        input_code = (src or {}).get("input_code_number")
-        result = db.execute(
-            text("""
-                insert into verbatims (id, round_id, imported_file_id, respondent_external_id,
-                                       question_key, original_text, normalized_text, input_code_number,
-                                       coding_status)
-                values (:id, :round, :f, :resp, :q, :txt, :norm, :inp, 'pending')
-                on conflict (round_id, respondent_external_id, question_key) do update set
-                  normalized_text = excluded.normalized_text,
-                  original_text = excluded.original_text,
-                  imported_file_id = excluded.imported_file_id
-                where verbatims.coding_status = 'pending'
-            """),
-            {
-                "id": uuid.uuid4(),
-                "round": round_id,
-                "f": file_id,
-                "resp": row["respondent_external_id"],
-                "q": row.get("question_key"),
-                "txt": original,
-                "norm": row["normalized_text"],
-                "inp": input_code,
-            },
-        )
-        if result.rowcount:
-            n += 1
-    return n, df
+        if qk and question_id is None:
+            pending.add(qk)
+            continue
+        if question_id is None:
+            continue  # sin question_key: no hay variable de origen que repartir
+
+        coding_type = db.execute(
+            text("select coding_type from questions where id = :id"),
+            {"id": question_id},
+        ).scalar()
+        question_id_by_key[qk] = question_id
+        rows_by_coding_type[coding_type].append(row)
+
+    n = 0
+    df_parts = []
+    for coding_type, ct_rows in rows_by_coding_type.items():
+        if not ct_rows:
+            continue
+        subproject_id = subproject_by_coding_type.get(coding_type)
+        if not subproject_id:
+            continue  # la ronda debería tener ambos subprojects (create_round los crea)
+
+        df = rows_to_normalized_df(ct_rows, coding_type)
+        df_parts.append(df)
+
+        originals: dict[tuple[str, str | None], dict] = {}
+        for r in ct_rows:
+            resp = str(r.get("respondent_external_id") or "").strip()
+            if not resp:
+                continue
+            originals[(resp, r.get("question_key"))] = r
+
+        for row in df.iter_rows(named=True):
+            key = (row["respondent_external_id"], row.get("question_key"))
+            src = originals.get(key) or originals.get((row["respondent_external_id"], None))
+            original = (src or {}).get("original_text") or row["normalized_text"]
+            input_code = (src or {}).get("input_code_number")
+            respondent_id = _get_or_create_respondent(db, round_id, row["respondent_external_id"])
+
+            result = db.execute(
+                text("""
+                    insert into verbatims (id, subproject_id, respondent_id, question_id,
+                                           imported_file_id, source_question_key,
+                                           original_text, normalized_text, input_code_number,
+                                           coding_status)
+                    values (:id, :sp, :resp_id, :qid, :f, :q, :txt, :norm, :inp, 'pending')
+                    on conflict (subproject_id, respondent_id, source_question_key) do update set
+                      normalized_text = excluded.normalized_text,
+                      original_text = excluded.original_text,
+                      imported_file_id = excluded.imported_file_id
+                    where verbatims.coding_status = 'pending'
+                """),
+                {
+                    "id": uuid.uuid4(),
+                    "sp": subproject_id,
+                    "resp_id": respondent_id,
+                    "qid": question_id_by_key.get(row.get("question_key")),
+                    "f": file_id,
+                    "q": row.get("question_key"),
+                    "txt": original,
+                    "norm": row["normalized_text"],
+                    "inp": input_code,
+                },
+            )
+            if result.rowcount:
+                n += 1
+
+    combined_df = pl.concat(df_parts) if df_parts else rows_to_normalized_df([], "brands")
+    return n, combined_df, sorted(pending)
 
 
-def build_mention_groups(db: Session, round_id: uuid.UUID) -> int:
+def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
     """Agrupa verbatims ya normalizados por texto exacto (dedup para el paso 2)."""
     db.execute(
         text("""
-            insert into mention_groups (id, round_id, normalized_text, sample_text,
+            insert into mention_groups (id, subproject_id, normalized_text, sample_text,
                                         frequency_count, status)
-            select gen_random_uuid(), :round, v.normalized_text, min(v.original_text),
+            select gen_random_uuid(), :sp, v.normalized_text, min(v.original_text),
                    count(*), 'pending_review'
             from verbatims v
-            where v.round_id = :round and v.normalized_text <> ''
+            where v.subproject_id = :sp and v.normalized_text <> ''
             group by v.normalized_text
-            on conflict (round_id, normalized_text)
+            on conflict (subproject_id, normalized_text)
             do update set frequency_count = excluded.frequency_count
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     )
 
     db.execute(
@@ -242,16 +341,16 @@ def build_mention_groups(db: Session, round_id: uuid.UUID) -> int:
             update verbatims v
             set mention_group_id = g.id
             from mention_groups g
-            where g.round_id = :round
-              and v.round_id = :round
+            where g.subproject_id = :sp
+              and v.subproject_id = :sp
               and v.normalized_text = g.normalized_text
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     )
 
     return db.execute(
-        text("select count(*) from mention_groups where round_id = :round"),
-        {"round": round_id},
+        text("select count(*) from mention_groups where subproject_id = :sp"),
+        {"sp": subproject_id},
     ).scalar()
 
 
@@ -259,10 +358,10 @@ def build_mention_groups(db: Session, round_id: uuid.UUID) -> int:
 # Centro de Resolución (Fase 4)
 # =====================================================================
 
-def _current_codebook_id(db: Session, round_id: uuid.UUID) -> uuid.UUID | None:
+def _current_codebook_id(db: Session, project_id: uuid.UUID, coding_type: str) -> uuid.UUID | None:
     return db.execute(
-        text("select id from codebooks where round_id = :round order by version desc limit 1"),
-        {"round": round_id},
+        text("select id from codebooks where project_id = :project and coding_type = :ct order by version desc limit 1"),
+        {"project": project_id, "ct": coding_type},
     ).scalar()
 
 
