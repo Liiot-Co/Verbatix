@@ -78,6 +78,39 @@ class Category(Base):
     project = relationship("Project", back_populates="categories")
 
 
+class Question(Base):
+    __tablename__ = "questions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
+    question_key = Column(String, nullable=False)
+    single_code_per_response = Column(Boolean, nullable=False, default=False)
+    expected_max_mentions = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    # Relationships
+    aliases = relationship("QuestionAlias", back_populates="canonical_question", cascade="all, delete-orphan")
+
+    __table_args__ = (UniqueConstraint("project_id", "question_key", name="questions_project_id_question_key_key"),)
+
+
+class QuestionAlias(Base):
+    __tablename__ = "question_aliases"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    canonical_question_id = Column(UUID(as_uuid=True), ForeignKey("questions.id", ondelete="CASCADE"), nullable=False)
+    alias_key = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    # Relationships
+    canonical_question = relationship("Question", back_populates="aliases")
+
+    __table_args__ = (
+        UniqueConstraint("canonical_question_id", "alias_key", name="question_aliases_canonical_question_id_alias_key_key"),
+    )
+
+
 class Studio(Base):
     """El Estudio (Marcas / Razones): entidad persistente dentro de un proyecto,
     fija a través de las rondas. Cada Ronda es una ola de datos independiente."""
