@@ -20,40 +20,30 @@ from .models import (
 )
 
 
-def load_catalog_aliases(db: Session, round_id: uuid.UUID) -> list[CodeAlias]:
+def load_catalog_aliases(db: Session, subproject_id: uuid.UUID) -> list[CodeAlias]:
     alias_rows = db.execute(
         text("""
-            with latest as (
-              select id from codebooks
-              where round_id = :round
-              order by version desc
-              limit 1
-            )
             select ca.code_id::text as code_id, ca.alias_normalized
             from code_aliases ca
-            join latest l on l.id = ca.codebook_id
-            where ca.alias_normalized is not null and ca.alias_normalized <> ''
+            join subprojects sp on sp.codebook_id = ca.codebook_id
+            where sp.id = :sp
+              and ca.alias_normalized is not null and ca.alias_normalized <> ''
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
 
     label_rows = db.execute(
         text("""
-            with latest as (
-              select id from codebooks
-              where round_id = :round
-              order by version desc
-              limit 1
-            )
             select c.id::text as code_id, c.label
             from codes c
-            join latest l on l.id = c.codebook_id
-            where c.is_active
+            join subprojects sp on sp.codebook_id = c.codebook_id
+            where sp.id = :sp
+              and c.is_active
               and coalesce(c.is_system, false) = false
               and c.label is not null
               and trim(c.label) <> ''
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
 
     seen: set[tuple[str, str]] = set()
@@ -124,7 +114,7 @@ def _best_match(text_value: str, aliases: list[str], threshold: float):
 
 def discover_catalog_from_frequency(
     db: Session,
-    round_id: uuid.UUID,
+    subproject_id: uuid.UUID,
     min_mentions: int,
     threshold: float = SCORE_THRESHOLD,
 ) -> list[CodeAlias]:
@@ -158,8 +148,8 @@ def discover_catalog_from_frequency(
     load_catalog_aliases ya devuelve catálogo y este fallback no se vuelve a tomar.
     """
     codebook_id = db.execute(
-        text("select id from codebooks where round_id = :round order by version desc limit 1"),
-        {"round": round_id},
+        text("select codebook_id from subprojects where id = :sp"),
+        {"sp": subproject_id},
     ).scalar()
     if codebook_id is None:
         return []
@@ -171,12 +161,12 @@ def discover_catalog_from_frequency(
         text("""
             select normalized_text, sample_text, frequency_count
             from mention_groups
-            where round_id = :round
+            where subproject_id = :sp
               and status = 'pending_review'
               and normalized_text <> ''
             order by frequency_count desc, normalized_text
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
     if not candidates:
         return []

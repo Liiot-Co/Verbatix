@@ -1,13 +1,23 @@
-"""Unit test for process_round's brands -> fuzzy, then LLM on the leftovers -> orchestration.
+"""Unit tests for process_round's orchestration across a round's 2 subprojects
+(Marcas/Razones, v8) and each subproject's own brands-fuzzy/reasons-LLM dispatch.
 
-ponytail: mocks _process_brands/classify_round themselves (each already covered by
-test_fuzzy.py/test_classification.py) — this only proves process_round calls both for
-'brands' rounds and merges their stats, not the engines' internals.
+ponytail: mocks the engines themselves (each already covered by
+test_fuzzy.py/test_classification.py) — this only proves the orchestration wiring,
+not the engines' internals.
 """
 import uuid
 from unittest.mock import patch
 
-from app.pipeline.process import _apply_semantic_cache, _prefilter_garbage, process_round
+from app.pipeline.process import (
+    _apply_semantic_cache,
+    _prefilter_garbage,
+    _process_subproject,
+    process_round,
+)
+
+ROUND_ID = uuid.uuid4()
+SUBPROJECT_BRANDS = uuid.uuid4()
+SUBPROJECT_REASONS = uuid.uuid4()
 
 
 class FakeResult:
@@ -30,38 +40,84 @@ class FakeResult:
 
 
 class FakeSession:
-    def __init__(self, coding_type, execute=None):
-        self._coding_type = coding_type
+    def __init__(self, execute=None):
         self._execute_override = execute
 
     def execute(self, stmt, params=None):
         if self._execute_override:
             return self._execute_override(stmt, params)
-        sql = str(stmt)
-        if "coding_type" in sql:
-            return FakeResult(scalar=self._coding_type)
         return FakeResult()
 
     def commit(self):
         pass
 
 
-def test_brands_round_runs_llm_on_fuzzy_leftovers():
-    fuzzy_result = {"run_id": "fuzzy-run", "groups_classified": 3, "anomalies": 2, "total": 5}
-    llm_result = {"run_id": "llm-run", "groups_classified": 1, "anomalies": 1, "total": 2}
+def test_process_round_dispatches_both_subprojects_and_sums_stats():
+    subproject_results = {
+        SUBPROJECT_BRANDS: {"run_id": "brands-run", "llm_run_id": "brands-llm", "groups_classified": 3, "anomalies": 1, "total": 5},
+        SUBPROJECT_REASONS: {"run_id": "reasons-run", "llm_run_id": "reasons-llm", "groups_classified": 2, "anomalies": 0, "total": 2},
+    }
 
-    db = FakeSession(coding_type="brands")
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "id, coding_type from subprojects where round_id" in sql:
+            return FakeResult(mapping_rows=[
+                {"id": SUBPROJECT_BRANDS, "coding_type": "brands"},
+                {"id": SUBPROJECT_REASONS, "coding_type": "reasons"},
+            ])
+        return FakeResult()
+
+    db = FakeSession(execute=fake_execute)
+
+    with patch(
+        "app.pipeline.process._process_subproject",
+        side_effect=lambda db, sp_id, coding_type, threshold: subproject_results[sp_id],
+    ) as process_mock:
+        result = process_round(db, ROUND_ID)
+
+    assert process_mock.call_count == 2
+    assert result["groups_classified"] == 5  # 3 + 2
+    assert result["anomalies"] == 1
+    assert result["total"] == 7
+
+
+def test_process_round_raises_when_round_has_no_subprojects():
+    db = FakeSession(execute=lambda stmt, params=None: FakeResult(mapping_rows=[]))
+
+    try:
+        process_round(db, ROUND_ID)
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_process_subproject_runs_fuzzy_for_brands():
     with (
-        patch("app.pipeline.process._process_brands", return_value=fuzzy_result) as fuzzy_mock,
-        patch("app.pipeline.process.classify_round", return_value=llm_result) as llm_mock,
+        patch("app.pipeline.process._prefilter_garbage") as prefilter_mock,
+        patch("app.pipeline.process._process_brands", return_value={"run_id": "r1", "groups_classified": 1, "anomalies": 0, "total": 1}) as fuzzy_mock,
+        patch("app.pipeline.process._apply_semantic_cache", return_value={"groups_classified": 0}),
+        patch("app.pipeline.process.classify_round", return_value={"run_id": "llm1", "groups_classified": 0, "anomalies": 0, "total": 0}),
     ):
-        result = process_round(db, uuid.uuid4())
+        _process_subproject(FakeSession(), SUBPROJECT_BRANDS, "brands", 90.0)
 
+    prefilter_mock.assert_called_once()
     fuzzy_mock.assert_called_once()
-    llm_mock.assert_called_once()
-    assert result["groups_classified"] == 4  # 3 fuzzy + 1 llm
-    assert result["anomalies"] == 1  # only what the LLM still couldn't resolve
-    assert result["total"] == 5
+
+
+def test_process_subproject_skips_fuzzy_for_reasons():
+    """Marcas -> fuzzy puro; Razones nunca toca el motor fuzzy (va directo a
+    caché semántico + LLM) — bug preexistente corregido en la migración v8: el
+    código llamaba a _process_brands sin condicionar por coding_type."""
+    with (
+        patch("app.pipeline.process._prefilter_garbage"),
+        patch("app.pipeline.process._process_brands") as fuzzy_mock,
+        patch("app.pipeline.process._apply_semantic_cache", return_value={"groups_classified": 0}),
+        patch("app.pipeline.process.classify_round", return_value={"run_id": "llm1", "groups_classified": 2, "anomalies": 0, "total": 2}),
+    ):
+        result = _process_subproject(FakeSession(), SUBPROJECT_REASONS, "reasons", 90.0)
+
+    fuzzy_mock.assert_not_called()
+    assert result["groups_classified"] == 2
 
 
 NO_SABE_VARIANTS = ["no sabe", "no se", "nose", "no sabria decir", "no conozco"]
@@ -74,6 +130,8 @@ def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
 
     def fake_execute(stmt, params=None):
         sql = str(stmt)
+        if "codebook_id from subprojects where id" in sql:
+            return FakeResult(scalar="cb-1")
         if "select id, system_type from codes" in sql:
             return FakeResult(mapping_rows=[{"id": "code-96", "system_type": "no_answer"}])
         if "select id from mention_groups" in sql:
@@ -84,8 +142,7 @@ def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
         updates.append((sql, params))
         return FakeResult(rowcount=1)
 
-    with patch("app.repositories._current_codebook_id", return_value="cb-1"):
-        total = _prefilter_garbage(FakeSession(coding_type=None, execute=fake_execute), uuid.uuid4())
+    total = _prefilter_garbage(FakeSession(execute=fake_execute), SUBPROJECT_BRANDS)
 
     assert total == 2  # 1 garbage + 1 "no se" resolved
     assert any("status = 'auto_coded'" in sql for sql, _ in updates)
@@ -93,27 +150,12 @@ def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
     assert insert_params["code"] == "code-96"
 
 
-def test_reasons_round_skips_fuzzy():
-    llm_result = {"run_id": "llm-run", "groups_classified": 2, "anomalies": 0, "total": 2}
-
-    db = FakeSession(coding_type="reasons")
-    with (
-        patch("app.pipeline.process._process_brands") as fuzzy_mock,
-        patch("app.pipeline.process.classify_round", return_value=llm_result) as llm_mock,
-    ):
-        result = process_round(db, uuid.uuid4())
-
-    fuzzy_mock.assert_not_called()
-    llm_mock.assert_called_once()
-    assert result == llm_result
-
-
 def test_semantic_cache_skipped_for_brands():
     """coding_type != 'reasons' -> no DB access at all, no LLM cost paid on the check."""
     calls = []
-    db = FakeSession(coding_type="brands", execute=lambda stmt, params=None: calls.append(stmt) or FakeResult())
+    db = FakeSession(execute=lambda stmt, params=None: calls.append(stmt) or FakeResult())
 
-    result = _apply_semantic_cache(db, uuid.uuid4(), "brands")
+    result = _apply_semantic_cache(db, SUBPROJECT_BRANDS, "brands")
 
     assert result == {"groups_classified": 0}
     assert calls == []
@@ -130,8 +172,10 @@ def test_semantic_cache_hit_auto_codes_group_before_llm_sees_it():
 
     def fake_execute(stmt, params=None):
         sql = str(stmt)
-        if "from codebooks" in sql:
-            return FakeResult(scalar="cb-1")
+        if "codebook_id, round_id from subprojects" in sql:
+            return FakeResult(mapping_rows=[{"codebook_id": "cb-1", "round_id": "own-round"}])
+        if "origin_mode, source_round_id from rounds" in sql:
+            return FakeResult(mapping_rows=[{"origin_mode": "from_scratch", "source_round_id": None}])
         if "select id, normalized_text from mention_groups" in sql:
             rows = [
                 {"id": gid, "normalized_text": g["normalized_text"]}
@@ -148,13 +192,13 @@ def test_semantic_cache_hit_auto_codes_group_before_llm_sees_it():
             return FakeResult()
         return FakeResult()
 
-    db = FakeSession(coding_type="reasons", execute=fake_execute)
+    db = FakeSession(execute=fake_execute)
 
     with patch(
         "app.pipeline.process.semantic_cache.lookup",
         return_value={"code_id": "code-1", "codebook_id": "cb-1", "similarity": 0.95},
-    ), patch("app.repositories._current_codebook_id", return_value="cb-1"):
-        result = _apply_semantic_cache(db, uuid.uuid4(), "reasons")
+    ):
+        result = _apply_semantic_cache(db, SUBPROJECT_REASONS, "reasons")
 
     assert result == {"groups_classified": 1}
     assert mention_groups[group_id]["status"] == "auto_coded"
@@ -172,40 +216,42 @@ def test_semantic_cache_miss_leaves_group_pending():
 
     def fake_execute(stmt, params=None):
         sql = str(stmt)
-        if "from codebooks" in sql:
-            return FakeResult(scalar="cb-1")
+        if "codebook_id, round_id from subprojects" in sql:
+            return FakeResult(mapping_rows=[{"codebook_id": "cb-1", "round_id": "own-round"}])
+        if "origin_mode, source_round_id from rounds" in sql:
+            return FakeResult(mapping_rows=[{"origin_mode": "from_scratch", "source_round_id": None}])
         if "select id, normalized_text from mention_groups" in sql:
             rows = [{"id": gid, "normalized_text": g["normalized_text"]} for gid, g in mention_groups.items()]
             return FakeResult(mapping_rows=rows)
         return FakeResult()
 
-    db = FakeSession(coding_type="reasons", execute=fake_execute)
+    db = FakeSession(execute=fake_execute)
 
-    with patch("app.pipeline.process.semantic_cache.lookup", return_value=None), \
-         patch("app.repositories._current_codebook_id", return_value="cb-1"):
-        result = _apply_semantic_cache(db, uuid.uuid4(), "reasons")
+    with patch("app.pipeline.process.semantic_cache.lookup", return_value=None):
+        result = _apply_semantic_cache(db, SUBPROJECT_REASONS, "reasons")
 
     assert result == {"groups_classified": 0}
     assert mention_groups[group_id]["status"] == "pending_review"
 
 
 def test_semantic_cache_searches_source_round_when_homologated():
-    """Task C4: a homologated round with source_round_id also searches the
-    origin round's codebook, and remaps the hit's code_id to the equivalent
-    inherited code in its own codebook (code ids aren't shared across cloned
-    codebooks — see repositories.clone_codebook)."""
+    """Task C4: a homologated round's subproject also searches the equivalent
+    subproject (same coding_type) of its origin round's codebook, and remaps the
+    hit's code_id to the equivalent inherited code in its own codebook (code ids
+    aren't shared across cloned codebooks — see repositories.clone_codebook)."""
     group_id = "group-1"
     mention_groups = {group_id: {"normalized_text": "muy fresco", "status": "pending_review"}}
     inserted_verbatim_codes = []
     lookup_calls = []
 
-    def fake_current_codebook_id(db, round_id):
-        return "cb-source" if round_id == "source-round" else "cb-own"
-
     def fake_execute(stmt, params=None):
         sql = str(stmt)
+        if "codebook_id, round_id from subprojects" in sql:
+            return FakeResult(mapping_rows=[{"codebook_id": "cb-own", "round_id": "own-round"}])
         if "origin_mode, source_round_id from rounds" in sql:
             return FakeResult(mapping_rows=[{"origin_mode": "homologated", "source_round_id": "source-round"}])
+        if "codebook_id from subprojects where round_id" in sql:
+            return FakeResult(scalar="cb-source" if params["round"] == "source-round" else "cb-own")
         if "select id, normalized_text from mention_groups" in sql:
             rows = [
                 {"id": gid, "normalized_text": g["normalized_text"]}
@@ -215,7 +261,7 @@ def test_semantic_cache_searches_source_round_when_homologated():
             return FakeResult(mapping_rows=rows)
         if "inherited_from_code_id" in sql:
             # The origin round's code "code-source" was cloned into this
-            # round's codebook as "code-own".
+            # subproject's codebook as "code-own".
             return FakeResult(scalar="code-own" if params["src"] == "code-source" else None)
         if sql.strip().startswith("update mention_groups"):
             for p in params:
@@ -230,11 +276,10 @@ def test_semantic_cache_searches_source_round_when_homologated():
         lookup_calls.append(codebook_ids)
         return {"code_id": "code-source", "codebook_id": "cb-source", "similarity": 0.95}
 
-    db = FakeSession(coding_type="reasons", execute=fake_execute)
+    db = FakeSession(execute=fake_execute)
 
-    with patch("app.pipeline.process.semantic_cache.lookup", side_effect=fake_lookup), \
-         patch("app.repositories._current_codebook_id", side_effect=fake_current_codebook_id):
-        result = _apply_semantic_cache(db, "own-round", "reasons")
+    with patch("app.pipeline.process.semantic_cache.lookup", side_effect=fake_lookup):
+        result = _apply_semantic_cache(db, SUBPROJECT_REASONS, "reasons")
 
     assert lookup_calls == [["cb-own", "cb-source"]]
     assert result == {"groups_classified": 1}
@@ -247,13 +292,14 @@ def test_semantic_cache_skips_hit_when_no_inherited_code_found():
     group_id = "group-1"
     mention_groups = {group_id: {"normalized_text": "muy fresco", "status": "pending_review"}}
 
-    def fake_current_codebook_id(db, round_id):
-        return "cb-source" if round_id == "source-round" else "cb-own"
-
     def fake_execute(stmt, params=None):
         sql = str(stmt)
+        if "codebook_id, round_id from subprojects" in sql:
+            return FakeResult(mapping_rows=[{"codebook_id": "cb-own", "round_id": "own-round"}])
         if "origin_mode, source_round_id from rounds" in sql:
             return FakeResult(mapping_rows=[{"origin_mode": "homologated", "source_round_id": "source-round"}])
+        if "codebook_id from subprojects where round_id" in sql:
+            return FakeResult(scalar="cb-source" if params["round"] == "source-round" else "cb-own")
         if "select id, normalized_text from mention_groups" in sql:
             rows = [{"id": gid, "normalized_text": g["normalized_text"]} for gid, g in mention_groups.items()]
             return FakeResult(mapping_rows=rows)
@@ -261,13 +307,13 @@ def test_semantic_cache_skips_hit_when_no_inherited_code_found():
             return FakeResult(scalar=None)
         return FakeResult()
 
-    db = FakeSession(coding_type="reasons", execute=fake_execute)
+    db = FakeSession(execute=fake_execute)
 
     with patch(
         "app.pipeline.process.semantic_cache.lookup",
         return_value={"code_id": "code-source", "codebook_id": "cb-source", "similarity": 0.95},
-    ), patch("app.repositories._current_codebook_id", side_effect=fake_current_codebook_id):
-        result = _apply_semantic_cache(db, "own-round", "reasons")
+    ):
+        result = _apply_semantic_cache(db, SUBPROJECT_REASONS, "reasons")
 
     assert result == {"groups_classified": 0}
     assert mention_groups[group_id]["status"] == "pending_review"

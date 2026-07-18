@@ -37,7 +37,7 @@ class FakeSession:
     def execute(self, stmt, params=None):
         sql = str(stmt)
         self.executed.append((sql, params))
-        if "select st.coding_type" in sql:
+        if "coding_type from subprojects" in sql:
             return FakeResult(scalar=self._coding_type)
         if "from codes c" in sql:
             return FakeResult(rows=self._codes)

@@ -33,57 +33,45 @@ def _classify_batch_with_retry(codebook: list[dict], payload: list[dict], coding
         return classify_batch(codebook, payload, coding_type)
 
 
-def classify_round(db: Session, round_id: uuid.UUID) -> dict:
-    """Classifies pending mention_groups of a round against its codebook using the local LLM.
+def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
+    """Classifies pending mention_groups of a subproject against its codebook using the local LLM.
 
     Reads the exact-match dedup groups that import already built (build_mention_groups),
-    then resolves whatever's still 'pending_review' — the same engine serves reasons rounds
-    (all groups, triggered automatically after import) and the brand fuzzy-match leftovers
-    (whatever a future alias-matching pass doesn't resolve), per docs/ideas/verbatix-sharpen.md.
+    then resolves whatever's still 'pending_review' — the same engine serves reasons
+    subprojects (all groups, triggered automatically after import) and the brand
+    fuzzy-match leftovers (whatever a future alias-matching pass doesn't resolve), per
+    docs/ideas/verbatix-sharpen.md.
     """
     run_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into processing_runs (id, round_id, run_type, algorithm, status, started_at)
-            values (:id, :round, 'initial', 'llm_structured_output', 'running', now())
+            insert into processing_runs (id, subproject_id, run_type, algorithm, status, started_at)
+            values (:id, :sp, 'initial', 'llm_structured_output', 'running', now())
         """),
-        {"id": run_id, "round": round_id},
+        {"id": run_id, "sp": subproject_id},
     )
     db.commit()
 
     coding_type = db.execute(
-        text("""
-            select st.coding_type
-            from rounds r
-            join studio st on st.id = r.studio_id
-            where r.id = :round
-        """),
-        {"round": round_id},
+        text("select coding_type from subprojects where id = :sp"),
+        {"sp": subproject_id},
     ).scalar()
 
-    # Solo el codebook más reciente: con varias versiones, traerlas todas duplica
-    # code_numbers y el dict de abajo se queda con el code_id de la versión vieja.
+    # Solo el codebook del subproyecto (ya resuelto, sin necesidad de "latest
+    # version" — subprojects.codebook_id apunta directo al vigente).
     codes = db.execute(
         text("""
-            with latest as (
-              select id from codebooks
-              where round_id = :round
-              order by version desc
-              limit 1
-            )
             select c.id, c.code_number, c.label, n.name as net_name, c.system_type,
                    array(
                        select alias_sample from code_aliases a
                        where a.code_id = c.id and a.alias_sample is not null
                    ) as aliases
             from codes c
-            join latest l on l.id = c.codebook_id
-            left join net_codes nc on nc.code_id = c.id
-            left join nets n on n.id = nc.net_id
-            where c.is_active
+            join subprojects sp on sp.codebook_id = c.codebook_id
+            where sp.id = :sp and c.is_active
             order by c.code_number
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
     codes_by_number = {c["code_number"]: c["id"] for c in codes}
     # system_type 'anomaly' (code 95, "Menciones confusas/Incorrectas") means the LLM itself
@@ -102,9 +90,9 @@ def classify_round(db: Session, round_id: uuid.UUID) -> dict:
     groups = db.execute(
         text("""
             select id, sample_text from mention_groups
-            where round_id = :round and status = 'pending_review'
+            where subproject_id = :sp and status = 'pending_review'
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
     groups_by_id = {str(g["id"]): g for g in groups}
 

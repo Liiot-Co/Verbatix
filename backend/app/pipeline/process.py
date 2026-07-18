@@ -1,4 +1,6 @@
-"""Fase 2 — "el motor propone". Dispatcha por coding_type del estudio (Study):
+"""Fase 2 — "el motor propone". Cada Ronda tiene 2 Subproyectos (Marcas y Razones,
+sección 2.5 del documento v8) y cada uno se procesa por separado, dispatchando por su
+propio coding_type:
 
   brands  -> fuzzy contra el catálogo de aliases (pipeline.fuzzy)
   reasons -> LLM structured output (pipeline.llm.classify_round)
@@ -24,36 +26,40 @@ from app.pipeline.llm import classify_round
 from app.pipeline.semantic import cache as semantic_cache
 
 
-def _process_brands(db: Session, round_id: uuid.UUID, threshold: float) -> dict:
+def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> dict:
     groups = db.execute(
         text("""
             select id, normalized_text from mention_groups
-            where round_id = :round and status = 'pending_review'
+            where subproject_id = :sp and status = 'pending_review'
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
 
-    # El catálogo sale del codebook cuando existe. Si la ronda no trae libro de
-    # códigos, se deriva de la frecuencia: las marcas que superan el mínimo de
+    # El catálogo sale del codebook cuando existe. Si el subproyecto no trae libro
+    # de códigos, se deriva de la frecuencia: las marcas que superan el mínimo de
     # menciones se vuelven semillas y el fuzzy arrastra sus typos hacia ellas.
-    catalog = load_catalog_aliases(db, round_id)
+    catalog = load_catalog_aliases(db, subproject_id)
     min_mentions = None
     if not catalog:
         min_mentions = db.execute(
-            text("select min_mentions_threshold from rounds where id = :round"),
-            {"round": round_id},
+            text("""
+                select r.min_mentions_threshold from rounds r
+                join subprojects sp on sp.round_id = r.id
+                where sp.id = :sp
+            """),
+            {"sp": subproject_id},
         ).scalar()
-        catalog = discover_catalog_from_frequency(db, round_id, min_mentions, threshold)
+        catalog = discover_catalog_from_frequency(db, subproject_id, min_mentions, threshold)
 
     run_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into processing_runs (id, round_id, run_type, algorithm, min_mentions_threshold, status, started_at)
-            values (:id, :round, 'initial', :algo, :thr, 'running', now())
+            insert into processing_runs (id, subproject_id, run_type, algorithm, min_mentions_threshold, status, started_at)
+            values (:id, :sp, 'initial', :algo, :thr, 'running', now())
         """),
         {
             "id": run_id,
-            "round": round_id,
+            "sp": subproject_id,
             "algo": "fuzzy_frequency" if min_mentions is not None else "fuzzy_dictionary",
             "thr": min_mentions,
         },
@@ -134,7 +140,7 @@ def _process_brands(db: Session, round_id: uuid.UUID, threshold: float) -> dict:
     return {"run_id": str(run_id), "groups_classified": auto_coded, "anomalies": anomalies, "total": len(groups)}
 
 
-def _apply_semantic_cache(db: Session, round_id: uuid.UUID, coding_type: str) -> dict:
+def _apply_semantic_cache(db: Session, subproject_id: uuid.UUID, coding_type: str) -> dict:
     """Antes de mandar razones al LLM, busca cada mention_group pendiente en el
     caché semántico (Task C2 lo escribe): un hit por encima del umbral se
     auto-codifica sin tocar el LLM. Solo aplica a razones — para marcas el
@@ -143,32 +149,37 @@ def _apply_semantic_cache(db: Session, round_id: uuid.UUID, coding_type: str) ->
     if coding_type != "reasons":
         return {"groups_classified": 0}
 
-    # Import local: mismo motivo que en _prefilter_garbage (evita import circular).
-    from app.repositories import _current_codebook_id
-
-    codebook_id = _current_codebook_id(db, round_id)
+    sp_row = db.execute(
+        text("select codebook_id, round_id from subprojects where id = :sp"),
+        {"sp": subproject_id},
+    ).mappings().first()
+    codebook_id = sp_row["codebook_id"] if sp_row else None
     if codebook_id is None:
         return {"groups_classified": 0}
 
-    # Arranque en caliente (Task C4): una ronda homologada busca también en el
-    # codebook de su ronda origen, para tener hits desde el primer procesamiento
-    # en vez de esperar a que su propio caché se llene.
+    # Arranque en caliente (Task C4): un subproyecto homologado busca también en
+    # el codebook del subproyecto equivalente (mismo coding_type) de su ronda
+    # origen, para tener hits desde el primer procesamiento en vez de esperar a
+    # que su propio caché se llene.
     codebook_ids = [codebook_id]
     round_row = db.execute(
         text("select origin_mode, source_round_id from rounds where id = :id"),
-        {"id": round_id},
+        {"id": sp_row["round_id"]},
     ).mappings().first()
     if round_row and round_row["origin_mode"] == "homologated" and round_row["source_round_id"]:
-        source_codebook_id = _current_codebook_id(db, round_row["source_round_id"])
+        source_codebook_id = db.execute(
+            text("select codebook_id from subprojects where round_id = :round and coding_type = :ct"),
+            {"round": round_row["source_round_id"], "ct": coding_type},
+        ).scalar()
         if source_codebook_id:
             codebook_ids.append(source_codebook_id)
 
     groups = db.execute(
         text("""
             select id, normalized_text from mention_groups
-            where round_id = :round and status = 'pending_review'
+            where subproject_id = :sp and status = 'pending_review'
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     ).mappings().all()
 
     hits = []
@@ -180,9 +191,9 @@ def _apply_semantic_cache(db: Session, round_id: uuid.UUID, coding_type: str) ->
         if match["codebook_id"] != codebook_id:
             # code_id no se comparte entre codebooks clonados (ver
             # repositories.clone_codebook) — hay que remapear al code
-            # equivalente en el propio codebook de esta ronda. Sin match, la
-            # ronda origen no tiene un code inherited de ese id: se deja pasar
-            # al LLM en vez de escribir una referencia cruzada inválida.
+            # equivalente en el propio codebook de este subproyecto. Sin match,
+            # el subproyecto origen no tiene un code inherited de ese id: se deja
+            # pasar al LLM en vez de escribir una referencia cruzada inválida.
             own_code_id = db.execute(
                 text("select id from codes where codebook_id = :cb and inherited_from_code_id = :src"),
                 {"cb": codebook_id, "src": code_id},
@@ -198,10 +209,10 @@ def _apply_semantic_cache(db: Session, round_id: uuid.UUID, coding_type: str) ->
     run_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into processing_runs (id, round_id, run_type, algorithm, status, started_at)
-            values (:id, :round, 'initial', 'semantic_cache', 'running', now())
+            insert into processing_runs (id, subproject_id, run_type, algorithm, status, started_at)
+            values (:id, :sp, 'initial', 'semantic_cache', 'running', now())
         """),
-        {"id": run_id, "round": round_id},
+        {"id": run_id, "sp": subproject_id},
     )
     db.execute(
         text("""
@@ -237,32 +248,30 @@ def _apply_semantic_cache(db: Session, round_id: uuid.UUID, coding_type: str) ->
     return {"groups_classified": len(hits)}
 
 
-def _prefilter_garbage(db: Session, round_id: uuid.UUID) -> int:
+def _prefilter_garbage(db: Session, subproject_id: uuid.UUID) -> int:
     # Ruido real (largo <= 2 o números sueltos): no hay nada que resolver, a revisión manual.
     garbage_res = db.execute(
         text("""
             update mention_groups
             set status = 'anomaly'
-            where round_id = :round
+            where subproject_id = :sp
             and status = 'pending_review'
             and (
                 length(normalized_text) <= 2
                 or normalized_text in ('uno', 'dos', 'tres')
             )
         """),
-        {"round": round_id},
+        {"sp": subproject_id},
     )
 
     # "ninguna"/"no sabe"/"no recuerda" y sus variantes (SYSTEM_ALIAS_VARIANTS) sí
     # dicen algo: van directo a su código de sistema (96/98/99), auto_coded, en vez
     # de esperar revisión manual en la cola.
-    # Import local: app.repositories importa app.pipeline.normalize, que dispara
-    # app.pipeline.__init__ (importa este módulo) — un import a nivel de módulo
-    # aquí sería circular.
-    from app.repositories import _current_codebook_id
-
     resolved = 0
-    cb_id = _current_codebook_id(db, round_id)
+    cb_id = db.execute(
+        text("select codebook_id from subprojects where id = :sp"),
+        {"sp": subproject_id},
+    ).scalar()
     if cb_id is not None:
         system_codes = db.execute(
             text("select id, system_type from codes where codebook_id = :cb and is_system = true"),
@@ -277,10 +286,10 @@ def _prefilter_garbage(db: Session, round_id: uuid.UUID) -> int:
             groups = db.execute(
                 text("""
                     select id from mention_groups
-                    where round_id = :round and status = 'pending_review'
+                    where subproject_id = :sp and status = 'pending_review'
                     and normalized_text = any(:variants)
                 """),
-                {"round": round_id, "variants": list(variants)},
+                {"sp": subproject_id, "variants": list(variants)},
             ).mappings().all()
             if not groups:
                 continue
@@ -312,40 +321,58 @@ def _prefilter_garbage(db: Session, round_id: uuid.UUID) -> int:
     return garbage_res.rowcount + resolved
 
 
-def process_round(db: Session, round_id: uuid.UUID, threshold: float = SCORE_THRESHOLD) -> dict:
-    coding_type = db.execute(
-        text("""
-            select st.coding_type
-            from rounds r
-            join studio st on st.id = r.studio_id
-            where r.id = :id
-        """),
-        {"id": round_id},
-    ).scalar()
-    if coding_type is None:
-        raise LookupError(f"Ronda no encontrada: {round_id}")
+def _process_subproject(db: Session, subproject_id: uuid.UUID, coding_type: str, threshold: float) -> dict:
+    """Un subproyecto (Marcas o Razones) de punta a punta: prefiltro -> motor
+    correspondiente a su propio coding_type -> lo que quede pending_review al LLM."""
+    _prefilter_garbage(db, subproject_id)
 
-    # Step 0: Bypass LLM for obvious garbage strings to save cost and reduce noise
-    filtered_count = _prefilter_garbage(db, round_id)
+    if coding_type == "brands":
+        # Marcas primero: fuzzy puro, determinista (ver docstring del módulo).
+        # Para razones el fuzzy da falsos positivos (ver fuzzy/matcher.py) — esas
+        # van directo al caché semántico + LLM, nunca al catálogo fuzzy.
+        fuzzy_result = _process_brands(db, subproject_id, threshold)
+    else:
+        fuzzy_result = {"run_id": None, "groups_classified": 0, "anomalies": 0, "total": 0}
 
-    # Step 1: Run fuzzy matching to auto-code exact/close matches from the catalog
-    fuzzy_result = _process_brands(db, round_id, threshold)
+    cache_result = _apply_semantic_cache(db, subproject_id, coding_type)
 
-    # Step 2 (reasons only): near-identical text already seen and LLM-approved
-    # before -> auto-code from the semantic cache without spending an LLM call.
-    cache_result = _apply_semantic_cache(db, round_id, coding_type)
+    # Lo que no matcheó por fuzzy/caché sigue 'pending_review'. Al LLM.
+    llm_result = classify_round(db, subproject_id)
 
-    # Step 3: Whatever didn't match stays 'pending_review'. Hand those to the LLM.
-    llm_result = classify_round(db, round_id)
-
-    result = {
-        "run_id": fuzzy_result["run_id"],
+    return {
+        "run_id": fuzzy_result["run_id"] or llm_result["run_id"],
         "llm_run_id": llm_result["run_id"],
         "groups_classified": (
             fuzzy_result["groups_classified"] + cache_result["groups_classified"] + llm_result["groups_classified"]
         ),
         "anomalies": llm_result["anomalies"],
-        "total": fuzzy_result["total"],
+        "total": fuzzy_result["total"] + llm_result["total"],
+    }
+
+
+def process_round(db: Session, round_id: uuid.UUID, threshold: float = SCORE_THRESHOLD) -> dict:
+    """Resuelve los 2 subproyectos de la ronda (Marcas + Razones) y corre la
+    clasificación en cada uno por separado, sumando sus estadísticas (sección
+    2.5 del documento v8: la unidad de procesamiento es el Subproyecto, no la
+    Ronda). Mantiene la firma por round_id para minimizar cambios en callers."""
+    subprojects = db.execute(
+        text("select id, coding_type from subprojects where round_id = :round"),
+        {"round": round_id},
+    ).mappings().all()
+    if not subprojects:
+        raise LookupError(f"Ronda no encontrada o sin subproyectos: {round_id}")
+
+    results = [
+        _process_subproject(db, sp["id"], sp["coding_type"], threshold)
+        for sp in subprojects
+    ]
+
+    result = {
+        "run_id": results[0]["run_id"],
+        "llm_run_id": results[0]["llm_run_id"],
+        "groups_classified": sum(r["groups_classified"] for r in results),
+        "anomalies": sum(r["anomalies"] for r in results),
+        "total": sum(r["total"] for r in results),
     }
 
     db.execute(

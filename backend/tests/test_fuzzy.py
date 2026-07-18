@@ -145,7 +145,7 @@ class _FreqSession:
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
-        if "from codebooks" in sql:
+        if "codebook_id from subprojects" in sql:
             return _FreqResult(scalar=self._codebook_id)
         if "from mention_groups" in sql:
             return _FreqResult(rows=self._seeds)
