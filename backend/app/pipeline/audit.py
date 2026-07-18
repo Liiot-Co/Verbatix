@@ -16,7 +16,6 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.repositories import (
-    _current_codebook_id,
     assign_codes_to_verbatim,
     create_audit_code_review,
     create_audit_item,
@@ -52,6 +51,17 @@ class AuditPrecondition(Exception):
     """Falta una precondición de negocio: resolución incompleta o target no alcanzado."""
 
 
+def _subproject_context(db: Session, subproject_id: uuid.UUID) -> dict | None:
+    """round_id + codebook_id del subproyecto — audit_logs.round_id no bajó de
+    nivel en la migración v8 (a diferencia de audit_sessions/processing_runs),
+    así que loggear una acción de auditoría necesita resolverlo aparte."""
+    row = db.execute(
+        text("select round_id, codebook_id from subprojects where id = :id"),
+        {"id": subproject_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
 def select_sample(population: list[dict], pct: float, seed: int) -> list[dict]:
     """Muestra GLOBAL sobre toda la población codificada: n = ceil(total * pct/100).
 
@@ -71,25 +81,24 @@ def select_sample(population: list[dict], pct: float, seed: int) -> list[dict]:
     return sorted(population, key=sample_key)[:n]
 
 
-def start_audit_session(db: Session, round_id: uuid.UUID, *, user_id, resample: bool = False) -> dict:
-    """Crea o reanuda (idempotente) la sesión de auditoría de la ronda.
+def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resample: bool = False) -> dict:
+    """Crea o reanuda (idempotente) la sesión de auditoría del subproyecto.
 
     Reabrir no re-muestrea ni pierde progreso. Con resample=True y una sesión
     desactualizada (hubo un run del motor posterior al muestreo) se crea una
     sesión NUEVA anclada al último run — la vieja queda como constancia, nunca
     se borra en silencio.
     """
-    exists = db.execute(
-        text("select 1 from rounds where id = :id"), {"id": round_id}
-    ).scalar()
-    if not exists:
-        raise LookupError("Ronda no existe")
+    ctx = _subproject_context(db, subproject_id)
+    if not ctx:
+        raise LookupError("Subproyecto no existe")
+    round_id = ctx["round_id"]
 
-    existing = get_audit_summary(db, round_id)
+    existing = get_audit_summary(db, subproject_id)
     if existing and not (resample and existing["is_stale"] and existing["status"] != "approved"):
         return existing
 
-    summary = get_resolution_summary(db, round_id)
+    summary = get_resolution_summary(db, subproject_id)
     if not summary["can_close"]:
         raise AuditPrecondition(
             f"Hay {summary['pending']} grupos sin resolver en el Centro de Resolución"
@@ -101,18 +110,18 @@ def start_audit_session(db: Session, round_id: uuid.UUID, *, user_id, resample: 
 
     # Semilla reproducible: la del último run; si el motor no la persistió, se
     # genera una acá y se guarda para que re-muestrear dé siempre lo mismo.
-    run = get_latest_processing_run(db, round_id)
+    run = get_latest_processing_run(db, subproject_id)
     seed = run["random_seed"] if run else None
     if seed is None:
         seed = random.randint(1, 2**31 - 1)
         if run:
             set_run_random_seed(db, uuid.UUID(run["id"]), seed)
 
-    population = get_coded_population(db, round_id)
+    population = get_coded_population(db, subproject_id)
     sample = select_sample(population, pct, seed)
 
     session_id = create_audit_session(
-        db, round_id, run["id"] if run else None, pct, len(sample)
+        db, subproject_id, run["id"] if run else None, pct, len(sample)
     )
 
     # La muestra es global; los audit_code_reviews son la capa de agrupación para
@@ -139,7 +148,7 @@ def start_audit_session(db: Session, round_id: uuid.UUID, *, user_id, resample: 
         },
     )
     db.commit()
-    return get_audit_summary(db, round_id)
+    return get_audit_summary(db, subproject_id)
 
 
 def review_item(
@@ -177,9 +186,10 @@ def review_item(
         code_ids = [uuid.UUID(c) for c in (decision.get("code_ids") or [])]
         new_code = decision.get("new_code")
         if new_code:
-            cb_id = _current_codebook_id(db, uuid.UUID(item["round_id"]))
+            ctx = _subproject_context(db, uuid.UUID(item["subproject_id"]))
+            cb_id = ctx["codebook_id"] if ctx else None
             if not cb_id:
-                raise LookupError("Ronda no tiene codebook")
+                raise LookupError("Subproyecto no tiene codebook")
             new_code_result = create_code(db, cb_id, new_code["label"], new_code.get("net_id"), user_id)
             code_ids.append(uuid.UUID(new_code_result["id"]))
         if not code_ids:
@@ -208,8 +218,10 @@ def review_item(
         raise ValueError(f"Acción inválida: {action!r}")
 
     progress = refresh_audit_session_progress(db, item["session_id"])
+    subproject_id = uuid.UUID(item["subproject_id"])
+    ctx = _subproject_context(db, subproject_id)
     log_action(
-        db, user_id, uuid.UUID(item["round_id"]), "audit_item", item_id, f"audit:{action}",
+        db, user_id, ctx["round_id"], "audit_item", item_id, f"audit:{action}",
         old_value={"status": item["status"], "codes_snapshot": item["codes_snapshot"]},
         new_value={
             "status": new_status,
@@ -225,7 +237,7 @@ def review_item(
         "status": new_status,
         "already_reviewed": False,
         "new_code": new_code_result,
-        "summary": {**get_audit_summary(db, item["round_id"]), **progress},
+        "summary": {**get_audit_summary(db, subproject_id), **progress},
     }
 
 
@@ -245,8 +257,9 @@ def update_item(
         raise AuditConflict("La auditoría ya fue aprobada; no admite más cambios")
 
     update_audit_item_review(db, item_id, item["status"], comment, user_id)
+    ctx = _subproject_context(db, uuid.UUID(item["subproject_id"]))
     log_action(
-        db, user_id, uuid.UUID(item["round_id"]), "audit_item", item_id, "audit:edit",
+        db, user_id, ctx["round_id"], "audit_item", item_id, "audit:edit",
         old_value={"comment": item["comment"]},
         new_value={"comment": comment},
     )
@@ -264,19 +277,21 @@ def approve_code_review(db: Session, review_id: uuid.UUID, *, user_id) -> dict:
     if review["session_status"] == "approved":
         raise AuditConflict("La auditoría ya fue aprobada; no admite más revisiones")
 
+    subproject_id = uuid.UUID(review["subproject_id"])
     if review["status"] != "pending" and review["pending_items"] == 0:
         # Doble-submit: la sección ya estaba cerrada.
         return {
             "review_id": review["id"], "status": review["status"],
             "items_marked": 0, "already_approved": True,
-            "summary": get_audit_summary(db, review["round_id"]),
+            "summary": get_audit_summary(db, subproject_id),
         }
 
     marked = mark_review_items_correct(db, review_id, user_id)
     status = set_code_review_result(db, review_id, user_id)
     progress = refresh_audit_session_progress(db, review["session_id"])
+    ctx = _subproject_context(db, subproject_id)
     log_action(
-        db, user_id, uuid.UUID(review["round_id"]), "audit_code_review", review_id,
+        db, user_id, ctx["round_id"], "audit_code_review", review_id,
         "audit:approve_section",
         old_value={"status": review["status"], "pending_items": review["pending_items"]},
         new_value={"status": status, "items_marked": marked},
@@ -288,18 +303,18 @@ def approve_code_review(db: Session, review_id: uuid.UUID, *, user_id) -> dict:
         "status": status,
         "items_marked": marked,
         "already_approved": False,
-        "summary": {**get_audit_summary(db, review["round_id"]), **progress},
+        "summary": {**get_audit_summary(db, subproject_id), **progress},
     }
 
 
-def approve_session(db: Session, round_id: uuid.UUID, *, user_id) -> dict:
+def approve_session(db: Session, subproject_id: uuid.UUID, *, user_id) -> dict:
     """Cierra la auditoría: exige target_met (o muestra vacía) y deja la ronda
     en 'audit_approved' — el estado que el dashboard futuro leerá como "Auditado"."""
-    session = get_audit_session(db, round_id)
+    session = get_audit_session(db, subproject_id)
     if not session:
-        raise LookupError("La ronda no tiene sesión de auditoría")
+        raise LookupError("El subproyecto no tiene sesión de auditoría")
     if session["status"] == "approved":
-        return {**get_audit_summary(db, round_id), "already_approved": True}
+        return {**get_audit_summary(db, subproject_id), "already_approved": True}
 
     if session["reviewed_items"] < session["total_items"]:
         raise AuditPrecondition(
@@ -307,13 +322,14 @@ def approve_session(db: Session, round_id: uuid.UUID, *, user_id) -> dict:
             f"({session['reviewed_items']}/{session['total_items']})"
         )
 
+    ctx = _subproject_context(db, subproject_id)
     finalize_audit_session(db, session["id"], user_id)
-    set_round_status(db, round_id, "audit_approved")
+    set_round_status(db, ctx["round_id"], "audit_approved")
     log_action(
-        db, user_id, round_id, "audit_session", uuid.UUID(session["id"]), "audit:approve",
+        db, user_id, ctx["round_id"], "audit_session", uuid.UUID(session["id"]), "audit:approve",
         old_value={"status": session["status"]},
         new_value={"status": "approved", "reviewed_items": session["reviewed_items"],
                    "total_items": session["total_items"]},
     )
     db.commit()
-    return {**get_audit_summary(db, round_id), "already_approved": False}
+    return {**get_audit_summary(db, subproject_id), "already_approved": False}
