@@ -18,19 +18,46 @@ from sqlalchemy.orm import relationship, declarative_base
 Base = declarative_base()
 
 
-class Profile(Base):
-    __tablename__ = "profiles"
+class User(Base):
+    __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String, nullable=False)
     name = Column(String, nullable=True)
-    role = Column(String, nullable=False, default="analyst")
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
     projects = relationship("Project", back_populates="creator")
     rounds = relationship("Round", back_populates="creator")
+    roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserRole(Base):
+    __tablename__ = "user_roles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role_code = Column(String, nullable=False)  # 'admin' | 'codificador' | 'supervisor'
+
+    # Relationships
+    user = relationship("User", back_populates="roles")
+
+    __table_args__ = (UniqueConstraint("user_id", "role_code", name="user_roles_user_id_role_code_key"),)
+
+
+class Assignment(Base):
+    __tablename__ = "assignments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role_context = Column(String, nullable=False)  # 'codificador' | 'supervisor'
+    status = Column(String, nullable=False, default="active")
+    assigned_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("project_id", "user_id", name="assignments_project_id_user_id_key"),)
 
 
 class Proyecto(Base):
@@ -40,7 +67,7 @@ class Proyecto(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -55,12 +82,12 @@ class Project(Base):
     external_code = Column(String, unique=True, nullable=True)
     name = Column(String, nullable=False)
     proyecto_id = Column(UUID(as_uuid=True), ForeignKey("proyectos.id"), nullable=True)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    creator = relationship("Profile", back_populates="projects")
+    creator = relationship("User", back_populates="projects")
     proyecto = relationship("Proyecto", back_populates="projects")
     studios = relationship("Studio", back_populates="project", cascade="all, delete-orphan")
     categories = relationship("Category", back_populates="project", cascade="all, delete-orphan")
@@ -122,7 +149,7 @@ class Studio(Base):
     name = Column(String, nullable=False)  # 'Marcas' | 'Razones'
     coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
     survey_question = Column(Text, nullable=True)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -145,13 +172,13 @@ class Round(Base):
     audit_percentage = Column(Numeric(5, 2), nullable=False, default=10.00)
     origin_mode = Column(String, nullable=False, default="from_scratch")  # 'from_scratch' | 'homologated'
     source_round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id"), nullable=True)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     studio = relationship("Studio", back_populates="rounds")
-    creator = relationship("Profile", back_populates="rounds")
+    creator = relationship("User", back_populates="rounds")
     imported_files = relationship("ImportedFile", back_populates="round", cascade="all, delete-orphan")
     verbatims = relationship("Verbatim", back_populates="round", cascade="all, delete-orphan")
     mention_groups = relationship("MentionGroup", back_populates="round", cascade="all, delete-orphan")
@@ -172,7 +199,7 @@ class ImportedFile(Base):
     total_rows = Column(Integer, nullable=True)
     status = Column(String, nullable=False, default="uploaded")
     error_log = Column(JSON, nullable=True)
-    uploaded_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
@@ -189,7 +216,7 @@ class Codebook(Base):
     parent_codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id"), nullable=True)
     imported_from_file_id = Column(UUID(as_uuid=True), ForeignKey("imported_files.id"), nullable=True)
     status = Column(String, nullable=False, default="draft")
-    approved_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
@@ -208,7 +235,7 @@ class Code(Base):
     system_type = Column(String, nullable=True)
     inherited_from_code_id = Column(UUID(as_uuid=True), ForeignKey("codes.id"), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     __table_args__ = (UniqueConstraint("codebook_id", "code_number", name="codes_codebook_id_code_number_key"),)
@@ -225,7 +252,7 @@ class CodeAlias(Base):
     occurrences = Column(Integer, default=1)
     origin = Column(String, nullable=False, default="analyst_manual")
     match_score = Column(Numeric(4, 3), nullable=True)
-    approved_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
@@ -241,7 +268,7 @@ class Net(Base):
     name = Column(String, nullable=False)
     origin = Column(String, nullable=False, default="analyst_manual")
     display_order = Column(Integer, nullable=False, default=0)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
@@ -276,7 +303,7 @@ class ProcessingRun(Base):
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
-    executed_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    executed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 
@@ -291,7 +318,7 @@ class MentionGroup(Base):
     status = Column(String, nullable=False, default="pending_review")
     suggested_code_id = Column(UUID(as_uuid=True), ForeignKey("codes.id"), nullable=True)
     created_by_run_id = Column(UUID(as_uuid=True), ForeignKey("processing_runs.id", ondelete="SET NULL"), nullable=True)
-    resolved_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    resolved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
@@ -339,7 +366,7 @@ class VerbatimCode(Base):
     confidence_score = Column(Numeric(4, 3), nullable=True)
     matched_alias = Column(String, nullable=True)
     processing_run_id = Column(UUID(as_uuid=True), ForeignKey("processing_runs.id", ondelete="SET NULL"), nullable=True)
-    assigned_by = Column(UUID(as_uuid=True), ForeignKey("profiles.id"), nullable=True)
+    assigned_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
