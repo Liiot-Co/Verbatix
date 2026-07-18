@@ -7,6 +7,8 @@ import { studioStatusLabel } from "@/lib/studioStatus";
 
 interface StudioHeaderProps {
   studio: RoundStatus;
+  canManageRound: boolean;
+  canViewReport: boolean;
   autoProcessing: boolean;
   neverProcessed: boolean;
   isProcessingNow: boolean;
@@ -15,6 +17,8 @@ interface StudioHeaderProps {
 
 export function StudioHeader({
   studio,
+  canManageRound,
+  canViewReport,
   autoProcessing,
   neverProcessed,
   isProcessingNow,
@@ -31,7 +35,7 @@ export function StudioHeader({
         </p>
       </div>
       <div className="flex items-center gap-2">
-        {hasReportAccess(studio.status) && (
+        {canViewReport && hasReportAccess(studio.status) && (
           <Link
             to={`/rounds/${studio.id}/report`}
             className="btn-ghost text-sm py-2 inline-flex items-center gap-1.5"
@@ -50,31 +54,33 @@ export function StudioHeader({
             En vivo
           </span>
         )}
-        <motion.button
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          className={neverProcessed ? "btn-primary text-sm py-2" : "btn-ghost text-sm py-2"}
-          disabled={isProcessingNow}
-          onClick={onProcess}
-          title={
-            autoProcessing
-              ? "El motor ya está codificando en segundo plano"
-              : neverProcessed
-              ? "Codificar automáticamente"
-              : "Volver a correr el motor sobre lo pendiente"
-          }
-        >
-          {isProcessingNow ? (
-            <motion.span
-              animate={{ rotate: 360 }}
-              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-              className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full"
-            />
-          ) : (
-            <RefreshCw className="w-4 h-4" />
-          )}
-          {isProcessingNow ? "Procesando..." : neverProcessed ? "Procesar" : "Reprocesar"}
-        </motion.button>
+        {canManageRound && (
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            className={neverProcessed ? "btn-primary text-sm py-2" : "btn-ghost text-sm py-2"}
+            disabled={isProcessingNow}
+            onClick={onProcess}
+            title={
+              autoProcessing
+                ? "El motor ya está codificando en segundo plano"
+                : neverProcessed
+                ? "Codificar automáticamente"
+                : "Volver a correr el motor sobre lo pendiente"
+            }
+          >
+            {isProcessingNow ? (
+              <motion.span
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full"
+              />
+            ) : (
+              <RefreshCw className="w-4 h-4" />
+            )}
+            {isProcessingNow ? "Procesando..." : neverProcessed ? "Procesar" : "Reprocesar"}
+          </motion.button>
+        )}
       </div>
     </div>
   );

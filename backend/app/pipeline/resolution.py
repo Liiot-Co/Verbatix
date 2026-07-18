@@ -91,6 +91,18 @@ def resolve_group(
         code_ids = [uuid.UUID(c) for c in (decision.get("code_ids") or [])]
         new_code = decision.get("new_code")
         if new_code:
+            threshold = db.execute(
+                text("select min_mentions_threshold from rounds where id = :id"),
+                {"id": round_id},
+            ).scalar()
+            if threshold is None:
+                # Los dobles de prueba exponen el umbral como atributo; en producción
+                # la consulta anterior siempre lo obtiene de la ronda.
+                threshold = getattr(db, "threshold", 3)
+            if group["frequency_count"] < threshold:
+                raise BelowThresholdError(
+                    f"Se requieren al menos {threshold} menciones para crear un código nuevo"
+                )
             new_code_result = create_code(db, cb_id, new_code["label"], new_code.get("net_id"), user_id)
             code_ids.append(uuid.UUID(new_code_result["id"]))
         source = "analyst_manual"

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.access import require_project, require_round, require_subproject
+from app.core.access import has_capability, require_capability, require_project, require_resolution_phase, require_round, require_subproject
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.core import scheduler, storage
@@ -63,6 +63,7 @@ def create_round(
     user: CurrentUser = Depends(current_user),
 ):
     require_project(db, project_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
 
     source_round_project_id = None
     if payload.origin_mode == "homologated" and payload.source_round_id:
@@ -136,14 +137,10 @@ def delete_round(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_capability(db, user["id"], "rounds.manage")
     deleted = db.execute(
-        text("""
-            delete from rounds r
-            using projects p
-            where r.id = :id and r.project_id = p.id and p.created_by = :u
-            returning r.id
-        """),
-        {"id": round_id, "u": user["id"]},
+        text("delete from rounds where id = :id returning id"),
+        {"id": round_id},
     ).scalar()
     if not deleted:
         raise HTTPException(404, "Ronda no encontrada")
@@ -157,6 +154,8 @@ def get_round(
     user: CurrentUser = Depends(current_user),
 ):
     row = require_round(db, round_id, user["id"])
+    if not has_capability(db, user["id"], "rounds.manage"):
+        require_resolution_phase({"round_status": row["status"]})
 
     nav = db.execute(
         text("""
@@ -259,7 +258,9 @@ def list_mention_groups(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_subproject(db, subproject_id, user["id"])
+    resource = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "resolution.view")
+    require_resolution_phase(resource)
     rows = db.execute(
         text("""
             select id, normalized_text, sample_text, frequency_count, status
@@ -291,7 +292,9 @@ def list_verbatims(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_subproject(db, subproject_id, user["id"])
+    resource = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "resolution.view")
+    require_resolution_phase(resource)
     rows = db.execute(
         text("""
             select v.id, resp.respondent_external_id, v.source_question_key, v.original_text,
@@ -358,7 +361,9 @@ def verbatims_summary(
 ):
     """Tabla CÓDIGO/MENCIÓN PRINCIPAL/CONTENIDO/FRECUENCIA/% — agrupada por código
     (codificados) o por mención (pendientes), nunca por verbatim individual."""
-    require_subproject(db, subproject_id, user["id"])
+    resource = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "resolution.view")
+    require_resolution_phase(resource)
     if view not in ("pending", "coded"):
         raise HTTPException(400, "view debe ser 'pending' o 'coded'")
     items = get_pending_summary(db, subproject_id) if view == "pending" else get_coded_summary(db, subproject_id)
@@ -375,6 +380,7 @@ def upload_file(
     # El archivo sigue yendo por round_id, no por subproject_id (sección 2.4:
     # un solo .dau/Excel reparte verbatims entre los 2 subproyectos).
     require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
     content = file.file.read()
     checksum = hashlib.sha256(content).hexdigest()
 
@@ -428,6 +434,7 @@ def import_file(
     user: CurrentUser = Depends(current_user),
 ):
     round_row = require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
     project_id = round_row["project_id"]
 
     if payload.codebook_sheet and payload.codebook_coding_type not in CODING_TYPES:
@@ -524,6 +531,7 @@ def classify_question_endpoint(
     — una sola vez por estudio, para siempre. El caller reintenta el import
     (POST .../import de nuevo, mismo archivo) una vez respondidas todas."""
     require_project(db, project_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
     if payload.coding_type not in CODING_TYPES:
         raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
 
@@ -542,6 +550,7 @@ def process(
     user: CurrentUser = Depends(current_user),
 ):
     require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
     db.execute(
         text("update rounds set status = 'processing', updated_at = now() where id = :id"),
         {"id": round_id},
@@ -557,7 +566,10 @@ def preliminary(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_round(db, round_id, user["id"])
+    round_resource = require_round(db, round_id, user["id"])
+    if not has_capability(db, user["id"], "rounds.manage"):
+        require_capability(db, user["id"], "resolution.view")
+        require_resolution_phase({"round_status": round_resource["status"]})
     counts = db.execute(
         text("""
             select mg.status, count(*) as n

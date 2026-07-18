@@ -94,6 +94,14 @@ def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resam
         raise LookupError("Subproyecto no existe")
     round_id = ctx["round_id"]
 
+    # React puede disparar dos bootstrap simultáneos (StrictMode, cambio de
+    # pestaña o doble clic). El lock transaccional hace realmente idempotente la
+    # creación: la segunda petición espera y luego reutiliza la sesión creada.
+    db.execute(
+        text("select pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": str(subproject_id)},
+    )
+
     existing = get_audit_summary(db, subproject_id)
     if existing and not (resample and existing["is_stale"] and existing["status"] != "approved"):
         return existing
