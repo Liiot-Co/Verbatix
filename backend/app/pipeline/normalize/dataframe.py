@@ -4,11 +4,14 @@ Columnas de salida:
     respondent_external_id  — ID del encuestado
     question_key            — pregunta (para reexportar / join a verbatims)
     normalized_text         — verbatim limpio (input del fuzzy)
-    coding_type              — "brands" | "reasons" (del studio, constante en el archivo)
+    coding_type              — "brands" | "reasons" (del subproyecto que recibe este batch)
 
 Marcas vs razones
 -----------------
-Cada studio tiene UN coding_type. El paso 2 lee coding_type del DataFrame y decide:
+Un archivo puede mezclar ambos coding_types (sección 2.5 del documento v8):
+insert_verbatims (repositories.py) reparte cada fila a su subproject_id según
+questions.coding_type y llama esta función una vez por coding_type, con el
+subconjunto de filas ya homogéneo. El paso 2 lee coding_type del DataFrame y decide:
 
   brands  → fuzzy (pipeline.fuzzy) asigna como máximo 1 código por fila
   reasons → se derivan enteras a unmatched para el módulo LLM
