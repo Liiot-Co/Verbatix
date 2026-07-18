@@ -2,8 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Eye, EyeOff, LogIn, Mail, Lock, AlertCircle } from "lucide-react";
-import { login } from "@/api/client";
+import { getMe, login } from "@/api/client";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { writeAuthToken } from "@/lib/tokenStorage";
 
 export default function SignInPage() {
   const navigate = useNavigate();
@@ -22,11 +23,12 @@ export default function SignInPage() {
     setError(null);
     try {
       const res = await login({ email: email.trim(), password });
-      setAuth(res.access_token, { id: res.user.id, email: res.user.email, name: null, role: "analyst", is_active: true, created_at: "" });
+      writeAuthToken(res.access_token);
+      const profile = await getMe();
+      setAuth(res.access_token, profile);
       navigate("/");
     } catch {
-      // El error crudo del backend/Supabase viene en inglés y como texto técnico
-      // (JSON, códigos internos) — no es apto para mostrar tal cual.
+      // El login mantiene un mensaje genérico para no revelar si el correo existe.
       setError("No se pudo iniciar sesión. Revisa tu correo y contraseña.");
     } finally {
       setLoading(false);
@@ -69,7 +71,7 @@ export default function SignInPage() {
         <div className="card p-6 space-y-5">
           <div className="space-y-1">
             <h1 className="font-heading text-xl font-semibold text-p-text tracking-tight">Iniciar sesión</h1>
-            <p className="text-sm text-p-text-muted">Ingresa con tu cuenta de Supabase</p>
+            <p className="text-sm text-p-text-muted">Ingresa con tu cuenta local de Verbatix</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -147,6 +149,10 @@ export default function SignInPage() {
               {loading ? "Ingresando..." : "Ingresar"}
             </motion.button>
           </form>
+
+          <Link to="/forgot-password" className="block text-center text-xs text-p-accent hover:underline">
+            ¿Olvidaste tu contraseña?
+          </Link>
 
           <div className="relative">
             <div className="divider-with-text">

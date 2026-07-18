@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
-import { LayoutDashboard, Wand2, Keyboard, Command, LogOut, ChevronDown, PanelLeftClose, PanelLeft } from "lucide-react";
+import { LayoutDashboard, Wand2, Keyboard, Command, LogOut, ChevronDown, PanelLeftClose, PanelLeft, Users } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { logoutSession } from "@/api/client";
+import { can } from "@/lib/capabilities";
 
 const NAV_ITEMS: { path: string; label: string; icon: typeof LayoutDashboard }[] = [
   { path: "/", label: "Inicio", icon: LayoutDashboard },
@@ -25,7 +27,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useKeyboardShortcuts("global");
 
   useEffect(() => {
-    registerShortcuts("global", [
+    const shortcuts = [
       {
         key: "f",
         meta: true,
@@ -45,16 +47,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         description: "Ir al Dashboard",
         category: "Navegación",
       },
-      {
+    ];
+    if (can(user, "projects.manage")) shortcuts.push({
         key: "n",
         meta: true,
         shift: true,
         action: () => navigate("/wizard"),
         description: "Nuevo proyecto",
         category: "Navegación",
-      },
-    ]);
-  }, [navigate]);
+      });
+    registerShortcuts("global", shortcuts);
+  }, [navigate, user]);
 
   // Close menu on click outside
   useEffect(() => {
@@ -134,8 +137,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   {!collapsed && <span className="flex-1 text-left truncate">{label}</span>}
                 </Link>
               ))}
+              {can(user, "users.manage") && <Link to="/team" className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-p-text-muted hover:text-p-text hover:bg-p-bg-subtle/60"><Users className="w-3.5 h-3.5" />{!collapsed && "Equipo y asignaciones"}</Link>}
             </div>
 
+            {can(user, "projects.manage") && <>
             {!collapsed && (
               <div className="font-subtitle text-[10px] tracking-[0.22em] uppercase text-p-text-faint px-2 pt-4 pb-1.5">
                 Acciones
@@ -149,6 +154,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <Wand2 className="w-3.5 h-3.5 shrink-0" />
               {!collapsed && <span className="flex-1 text-left truncate">Nuevo proyecto</span>}
             </Link>
+            </>}
 
             {/* User section at bottom */}
             <div className="mt-auto border-t border-p-border pt-2">
@@ -181,10 +187,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                       <div className="p-2 space-y-0.5">
                         <div className="px-3 py-2 text-xs text-p-text-muted border-b border-p-border mb-1">
                           <div className="font-medium text-p-text truncate">{user?.email}</div>
-                          <div className="capitalize">{user?.role ?? "analyst"}</div>
+                          <div className="capitalize">{user?.roles.join(" · ") || "Sin roles"}</div>
                         </div>
                         <button
-                          onClick={() => { logout(); navigate("/login"); }}
+                          onClick={async () => { try { await logoutSession(); } finally { logout(); navigate("/login"); } }}
                           className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-p-text-muted hover:text-p-error hover:bg-p-error/10 transition-colors"
                         >
                           <LogOut className="w-3.5 h-3.5" />

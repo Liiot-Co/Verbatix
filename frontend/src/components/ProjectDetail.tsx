@@ -7,11 +7,15 @@ import Breadcrumb from "./Breadcrumb";
 import { roundPhasePath } from "@/lib/projectTree";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { can } from "@/lib/capabilities";
+import ProjectTeamManager from "@/components/ProjectTeamManager";
 
 export default function ProjectDetail() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const setActiveProjectId = useVerbatixStore((s) => s.setActiveProjectId);
+  const user = useVerbatixStore((s) => s.user);
+  const canManageRounds = can(user, "rounds.manage");
 
   const [project, setProject] = useState<ProjectDetailType | null>(null);
   const [loading, setLoading] = useState(true);
@@ -28,8 +32,9 @@ export default function ProjectDetail() {
   }, [projectId, setActiveProjectId]);
 
   useEffect(() => {
-    registerShortcuts("project-detail", [
-      {
+    const shortcuts = [
+    ];
+    if (canManageRounds) shortcuts.push({
         key: "Escape",
         meta: false,
         action: () => navigate("/"),
@@ -43,9 +48,9 @@ export default function ProjectDetail() {
         action: () => navigate(`/wizard?projectId=${projectId ?? ""}`),
         description: "Nueva ronda",
         category: "Acciones",
-      },
-    ]);
-  }, [navigate, projectId]);
+      });
+    registerShortcuts("project-detail", shortcuts);
+  }, [canManageRounds, navigate, projectId]);
   useKeyboardShortcuts("project-detail");
 
   if (loading) {
@@ -83,12 +88,12 @@ export default function ProjectDetail() {
           </div>
         </div>
 
-        <Link
+        <div className="flex gap-2">{can(user, "assignments.manage") && <ProjectTeamManager projectId={project.id} />}{canManageRounds && <Link
           to={`/wizard?projectId=${project.id}`}
           className="btn-primary text-xs py-1.5 px-3.5 rounded-full inline-flex items-center gap-1.5 shrink-0"
         >
           <Plus className="w-3.5 h-3.5" /> Nueva ronda
-        </Link>
+        </Link>}</div>
       </div>
 
       {rounds.length === 0 ? (
@@ -99,12 +104,12 @@ export default function ProjectDetail() {
               Crea la primera ronda para cargar y clasificar tus archivos.
             </p>
           </div>
-          <Link
+          {canManageRounds && <Link
             to={`/wizard?projectId=${project.id}`}
             className="btn-primary text-xs py-1.5 px-3.5 rounded-full inline-flex items-center gap-1.5 mt-1"
           >
             <Plus className="w-3.5 h-3.5" /> Nueva ronda
-          </Link>
+          </Link>}
         </div>
       ) : (
         <section className="space-y-2.5">
@@ -115,28 +120,24 @@ export default function ProjectDetail() {
             {rounds.map((round) => {
               const totalVerbatims = round.subprojects.reduce((n, subproject) => n + subproject.verbatims_total, 0);
               const totalCoded = round.subprojects.reduce((n, subproject) => n + subproject.auto_coded, 0);
-              return (
+              const processed = !["created", "files_uploaded", "processing"].includes(round.status);
+              const target = can(user, "audit.view") && !can(user, "resolution.view")
+                ? `/rounds/${round.id}/audit`
+                : round.status === "audit_approved" ? `/rounds/${round.id}/report` : roundPhasePath(round.id, round.status);
+              const content = <>
+                  <div className="project-row-icon project-row-icon-1"><span className="text-xs font-bold">R</span></div>
+                  <div className="flex-1 min-w-0"><div className="text-sm font-semibold text-p-text truncate group-hover:text-p-accent transition-colors">R{round.round_number} · {round.name}</div><div className="text-[11px] font-subtitle text-p-text-faint mt-0.5 truncate">{!processed && !canManageRounds ? "Esperando procesamiento" : `Marcas y razones · ${totalCoded}/${totalVerbatims} codificados`}</div></div>
+                  {processed || canManageRounds ? <ArrowRight className="w-4 h-4 text-p-text-faint group-hover:translate-x-0.5 transition-transform shrink-0" /> : null}
+                </>;
+              return processed || canManageRounds ? (
                 <Link
                   key={round.id}
-                  to={roundPhasePath(round.id, round.status)}
+                  to={target}
                   className="project-row group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40"
                 >
-                  <div className="project-row-icon project-row-icon-1">
-                    <span className="text-xs font-bold">R</span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-p-text truncate group-hover:text-p-accent transition-colors">
-                      R{round.round_number} · {round.name}
-                    </div>
-                    <div className="text-[11px] font-subtitle text-p-text-faint mt-0.5 truncate">
-                      Marcas y razones
-                      <span className="mx-1.5 text-p-border-mid">·</span>
-                      {totalCoded}/{totalVerbatims} codificados
-                    </div>
-                  </div>
-                  <ArrowRight className="w-4 h-4 text-p-text-faint group-hover:translate-x-0.5 transition-transform shrink-0" />
+                  {content}
                 </Link>
-              );
+              ) : <div key={round.id} className="project-row opacity-75">{content}</div>;
             })}
           </div>
         </section>

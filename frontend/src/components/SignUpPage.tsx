@@ -1,13 +1,12 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Eye, EyeOff, UserPlus, Mail, Lock, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Eye, EyeOff, UserPlus, Mail, Lock, AlertCircle, CheckCircle2, Copy, Download } from "lucide-react";
 import { signup } from "@/api/client";
-import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { writeAuthToken } from "@/lib/tokenStorage";
 
 export default function SignUpPage() {
   const navigate = useNavigate();
-  const showToast = useVerbatixStore((s) => s.showToast);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,15 +14,15 @@ export default function SignUpPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
     if (!email.trim() || !password) return;
-    if (password.length < 6) {
-      setError("La contraseña debe tener al menos 6 caracteres");
+    if (password.length < 8) {
+      setError("La contraseña debe tener al menos 8 caracteres");
       return;
     }
     if (password !== confirmPassword) {
@@ -34,22 +33,17 @@ export default function SignUpPage() {
     setLoading(true);
     try {
       const res = await signup({ email: email.trim(), password });
-      if (res.access_token) {
-        showToast("Cuenta creada correctamente", "success");
-        navigate("/login");
-      } else {
-        setSuccess(true);
-      }
+      writeAuthToken(res.access_token);
+      setRecoveryCode(res.recovery_code);
     } catch {
-      // El error crudo del backend/Supabase viene en inglés y como texto técnico
-      // (JSON, códigos internos) — no es apto para mostrar tal cual.
+      // El registro evita exponer detalles internos de persistencia.
       setError("No se pudo crear la cuenta. Intenta de nuevo.");
     } finally {
       setLoading(false);
     }
   };
 
-  if (success) {
+  if (recoveryCode) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-p-bg relative overflow-hidden px-4">
         <div aria-hidden className="ambient-wash pointer-events-none fixed inset-0 -z-10" />
@@ -65,13 +59,19 @@ export default function SignUpPage() {
           >
             <CheckCircle2 className="w-12 h-12 text-p-success mx-auto" />
           </motion.div>
-          <h2 className="font-heading text-lg font-semibold text-p-text tracking-tight">Revisa tu correo</h2>
+          <h2 className="font-heading text-lg font-semibold text-p-text tracking-tight">Guarda tu código personal</h2>
           <p className="text-sm text-p-text-muted">
-            Te enviamos un enlace de confirmación a <strong className="text-p-text">{email}</strong>.
+            Lo necesitarás si olvidas tu contraseña. Se muestra una sola vez.
           </p>
-          <Link to="/login" className="btn-primary text-sm py-2.5 w-full justify-center mt-2 inline-flex">
-            Volver al inicio de sesión
-          </Link>
+          <code className="block rounded-xl bg-p-bg-subtle border border-p-border px-3 py-3 text-sm font-semibold tracking-wider text-p-text">{recoveryCode}</code>
+          <div className="grid grid-cols-2 gap-2">
+            <button className="btn-ghost text-xs justify-center" onClick={() => void navigator.clipboard.writeText(recoveryCode)}><Copy className="w-3.5 h-3.5" />Copiar</button>
+            <button className="btn-ghost text-xs justify-center" onClick={() => {
+              const blob = new Blob([`Código de recuperación Verbatix\n${recoveryCode}\n`], { type: "text/plain" });
+              const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(blob); anchor.download = "verbatix-recuperacion.txt"; anchor.click(); URL.revokeObjectURL(anchor.href);
+            }}><Download className="w-3.5 h-3.5" />Descargar</button>
+          </div>
+          <button onClick={() => navigate("/pending-approval")} className="btn-primary text-sm py-2.5 w-full justify-center mt-2 inline-flex">Continuar</button>
         </motion.div>
       </div>
     );
@@ -143,7 +143,7 @@ export default function SignUpPage() {
                   type={showPassword ? "text" : "password"}
                   autoComplete="new-password"
                   className="input pl-10 pr-10 text-sm"
-                  placeholder="Mínimo 6 caracteres"
+                  placeholder="Mínimo 8 caracteres"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
