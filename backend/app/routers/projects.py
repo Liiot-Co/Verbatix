@@ -72,6 +72,7 @@ def list_projects(
             "id": str(r["id"]),
             "external_code": r["external_code"],
             "name": r["name"],
+            "studies_count": 1,
             "rounds_count": r["rounds_count"],
             "created_at": r["created_at"],
         }

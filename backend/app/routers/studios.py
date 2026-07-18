@@ -15,7 +15,6 @@ from app.core.access import require_project, require_round, require_subproject
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.core import scheduler, storage
-from app.pipeline import process_round
 from app.pipeline.ingest import dau, excel
 from app.repositories import (
     _current_codebook_id,
@@ -228,6 +227,19 @@ def get_round(
         k: str(v) if isinstance(v, uuid.UUID) else v
         for k, v in dict(row).items()
     }
+    counters = {
+        key: sum(subproject["counters"][key] for subproject in subprojects)
+        for key in ("verbatims_total", "mention_groups", "codes_total", "aliases_total")
+    }
+    audit_statuses = [subproject["audit"]["status"] for subproject in subprojects]
+    audit = {
+        "status": "approved" if audit_statuses and all(status == "approved" for status in audit_statuses)
+        else "in_progress" if any(status == "in_progress" for status in audit_statuses)
+        else "not_started",
+        "reviewed_items": sum(subproject["audit"]["reviewed_items"] for subproject in subprojects),
+        "total_items": sum(subproject["audit"]["total_items"] for subproject in subprojects),
+        "target_met": bool(subprojects) and all(subproject["audit"]["target_met"] for subproject in subprojects),
+    }
     return {
         **round_out,
         "study_name": nav["project_name"] if nav else None,
@@ -235,6 +247,8 @@ def get_round(
         "project_id": str(nav["project_id"]) if nav else None,
         "project_name": nav["project_name"] if nav else None,
         "project_external_code": nav["project_external_code"] if nav else None,
+        "counters": counters,
+        "audit": audit,
         "subprojects": subprojects,
     }
 
@@ -528,11 +542,13 @@ def process(
     user: CurrentUser = Depends(current_user),
 ):
     require_round(db, round_id, user["id"])
-    try:
-        result = process_round(db, round_id)
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    return result
+    db.execute(
+        text("update rounds set status = 'processing', updated_at = now() where id = :id"),
+        {"id": round_id},
+    )
+    db.commit()
+    scheduler.submit(round_id)
+    return {"status": "queued", "round_id": str(round_id)}
 
 
 @router.get("/rounds/{round_id}/preliminary")
