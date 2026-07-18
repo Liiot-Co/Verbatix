@@ -89,7 +89,6 @@ class Project(Base):
     # Relationships
     creator = relationship("User", back_populates="projects")
     proyecto = relationship("Proyecto", back_populates="projects")
-    studios = relationship("Studio", back_populates="project", cascade="all, delete-orphan")
     categories = relationship("Category", back_populates="project", cascade="all, delete-orphan")
     rounds = relationship("Round", back_populates="project", cascade="all, delete-orphan")
 
@@ -140,25 +139,23 @@ class QuestionAlias(Base):
     )
 
 
-class Studio(Base):
-    """El Estudio (Marcas / Razones): entidad persistente dentro de un proyecto,
-    fija a través de las rondas. Cada Ronda es una ola de datos independiente."""
+class Subproject(Base):
+    """Marcas / Razones: reemplaza a Studio, ahora colgando de round_id
+    (cada ronda define sus propios subproyectos por coding_type)."""
 
-    __tablename__ = "studio"
+    __tablename__ = "subprojects"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
-    name = Column(String, nullable=False)  # 'Marcas' | 'Razones'
+    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
+    codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id"), nullable=True)
     coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
-    survey_question = Column(Text, nullable=True)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    project = relationship("Project", back_populates="studios")
+    round = relationship("Round", back_populates="subprojects")
 
-    __table_args__ = (UniqueConstraint("project_id", "name", name="studio_project_id_name_key"),)
+    __table_args__ = (UniqueConstraint("round_id", "coding_type", name="subprojects_round_id_coding_type_key"),)
 
 
 class Round(Base):
@@ -182,6 +179,7 @@ class Round(Base):
     project = relationship("Project", back_populates="rounds")
     category = relationship("Category", back_populates="rounds")
     creator = relationship("User", back_populates="rounds")
+    subprojects = relationship("Subproject", back_populates="round", cascade="all, delete-orphan")
     imported_files = relationship("ImportedFile", back_populates="round", cascade="all, delete-orphan")
     verbatims = relationship("Verbatim", back_populates="round", cascade="all, delete-orphan")
     mention_groups = relationship("MentionGroup", back_populates="round", cascade="all, delete-orphan")
