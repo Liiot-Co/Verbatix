@@ -154,6 +154,7 @@ class Subproject(Base):
 
     # Relationships
     round = relationship("Round", back_populates="subprojects")
+    verbatims = relationship("Verbatim", back_populates="subproject", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("round_id", "coding_type", name="subprojects_round_id_coding_type_key"),)
 
@@ -181,7 +182,6 @@ class Round(Base):
     creator = relationship("User", back_populates="rounds")
     subprojects = relationship("Subproject", back_populates="round", cascade="all, delete-orphan")
     imported_files = relationship("ImportedFile", back_populates="round", cascade="all, delete-orphan")
-    verbatims = relationship("Verbatim", back_populates="round", cascade="all, delete-orphan")
     mention_groups = relationship("MentionGroup", back_populates="round", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("project_id", "round_number", name="rounds_project_id_round_number_key"),)
@@ -350,11 +350,12 @@ class Verbatim(Base):
     __tablename__ = "verbatims"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
+    subproject_id = Column(UUID(as_uuid=True), ForeignKey("subprojects.id", ondelete="CASCADE"), nullable=False)
+    respondent_id = Column(UUID(as_uuid=True), ForeignKey("respondents.id"), nullable=True)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("questions.id"), nullable=True)
     mention_group_id = Column(UUID(as_uuid=True), ForeignKey("mention_groups.id"), nullable=True)
     imported_file_id = Column(UUID(as_uuid=True), ForeignKey("imported_files.id"), nullable=True)
-    respondent_external_id = Column(String, nullable=False)
-    question_key = Column(String, nullable=True)
+    source_question_key = Column(String, nullable=True)
     original_text = Column(Text, nullable=False)
     normalized_text = Column(String, nullable=True)
     input_code_number = Column(Integer, nullable=True)
@@ -362,13 +363,18 @@ class Verbatim(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
-    round = relationship("Round", back_populates="verbatims")
+    subproject = relationship("Subproject", back_populates="verbatims")
+    respondent = relationship("Respondent")
+    question = relationship("Question")
     mention_group = relationship("MentionGroup", back_populates="verbatims")
     imported_file = relationship("ImportedFile", back_populates="verbatims")
     codes = relationship("VerbatimCode", back_populates="verbatim", cascade="all, delete-orphan")
 
     __table_args__ = (
-        UniqueConstraint("round_id", "respondent_external_id", "question_key", name="verbatims_round_id_respondent_external_id_question_key_key"),
+        UniqueConstraint(
+            "subproject_id", "respondent_id", "source_question_key",
+            name="verbatims_subproject_id_respondent_id_source_question_key_key",
+        ),
     )
 
 
