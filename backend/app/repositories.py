@@ -1209,18 +1209,25 @@ def log_action(
 # =====================================================================
 
 def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
-    """Métricas del reporte: totales, % auto/manual (coding_status) y frecuencia por código."""
+    """Métricas del reporte: totales, % auto/manual (coding_status) y frecuencia por código.
+    Suma a través de los subproyectos de la ronda (Marcas + Razones), no de un único
+    coding_type — la ronda ya no tiene uno solo (sección 2.5/2.6 del documento v8)."""
     total = db.execute(
-        text("select count(*) from verbatims where round_id = :round"),
+        text("""
+            select count(*) from verbatims v
+            join subprojects sp on sp.id = v.subproject_id
+            where sp.round_id = :round
+        """),
         {"round": round_id},
     ).scalar() or 0
 
     status_rows = db.execute(
         text("""
-            select coding_status, count(*) as n
-            from verbatims
-            where round_id = :round
-            group by coding_status
+            select v.coding_status, count(*) as n
+            from verbatims v
+            join subprojects sp on sp.id = v.subproject_id
+            where sp.round_id = :round
+            group by v.coding_status
         """),
         {"round": round_id},
     ).mappings().all()
@@ -1230,10 +1237,9 @@ def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
 
     processed_at = db.execute(
         text("""
-            select finished_at from processing_runs
-            where round_id = :round and status = 'completed'
-            order by finished_at desc nulls last
-            limit 1
+            select max(pr.finished_at) from processing_runs pr
+            join subprojects sp on sp.id = pr.subproject_id
+            where sp.round_id = :round and pr.status = 'completed'
         """),
         {"round": round_id},
     ).scalar()
@@ -1244,11 +1250,12 @@ def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
                    count(distinct v.id) as frequency
             from codes c
             join codebooks cb on cb.id = c.codebook_id
+            join subprojects sp on sp.codebook_id = cb.id
             left join net_codes nc on nc.code_id = c.id
             left join nets n on n.id = nc.net_id
             left join verbatim_codes vc on vc.code_id = c.id and vc.is_active
             left join verbatims v on v.id = vc.verbatim_id
-            where cb.round_id = :round and c.is_active and not c.is_system
+            where sp.round_id = :round and c.is_active and not c.is_system
             group by c.id, c.code_number, c.label, n.name
             order by frequency desc, c.code_number
         """),
@@ -1290,39 +1297,19 @@ def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
     }
 
 
-def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
-    """Datos para armar el Excel del Libro de Códigos (LC + Verbatims)."""
-    round_row = db.execute(
-        text("""
-            select r.*, st.coding_type, st.survey_question, st.name as study_name,
-                   p.external_code as project_external_code
-            from rounds r
-            join studio st on st.id = r.studio_id
-            join projects p on p.id = st.project_id
-            where r.id = :id
-        """),
-        {"id": round_id},
-    ).mappings().first()
-    if not round_row:
-        return {}
-
-    cb_id = _current_codebook_id(db, round_id)
-    total_verbatims = db.execute(
-        text("select count(*) from verbatims where round_id = :round"),
-        {"round": round_id},
-    ).scalar() or 0
-
+def _build_codebook_nets(db: Session, codebook_id: uuid.UUID, total_verbatims: int, fallback_label: str) -> list[dict]:
+    """Nets+codes de UN codebook (Marcas o Razones tienen catálogos independientes —
+    confirmado contra MetaData.txt real: CB_2 significa algo distinto en cada uno)."""
     freq_rows = db.execute(
         text("""
             select c.id, count(distinct v.id) as frequency
             from codes c
-            join codebooks cb on cb.id = c.codebook_id
             left join verbatim_codes vc on vc.code_id = c.id and vc.is_active
             left join verbatims v on v.id = vc.verbatim_id
-            where cb.round_id = :round and c.is_active
+            where c.codebook_id = :cb and c.is_active
             group by c.id
         """),
-        {"round": round_id},
+        {"cb": codebook_id},
     ).mappings().all()
     freq_by_id = {r["id"]: r["frequency"] for r in freq_rows}
 
@@ -1337,8 +1324,8 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
             ) ranked
             where rn <= 3
         """),
-        {"cb": cb_id},
-    ).mappings().all() if cb_id else []
+        {"cb": codebook_id},
+    ).mappings().all()
     aliases_by_code: dict[uuid.UUID, list[str]] = {}
     for row in alias_rows:
         aliases_by_code.setdefault(row["code_id"], []).append(row["alias_sample"])
@@ -1352,8 +1339,8 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
             where c.codebook_id = :cb and c.is_active
             order by coalesce(n.display_order, 999), c.code_number
         """),
-        {"cb": cb_id},
-    ).mappings().all() if cb_id else []
+        {"cb": codebook_id},
+    ).mappings().all()
 
     def _code_entry(row) -> dict:
         cid = row["id"]
@@ -1369,44 +1356,71 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
         }
 
     net_rows = db.execute(
-        text("""
-            select name, display_order
-            from nets
-            where codebook_id = :cb
-            order by display_order, name
-        """),
-        {"cb": cb_id},
-    ).mappings().all() if cb_id else []
+        text("select name, display_order from nets where codebook_id = :cb order by display_order, name"),
+        {"cb": codebook_id},
+    ).mappings().all()
 
     def _by_frequency_desc(c: dict):
         return (-c["frequency"], c["code_number"])
 
-    fallback_net = f"NETO {round_row['study_name'].upper()}"
+    fallback_net = f"NETO {fallback_label.upper()}"
     if net_rows:
         nets = []
         for net in net_rows:
-            codes_in_net = [
-                _code_entry(r) for r in code_rows if r["net_name"] == net["name"]
-            ]
-            nets.append({
-                "name": net["name"],
-                "codes": sorted(codes_in_net, key=_by_frequency_desc),
-            })
+            codes_in_net = [_code_entry(r) for r in code_rows if r["net_name"] == net["name"]]
+            nets.append({"name": net["name"], "codes": sorted(codes_in_net, key=_by_frequency_desc)})
         orphans = [_code_entry(r) for r in code_rows if not r["net_name"]]
         if orphans:
-            nets.append({
-                "name": fallback_net,
-                "codes": sorted(orphans, key=_by_frequency_desc),
-            })
+            nets.append({"name": fallback_net, "codes": sorted(orphans, key=_by_frequency_desc)})
     else:
-        nets = [{
-            "name": fallback_net,
-            "codes": sorted([_code_entry(r) for r in code_rows], key=_by_frequency_desc),
-        }]
+        nets = [{"name": fallback_net, "codes": sorted([_code_entry(r) for r in code_rows], key=_by_frequency_desc)}]
+    return nets
+
+
+def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
+    """Datos para armar el Excel del Libro de Códigos (LC + Verbatims). Confirmado
+    contra el Case 8 real de HBG Leches (OnNextCase.txt): un mismo respondente trae
+    variables de Marcas Y Razones en el mismo bloque — los subproyectos se mantienen
+    separados en el modelo (cada uno con su propio codebook/nets), pero `verbatims`
+    combina ambos en una sola lista por respondent_external_id, igual que el archivo
+    real de salida."""
+    round_row = db.execute(
+        text("""
+            select r.*, p.name as study_name, p.external_code as project_external_code
+            from rounds r
+            join projects p on p.id = r.project_id
+            where r.id = :id
+        """),
+        {"id": round_id},
+    ).mappings().first()
+    if not round_row:
+        return {}
+
+    subprojects = db.execute(
+        text("select id, coding_type, codebook_id from subprojects where round_id = :round"),
+        {"round": round_id},
+    ).mappings().all()
+
+    total_verbatims = db.execute(
+        text("""
+            select count(*) from verbatims v
+            join subprojects sp on sp.id = v.subproject_id
+            where sp.round_id = :round
+        """),
+        {"round": round_id},
+    ).scalar() or 0
+
+    nets_by_coding_type = {
+        sp["coding_type"]: _build_codebook_nets(
+            db, sp["codebook_id"], total_verbatims, f"{round_row['study_name']} {sp['coding_type']}"
+        )
+        for sp in subprojects
+        if sp["codebook_id"]
+    }
 
     verbatim_rows = db.execute(
         text("""
-            select v.respondent_external_id, v.question_key, v.original_text,
+            select resp.respondent_external_id, v.source_question_key, v.original_text,
                    coalesce(
                      jsonb_agg(
                        jsonb_build_object(
@@ -1418,10 +1432,12 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
                      '[]'::jsonb
                    ) as codes
             from verbatims v
+            join subprojects sp on sp.id = v.subproject_id
+            left join respondents resp on resp.id = v.respondent_id
             left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             left join codes c on c.id = vc.code_id
-            where v.round_id = :round
-            group by v.id, v.respondent_external_id, v.question_key, v.original_text
+            where sp.round_id = :round
+            group by v.id, resp.respondent_external_id, v.source_question_key, v.original_text
             order by v.created_at
         """),
         {"round": round_id},
@@ -1432,7 +1448,8 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
             select coalesce(max(vc.output_index), 0)
             from verbatim_codes vc
             join verbatims v on v.id = vc.verbatim_id
-            where v.round_id = :round and vc.is_active
+            join subprojects sp on sp.id = v.subproject_id
+            where sp.round_id = :round and vc.is_active
         """),
         {"round": round_id},
     ).scalar() or 0
@@ -1444,7 +1461,7 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
             raw_codes = json.loads(raw_codes)
         verbatims.append({
             "respondent_external_id": row["respondent_external_id"],
-            "question_key": row["question_key"],
+            "question_key": row["source_question_key"],
             "original_text": row["original_text"],
             "codes": raw_codes or [],
         })
@@ -1452,11 +1469,9 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
     return {
         "project_external_code": round_row["project_external_code"],
         "round_number": round_row["round_number"],
-        "survey_question": round_row["survey_question"],
-        "coding_type": round_row["coding_type"],
         "study_name": round_row["study_name"],
         "total_verbatims": total_verbatims,
-        "nets": nets,
+        "nets_by_coding_type": nets_by_coding_type,
         "verbatims": verbatims,
         "max_output_index": max_output,
     }
