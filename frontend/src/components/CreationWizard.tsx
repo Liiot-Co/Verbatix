@@ -9,7 +9,7 @@ import Breadcrumb, { type Crumb } from "./Breadcrumb";
 import {
   createProject,
   createRound,
-  createStudy,
+  classifyQuestion,
   getProject,
   importFile,
   uploadFile,
@@ -22,12 +22,10 @@ import type {
   ProjectDetail,
   Round,
   RoundSummary,
-  Study,
-  StudySummary,
   UploadedFile,
 } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { codingTypeLabel, findStudy, nextRoundNumber } from "@/lib/projectTree";
+import { nextRoundNumber } from "@/lib/projectTree";
 
 type WizardStep = "project" | "studio" | "round";
 
@@ -42,7 +40,7 @@ interface BatchItem {
 
 const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: "project", label: "Proyecto", icon: "📁" },
-  { key: "studio", label: "Estudio", icon: "🏷️" },
+  { key: "studio", label: "Configuración", icon: "🏷️" },
   { key: "round", label: "Ronda y Excel", icon: "🔄" },
 ];
 
@@ -106,8 +104,7 @@ const stepVariants = {
 export default function CreationWizard() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const studyParam = searchParams.get("study");
-  const isNewRoundFlow = Boolean(studyParam);
+  const isNewRoundFlow = Boolean(searchParams.get("projectId"));
   const setActiveProjectId = useVerbatixStore((s) => s.setActiveProjectId);
   const showToast = useVerbatixStore((s) => s.showToast);
 
@@ -122,16 +119,10 @@ export default function CreationWizard() {
   const [newExternalCode, setNewExternalCode] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
 
-  // Step 2: estudio (definición lógica, persistente — Marcas / Razones)
-  const [existingStudy, setExistingStudy] = useState<StudySummary | null>(null); // deep-link: reusar en vez de crear
+  // Schema v8 creates both subprojects (Marcas y Razones) for every ronda.
+  // This step only configures the optional source used for homologation.
   const [round, setRound] = useState<Round | null>(null);
-  const [study, setStudy] = useState<Study | null>(null);
-  const [newStudyName, setNewStudyName] = useState("");
   const [newStudyCodingType, setNewStudyCodingType] = useState<CodingType>("brands");
-  // El placeholder deriva del tipo y hace de nombre por defecto si el campo queda vacío.
-  const defaultStudyName = newStudyCodingType === "brands" ? "Marcas" : "Razones";
-  const studyName = newStudyName.trim() || defaultStudyName;
-  const [newStudyQuestion, setNewStudyQuestion] = useState("");
   const [sOriginMode, setSOriginMode] = useState<OriginMode>("from_scratch");
   const [sSourceId, setSSourceId] = useState<string>("");
 
@@ -149,6 +140,8 @@ export default function CreationWizard() {
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
   const [submitting, setSubmitting] = useState(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
+  const [pendingQuestions, setPendingQuestions] = useState<string[]>([]);
+  const [questionTypes, setQuestionTypes] = useState<Record<string, CodingType>>({});
 
   // Archivos adicionales soltados junto al primero: cada uno se convierte en
   // una ronda nueva del mismo estudio (mismo min_mentions/auditoría que la
@@ -158,10 +151,9 @@ export default function CreationWizard() {
   const [batchRunning, setBatchRunning] = useState(false);
 
   const projectRef = useRef<HTMLInputElement>(null);
-  const studyRef = useRef<HTMLInputElement>(null);
   const roundRef = useRef<HTMLInputElement>(null);
 
-  // Deep-link: /wizard?projectId=... (nuevo estudio) o &study=<studyId> (nueva ronda)
+  // Deep-link: /wizard?projectId=... crea una ronda en el Estudio existente.
   useEffect(() => {
     const projectId = searchParams.get("projectId");
     if (!projectId) return;
@@ -172,21 +164,6 @@ export default function CreationWizard() {
       setNewExternalCode(detail.external_code);
       setNewProjectName(detail.name);
 
-      const studyId = searchParams.get("study");
-      if (studyId) {
-        const found = findStudy(detail, studyId);
-        if (found) {
-          setExistingStudy(found);
-          setNewStudyName(found.name);
-          setNewStudyCodingType(found.coding_type);
-          setNewStudyQuestion(found.survey_question ?? "");
-          const nextNum = nextRoundNumber(found.rounds);
-          setRRoundNumber(nextNum);
-          setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
-          goToStep("round");
-          return;
-        }
-      }
       goToStep("studio");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -204,9 +181,9 @@ export default function CreationWizard() {
     if (step !== "studio" && step !== "round" || !project) return;
     getProject(project.id).then((detail) => {
       setProjectDetail(detail);
-      const candidates = detail.studies
-        .filter((s) => s.coding_type === newStudyCodingType)
-        .flatMap((s) => s.rounds.map((r) => ({ ...r, studyName: s.name })));
+      const candidates = detail.rounds
+        .filter((r) => r.subprojects.some((sp) => sp.coding_type === newStudyCodingType))
+        .map((r) => ({ ...r, studyName: detail.name }));
       setHomologationCandidates(candidates);
     });
   }, [step, project, newStudyCodingType]);
@@ -225,7 +202,12 @@ export default function CreationWizard() {
         const created = await createProject(newExternalCode.trim(), newProjectName.trim());
         setProject(created);
         setActiveProjectId(created.id);
-        setProjectDetail({ ...created, studies: [], created_at: new Date().toISOString() });
+        setProjectDetail({
+          ...created,
+          rounds: [],
+          categories: [],
+          created_at: new Date().toISOString(),
+        });
       }
       playSuccess();
       goToStep("studio");
@@ -236,14 +218,7 @@ export default function CreationWizard() {
 
   const handleContinueFromStudio = () => {
     if (projectDetail) {
-      const existing = projectDetail.studies.find(
-        (s) => s.coding_type === newStudyCodingType && s.name === studyName
-      );
-      // Sin esto, un nombre+coding_type que ya existe en el proyecto pasa de
-      // largo hasta ensureRound(), que intenta crear el estudio de nuevo y
-      // choca con el unique (project_id, name) — en vez de reusar el existente.
-      setExistingStudy(existing ?? null);
-      const nextNum = nextRoundNumber(existing?.rounds ?? []);
+      const nextNum = nextRoundNumber(projectDetail.rounds ?? []);
       setRRoundNumber(nextNum);
       setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
     }
@@ -251,24 +226,12 @@ export default function CreationWizard() {
     goToStep("round");
   };
 
-  // Crea el estudio (si hace falta) + la ronda la primera vez que hace falta
-  // (al soltar el Excel) — el usuario no ve un paso de "crear ronda" separado
-  // del de subir el archivo, ambos viven en el mismo panel.
+  // La ronda se crea directamente dentro del Estudio (`projects` en schema v8).
   const ensureRound = async (): Promise<Round | null> => {
     if (round) return round;
     if (!project || !rName.trim()) return null;
     try {
-      let studyId = existingStudy?.id ?? study?.id;
-      if (!studyId) {
-        const createdStudy = await createStudy(project.id, {
-          name: studyName,
-          coding_type: newStudyCodingType,
-          survey_question: newStudyQuestion.trim() || undefined,
-        });
-        setStudy(createdStudy);
-        studyId = createdStudy.id;
-      }
-      const created = await createRound(studyId, {
+      const created = await createRound(project.id, {
         name: rName.trim(),
         round_number: rRoundNumber,
         min_mentions_threshold: rThreshold,
@@ -277,8 +240,10 @@ export default function CreationWizard() {
         source_round_id: sOriginMode === "homologated" && sSourceId ? sSourceId : null,
       });
       setRound(created);
-      if (created.codebook.inherited_codes > 0) {
-        showToast(`Se heredaron ${created.codebook.inherited_codes} códigos y ${created.codebook.inherited_aliases} alias`, "success");
+      const inheritedCodes = created.subprojects.reduce((sum, subproject) => sum + (subproject.inherited_codes ?? 0), 0);
+      const inheritedAliases = created.subprojects.reduce((sum, subproject) => sum + (subproject.inherited_aliases ?? 0), 0);
+      if (inheritedCodes > 0) {
+        showToast(`Se heredaron ${inheritedCodes} códigos y ${inheritedAliases} alias`, "success");
       }
       playSuccess();
       return created;
@@ -305,7 +270,7 @@ export default function CreationWizard() {
       playTick();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [round, study, existingStudy, project, rName, rRoundNumber, rThreshold, rAudit, newStudyName, newStudyCodingType, newStudyQuestion, sOriginMode, sSourceId]
+    [round, project, rName, rRoundNumber, rThreshold, rAudit, sOriginMode, sSourceId]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -332,7 +297,7 @@ export default function CreationWizard() {
   // criterio que el primer archivo) y reusa el columnMap del primero. Un
   // archivo sin hoja de verbatims detectable (o cualquier otro fallo) queda
   // marcado con error y no bloquea al resto del lote.
-  const runBatch = async (studyId: string) => {
+  const runBatch = async (projectId: string) => {
     setBatchRunning(true);
     const year = new Date().getFullYear();
     let nextNumber = rRoundNumber + 1;
@@ -341,7 +306,7 @@ export default function CreationWizard() {
       setBatchItems((items) => items.map((it, idx) => (idx === i ? { ...it, status: "uploading" } : it)));
       const roundName = `Ronda ${nextNumber} - ${year}`;
       try {
-        const newRound = await createRound(studyId, {
+        const newRound = await createRound(projectId, {
           name: roundName,
           round_number: nextNumber,
           min_mentions_threshold: rThreshold,
@@ -365,7 +330,8 @@ export default function CreationWizard() {
           uploadedBatch.file_id,
           verbatimGuess.name,
           columnMap as ColumnMap,
-          codebookGuess?.name
+          codebookGuess?.name,
+          codebookGuess ? newStudyCodingType : undefined
         );
         setBatchItems((items) => items.map((it, idx) => (idx === i ? { ...it, status: "done" } : it)));
       } catch (err) {
@@ -386,17 +352,23 @@ export default function CreationWizard() {
         uploaded.file_id,
         verbatimsSheet,
         columnMap as ColumnMap,
-        codebookSheet || undefined
+        codebookSheet || undefined,
+        codebookSheet ? newStudyCodingType : undefined
       );
+      if (result.pending_questions.length > 0) {
+        setPendingQuestions(result.pending_questions);
+        setQuestionTypes(Object.fromEntries(result.pending_questions.map((question) => [question, newStudyCodingType])));
+        showToast("Clasifica las nuevas variables antes de procesar la ronda.", "info");
+        return;
+      }
       showToast(
         `Importados ${result.imported.verbatims} verbatims${result.imported.codes ? ` y ${result.imported.codes} códigos` : ""} · codificando en el motor...`,
         "success"
       );
       playSuccess();
 
-      const studyId = existingStudy?.id ?? study?.id;
-      if (batchItems.length > 0 && studyId) {
-        await runBatch(studyId);
+      if (batchItems.length > 0 && project) {
+        await runBatch(project.id);
       } else {
         navigate(`/rounds/${round.id}/preliminary`);
       }
@@ -407,16 +379,36 @@ export default function CreationWizard() {
     }
   };
 
+  const handleClassifyQuestions = async () => {
+    if (!project || pendingQuestions.length === 0) return;
+    setSubmitting(true);
+    try {
+      await Promise.all(
+        pendingQuestions.map((questionKey) =>
+          classifyQuestion(project.id, {
+            question_key: questionKey,
+            coding_type: questionTypes[questionKey] ?? "brands",
+          })
+        )
+      );
+      setPendingQuestions([]);
+      await handleImport();
+    } catch {
+      showToast("No se pudieron clasificar las variables nuevas", "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const goToStudy = () => {
-    const studyId = existingStudy?.id ?? study?.id;
-    if (project && studyId) navigate(`/projects/${project.id}/studies/${studyId}`);
+    if (project) navigate(`/projects/${project.id}`);
   };
 
   const batchDone = batchItems.length > 0 && !batchRunning && batchItems.every((it) => it.status === "done" || it.status === "error");
 
   const stepIndex = STEPS.findIndex((s) => s.key === step);
 
-  const activeStudyName = existingStudy?.name ?? study?.name;
+  const activeStudyName = project?.name;
   const crumbs: Crumb[] = [
     { label: "Proyectos", to: "/" },
     {
@@ -458,7 +450,6 @@ export default function CreationWizard() {
   useEffect(() => {
     setTimeout(() => {
       if (step === "project") projectRef.current?.focus();
-      if (step === "studio") studyRef.current?.focus();
       if (step === "round") roundRef.current?.focus();
     }, 100);
   }, [step]);
@@ -480,7 +471,7 @@ export default function CreationWizard() {
       <div className="space-y-1"
       >
         <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">
-          {isNewRoundFlow ? "Nueva ronda" : project ? "Nuevo estudio" : "Nuevo proyecto"}
+          {isNewRoundFlow || project ? "Nueva ronda" : "Nuevo estudio"}
         </h1>
       </div>
 
@@ -581,7 +572,7 @@ export default function CreationWizard() {
             </div>
           )}
 
-          {/* Step 2: Estudio (Marcas / Razones) */}
+          {/* Step 2: configuración de la ronda */}
           {step === "studio" && project && (
             <div
               className="card p-4 space-y-2.5"
@@ -598,46 +589,14 @@ export default function CreationWizard() {
 
               <motion.div className="space-y-4">
                 <div>
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo de codificación</motion.label>
+                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo para codebook u homologación</motion.label>
                   <ToggleGroup
                     options={[
                       { value: "brands" as CodingType, label: "Marcas" },
                       { value: "reasons" as CodingType, label: "Razones" },
                     ]}
                     value={newStudyCodingType}
-                    onChange={(type) => {
-                      setNewStudyCodingType(type);
-                      // Si el nombre sigue siendo el default del tipo, alinearlo al nuevo.
-                      setNewStudyName((prev) =>
-                        prev === "" || prev === "Marcas" || prev === "Razones"
-                          ? codingTypeLabel(type)
-                          : prev
-                      );
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre</motion.label>
-                  <motion.input
-                    ref={studyRef}
-                    autoFocus
-                    className="input w-full text-sm mt-1"
-                    placeholder={defaultStudyName}
-                    value={newStudyName}
-                    onChange={(e) => setNewStudyName(e.target.value)}
-                    whileFocus={{ scale: 1.002 }}
-                  />
-                </div>
-
-                <div>
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Pregunta de la encuesta</motion.label>
-                  <motion.input
-                    className="input w-full text-sm mt-1"
-                    placeholder="Q030 - BE1: ¿Qué marcas...?"
-                    value={newStudyQuestion}
-                    onChange={(e) => setNewStudyQuestion(e.target.value)}
-                    whileFocus={{ scale: 1.002 }}
+                    onChange={setNewStudyCodingType}
                   />
                 </div>
 
@@ -695,13 +654,12 @@ export default function CreationWizard() {
                 whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
               >
-                <ChevronLeft className="w-3.5 h-3.5" /> {studyName}
+                <ChevronLeft className="w-3.5 h-3.5" /> {project.name}
               </motion.button>
 
               <div className="card p-4 space-y-2.5">
                 <p className="text-xs text-p-text-faint">
-                  Estudio <span className="font-semibold text-p-text-muted">{studyName}</span>
-                  {" "}({newStudyCodingType === "brands" ? "Marcas" : "Razones"})
+                  Estudio <span className="font-semibold text-p-text-muted">{project.name}</span>
                 </p>
 
                 <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre de la ronda</div>
@@ -843,6 +801,21 @@ export default function CreationWizard() {
                             <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
                           ))}
                         </motion.select>
+                        {codebookSheet && (
+                          <div className="mt-3">
+                            <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                              Tipo del libro de códigos
+                            </motion.label>
+                            <ToggleGroup
+                              options={[
+                                { value: "brands" as CodingType, label: "Marcas" },
+                                { value: "reasons" as CodingType, label: "Razones" },
+                              ]}
+                              value={newStudyCodingType}
+                              onChange={setNewStudyCodingType}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -891,7 +864,40 @@ export default function CreationWizard() {
                       </motion.div>
                     )}
 
-                    {!batchRunning && !batchDone && (
+                    {pendingQuestions.length > 0 && (
+                      <div className="space-y-3 rounded-lg border border-p-warning/40 bg-p-warning/10 p-3">
+                        <div className="text-sm font-semibold text-p-text">Clasifica las variables nuevas</div>
+                        <p className="text-xs text-p-text-muted">
+                          Cada variable se envía al subproyecto de Marcas o Razones antes de reintentar la importación.
+                        </p>
+                        {pendingQuestions.map((questionKey) => (
+                          <div key={questionKey} className="grid grid-cols-[1fr_150px] gap-2 items-center">
+                            <code className="truncate text-xs text-p-text">{questionKey}</code>
+                            <select
+                              className="input text-sm"
+                              value={questionTypes[questionKey] ?? "brands"}
+                              onChange={(event) => setQuestionTypes((current) => ({
+                                ...current,
+                                [questionKey]: event.target.value as CodingType,
+                              }))}
+                            >
+                              <option value="brands">Marcas</option>
+                              <option value="reasons">Razones</option>
+                            </select>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          className="btn-primary text-sm py-2 w-full justify-center"
+                          disabled={submitting}
+                          onClick={handleClassifyQuestions}
+                        >
+                          Clasificar y continuar
+                        </button>
+                      </div>
+                    )}
+
+                    {!batchRunning && !batchDone && pendingQuestions.length === 0 && (
                       <motion.div className="flex gap-1.5 pt-1">
                         <motion.button
                           whileHover={{ scale: 1.02 }}

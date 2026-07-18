@@ -4,7 +4,7 @@ import { ArrowRight, Plus } from "lucide-react";
 import { getProject } from "@/api/client";
 import type { ProjectDetail as ProjectDetailType } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
-import { codingTypeLabel, studyDisplayName } from "@/lib/projectTree";
+import { roundPhasePath } from "@/lib/projectTree";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
 
@@ -41,7 +41,7 @@ export default function ProjectDetail() {
         meta: true,
         shift: true,
         action: () => navigate(`/wizard?projectId=${projectId ?? ""}`),
-        description: "Nuevo estudio",
+        description: "Nueva ronda",
         category: "Acciones",
       },
     ]);
@@ -66,9 +66,7 @@ export default function ProjectDetail() {
     );
   }
 
-  const studies = project.studies;
-  const studiesCount = studies.length;
-  const totalRounds = studies.reduce((n, s) => n + s.rounds.length, 0);
+  const rounds = project.rounds ?? [];
 
   return (
     <div className="max-w-4xl mx-auto py-4 space-y-5">
@@ -80,8 +78,7 @@ export default function ProjectDetail() {
           <div className="flex items-center gap-1.5 text-xs font-subtitle text-p-text-faint">
             <span className="font-semibold text-p-text-muted">{project.external_code}</span>
             <span>
-              {studiesCount} {studiesCount === 1 ? "estudio" : "estudios"}
-              · {totalRounds} {totalRounds === 1 ? "ronda" : "rondas"}
+              {rounds.length} {rounds.length === 1 ? "ronda" : "rondas"}
             </span>
           </div>
         </div>
@@ -90,52 +87,49 @@ export default function ProjectDetail() {
           to={`/wizard?projectId=${project.id}`}
           className="btn-primary text-xs py-1.5 px-3.5 rounded-full inline-flex items-center gap-1.5 shrink-0"
         >
-          <Plus className="w-3.5 h-3.5" /> Nuevo estudio
+          <Plus className="w-3.5 h-3.5" /> Nueva ronda
         </Link>
       </div>
 
-      {studies.length === 0 ? (
+      {rounds.length === 0 ? (
         <div className="card-subtle p-8 flex flex-col items-center justify-center gap-2.5 text-center">
           <div>
-            <div className="text-sm font-semibold text-p-text">Sin estudios todavía</div>
+            <div className="text-sm font-semibold text-p-text">Sin rondas todavía</div>
             <p className="text-xs text-p-text-faint mt-1">
-              Crea un estudio de Marcas o Razones; luego añade rondas con tus archivos Excel.
+              Crea la primera ronda para cargar y clasificar tus archivos.
             </p>
           </div>
           <Link
             to={`/wizard?projectId=${project.id}`}
             className="btn-primary text-xs py-1.5 px-3.5 rounded-full inline-flex items-center gap-1.5 mt-1"
           >
-            <Plus className="w-3.5 h-3.5" /> Nuevo estudio
+            <Plus className="w-3.5 h-3.5" /> Nueva ronda
           </Link>
         </div>
       ) : (
         <section className="space-y-2.5">
           <h2 className="text-[11px] font-semibold tracking-[0.08em] uppercase text-p-text-faint">
-            Estudios
+            Rondas
           </h2>
           <div className="space-y-2">
-            {studies.map((study) => {
-              const totalVerbatims = study.rounds.reduce((n, r) => n + r.verbatims_total, 0);
-              const totalCoded = study.rounds.reduce((n, r) => n + r.auto_coded, 0);
-              const typeLabel = codingTypeLabel(study.coding_type);
+            {rounds.map((round) => {
+              const totalVerbatims = round.subprojects.reduce((n, subproject) => n + subproject.verbatims_total, 0);
+              const totalCoded = round.subprojects.reduce((n, subproject) => n + subproject.auto_coded, 0);
               return (
                 <Link
-                  key={study.id}
-                  to={`/projects/${project.id}/studies/${study.id}`}
+                  key={round.id}
+                  to={roundPhasePath(round.id, round.status)}
                   className="project-row group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-accent/40"
                 >
-                  <div className={`project-row-icon project-row-icon-${study.coding_type === "brands" ? "1" : "2"}`}>
-                    <span className="text-xs font-bold">{study.coding_type === "brands" ? "M" : "R"}</span>
+                  <div className="project-row-icon project-row-icon-1">
+                    <span className="text-xs font-bold">R</span>
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-semibold text-p-text truncate group-hover:text-p-accent transition-colors">
-                      {studyDisplayName(study.name, study.coding_type)}
+                      R{round.round_number} · {round.name}
                     </div>
                     <div className="text-[11px] font-subtitle text-p-text-faint mt-0.5 truncate">
-                      {typeLabel}
-                      <span className="mx-1.5 text-p-border-mid">·</span>
-                      {study.rounds.length} {study.rounds.length === 1 ? "ronda" : "rondas"}
+                      Marcas y razones
                       <span className="mx-1.5 text-p-border-mid">·</span>
                       {totalCoded}/{totalVerbatims} codificados
                     </div>
