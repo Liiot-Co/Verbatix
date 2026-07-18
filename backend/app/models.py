@@ -24,8 +24,13 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String, nullable=False)
     name = Column(String, nullable=True)
+    password_hash = Column(Text, nullable=True)
+    account_status = Column(String, nullable=False, default="pending")
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     projects = relationship("Project", back_populates="creator")
@@ -52,12 +57,45 @@ class Assignment(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    role_context = Column(String, nullable=False)  # 'codificador' | 'supervisor'
+    role_context = Column(String, nullable=True)  # legado; user_roles define capacidades
     status = Column(String, nullable=False, default="active")
     assigned_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (UniqueConstraint("project_id", "user_id", name="assignments_project_id_user_id_key"),)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(Text, nullable=False, unique=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class PasswordRecoveryCode(Base):
+    __tablename__ = "password_recovery_codes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_hash = Column(Text, nullable=False, unique=True)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class AuditComment(Base):
+    __tablename__ = "audit_comments"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    audit_item_id = Column(UUID(as_uuid=True), ForeignKey("audit_items.id", ondelete="CASCADE"), nullable=False)
+    author_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class Proyecto(Base):

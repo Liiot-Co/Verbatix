@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.access import require_admin
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 
@@ -23,6 +24,7 @@ def create_proyecto(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_admin(db, user["id"])
     pid = uuid.uuid4()
     db.execute(
         text("insert into proyectos (id, name, created_by) values (:id, :name, :u)"),
@@ -37,16 +39,16 @@ def list_proyectos(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_admin(db, user["id"])
     rows = db.execute(
         text("""
             select p.id, p.name, p.created_at, count(pr.id) as projects_count
             from proyectos p
             left join projects pr on pr.proyecto_id = p.id
-            where p.created_by = :u
             group by p.id
             order by p.created_at desc
         """),
-        {"u": user["id"]},
+        {},
     ).mappings().all()
     return [
         {"id": str(r["id"]), "name": r["name"], "projects_count": r["projects_count"], "created_at": r["created_at"]}
@@ -60,9 +62,10 @@ def get_proyecto(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_admin(db, user["id"])
     proyecto = db.execute(
-        text("select id, name, created_at from proyectos where id = :id and created_by = :u"),
-        {"id": proyecto_id, "u": user["id"]},
+        text("select id, name, created_at from proyectos where id = :id"),
+        {"id": proyecto_id},
     ).mappings().first()
     if not proyecto:
         raise HTTPException(404, "Proyecto no encontrado")
@@ -76,15 +79,16 @@ def list_proyecto_projects(
     user: CurrentUser = Depends(current_user),
 ):
     """Los Estudios (`projects`) que cuelgan de este Proyecto."""
+    require_admin(db, user["id"])
     rows = db.execute(
         text("""
             select p.id, p.external_code, p.name, p.created_at
             from projects p
             join proyectos pr on pr.id = p.proyecto_id
-            where p.proyecto_id = :id and pr.created_by = :u
+            where p.proyecto_id = :id
             order by p.created_at desc
         """),
-        {"id": proyecto_id, "u": user["id"]},
+        {"id": proyecto_id},
     ).mappings().all()
     return [
         {"id": str(r["id"]), "external_code": r["external_code"], "name": r["name"], "created_at": r["created_at"]}
@@ -99,9 +103,10 @@ def update_proyecto(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_admin(db, user["id"])
     updated = db.execute(
-        text("update proyectos set name = :name where id = :id and created_by = :u returning id"),
-        {"name": payload.name, "id": proyecto_id, "u": user["id"]},
+        text("update proyectos set name = :name where id = :id returning id"),
+        {"name": payload.name, "id": proyecto_id},
     ).scalar()
     if not updated:
         raise HTTPException(404, "Proyecto no encontrado")
@@ -115,9 +120,10 @@ def delete_proyecto(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_admin(db, user["id"])
     deleted = db.execute(
-        text("delete from proyectos where id = :id and created_by = :u returning id"),
-        {"id": proyecto_id, "u": user["id"]},
+        text("delete from proyectos where id = :id returning id"),
+        {"id": proyecto_id},
     ).scalar()
     if not deleted:
         raise HTTPException(404, "Proyecto no encontrado")
