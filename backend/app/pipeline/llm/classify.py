@@ -68,6 +68,8 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
                    ) as aliases
             from codes c
             join subprojects sp on sp.codebook_id = c.codebook_id
+            left join net_codes nc on nc.code_id = c.id
+            left join nets n on n.id = nc.net_id
             where sp.id = :sp and c.is_active
             order by c.code_number
         """),
