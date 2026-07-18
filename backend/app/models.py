@@ -147,7 +147,7 @@ class Subproject(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
-    codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id"), nullable=True)
+    codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id"), nullable=False)
     coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -212,7 +212,8 @@ class Codebook(Base):
     __tablename__ = "codebooks"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
     version = Column(Integer, nullable=False, default=1)
     parent_codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id"), nullable=True)
     imported_from_file_id = Column(UUID(as_uuid=True), ForeignKey("imported_files.id"), nullable=True)
@@ -221,7 +222,9 @@ class Codebook(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
-    __table_args__ = (UniqueConstraint("round_id", "version", name="codebooks_round_id_version_key"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "coding_type", "version", name="codebooks_project_id_coding_type_version_key"),
+    )
 
 
 class Code(Base):
