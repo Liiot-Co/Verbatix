@@ -4,6 +4,8 @@ classify_question, reintentar insert_verbatims con las MISMAS filas ya no la dej
 pendiente y el verbatim se inserta en el subproject correcto (sección 2.5)."""
 import uuid
 
+import pytest
+
 from app.repositories import classify_question, insert_verbatims
 
 PROJECT_ID = uuid.uuid4()
@@ -182,3 +184,46 @@ def test_known_vyk_pattern_auto_classifies_as_brands_without_pending():
     assert pending == []
     assert n_inserted == 1
     assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_BRANDS
+
+
+# ── field_selections (wizard de selección de campos) ──
+
+
+def test_field_selections_none_is_a_pure_regression_noop():
+    db = FakeSession()
+    n_inserted, _, pending, _skipped = insert_verbatims(
+        db, ROUND_ID, PROJECT_ID, FILE_ID, _sample_rows(), field_selections=None,
+    )
+    assert n_inserted == 0
+    assert pending == [QUESTION_KEY]
+
+
+def test_field_selections_excluded_field_is_dropped_entirely():
+    db = FakeSession()
+    n_inserted, _, pending, _skipped = insert_verbatims(
+        db, ROUND_ID, PROJECT_ID, FILE_ID, _sample_rows(),
+        field_selections=[{"field": QUESTION_KEY, "included": False, "coding_type": None}],
+    )
+    assert n_inserted == 0
+    assert pending == []
+    assert db.inserted_verbatims == []
+
+
+def test_field_selections_explicit_coding_type_skips_pending():
+    db = FakeSession()
+    n_inserted, _, pending, _skipped = insert_verbatims(
+        db, ROUND_ID, PROJECT_ID, FILE_ID, _sample_rows(),
+        field_selections=[{"field": QUESTION_KEY, "included": True, "coding_type": "brands"}],
+    )
+    assert pending == []
+    assert n_inserted == 1
+    assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_BRANDS
+
+
+def test_field_selections_coding_type_outside_round_scope_raises():
+    db = FakeSession()
+    with pytest.raises(ValueError):
+        insert_verbatims(
+            db, ROUND_ID, PROJECT_ID, FILE_ID, _sample_rows(),
+            field_selections=[{"field": QUESTION_KEY, "included": True, "coding_type": "not_a_real_scope"}],
+        )

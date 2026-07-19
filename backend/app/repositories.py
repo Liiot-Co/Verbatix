@@ -500,6 +500,7 @@ def insert_verbatims(
     rows: list[dict],
     min_mentions_threshold: int | None = None,
     audit_percentage: float | None = None,
+    field_selections: list[dict] | None = None,
 ) -> tuple[int, pl.DataFrame, list[str], dict[str, int]]:
     """Normaliza, inserta verbatims y devuelve (n_inserted, DF slim para fuzzy,
     question_keys nuevas sin clasificar, filas omitidas por coding_type no
@@ -546,6 +547,27 @@ def insert_verbatims(
         if a["alias_key"] not in questions_by_key:
             a["question_key"] = a["alias_key"]
             questions_by_key[a["alias_key"]] = a
+
+    # Selección de campos del wizard (Task 4): excluye campos marcados
+    # `included=False` antes de procesar filas, y pre-clasifica los que traen
+    # `coding_type` explícito para que nunca caigan en pending_questions.
+    if field_selections:
+        excluded_fields = {fs["field"] for fs in field_selections if not fs.get("included", True)}
+        if excluded_fields:
+            rows = [r for r in rows if r.get("question_key") not in excluded_fields]
+        for fs in field_selections:
+            coding_type = fs.get("coding_type")
+            if not coding_type:
+                continue
+            if coding_type not in configured_types:
+                raise ValueError(
+                    f"coding_type '{coding_type}' para el campo '{fs['field']}' "
+                    f"no está configurado en esta ronda"
+                )
+            field = fs["field"]
+            if field not in questions_by_key:
+                qid = classify_question(db, project_id, field, coding_type)
+                questions_by_key[field] = {"id": qid, "coding_type": coding_type}
 
     pending: set[str] = set()
     skipped_by_type: dict[str, int] = {}

@@ -751,6 +751,15 @@ def preview_fields(
     return {"fields": fields}
 
 
+class FieldSelection(BaseModel):
+    field: str
+    included: bool = True
+    # Clasificación elegida en el wizard (solo cuando el scope de la ronda es
+    # "both"); si viene, insert_verbatims crea el Question directo y ese campo
+    # nunca cae en pending_questions.
+    coding_type: str | None = None
+
+
 class ImportIn(BaseModel):
     verbatims_sheet: str
     codebook_sheet: str | None = None
@@ -762,6 +771,9 @@ class ImportIn(BaseModel):
     # REQ-03: etiqueta de la carga ('Dimension Parte 1'), confirmada/editada por
     # el analista antes de importar. None conserva la sugerida en el upload.
     source_label: str | None = None
+    # None = comportamiento actual (todos los campos incluidos, sin pre-clasificar).
+    # Solo el wizard nuevo de selección de campos lo envía.
+    field_selections: list[FieldSelection] | None = None
     # Red de seguridad para rondas creadas antes de REQ-07 (sin catalog_origins,
     # ver get_or_create_subproject en repositories.py): solo se usan si esta
     # importación todavía tiene que crear el subproyecto de este coding_type.
@@ -951,11 +963,19 @@ def import_file(
             + ", ".join(pending_catalogs),
         )
 
-    n_inserted, df, pending_questions, skipped_by_type = insert_verbatims(
-        db, round_id, project_id, file_id, rows,
-        min_mentions_threshold=payload.min_mentions_threshold,
-        audit_percentage=payload.audit_percentage,
-    )
+    try:
+        n_inserted, df, pending_questions, skipped_by_type = insert_verbatims(
+            db, round_id, project_id, file_id, rows,
+            min_mentions_threshold=payload.min_mentions_threshold,
+            audit_percentage=payload.audit_percentage,
+            field_selections=(
+                [fs.model_dump() for fs in payload.field_selections]
+                if payload.field_selections else None
+            ),
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
 
     configured_types = db.execute(
         text("select coding_type from subprojects where round_id = :round"),

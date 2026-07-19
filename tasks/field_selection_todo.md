@@ -113,14 +113,14 @@ auto-match existente de `guess_coding_type`, `repositories.py:558`) para que no
 caigan en `pending_questions`.
 
 **Acceptance criteria:**
-- [ ] Campo con `included=False` → no genera filas en `verbatims`, no aparece en `pending_questions`
-- [ ] Campo con `coding_type` explícito en ronda con scope `"both"` → `Question` creado con ese `coding_type`, no aparece en `pending_questions`
-- [ ] `field_selections=None` (tests/llamadas actuales) → comportamiento y respuesta idénticos al pipeline actual (regresión cero)
-- [ ] Campo con `coding_type` fuera del scope configurado de la ronda → rechazado con error claro (aprovecha para cerrar el hueco de validación ya identificado, ver plan.md)
+- [x] Campo con `included=False` → no genera filas en `verbatims`, no aparece en `pending_questions`
+- [x] Campo con `coding_type` explícito en ronda con scope `"both"` → `Question` creado con ese `coding_type`, no aparece en `pending_questions`
+- [x] `field_selections=None` (tests/llamadas actuales) → comportamiento y respuesta idénticos al pipeline actual (regresión cero)
+- [x] Campo con `coding_type` fuera del scope configurado de la ronda → rechazado con error claro (`ValueError` → 400; cierra el hueco de validación identificado en el plan)
 
 **Verification:**
-- [ ] Tests: `pytest backend/tests/ -v -k import` en verde, incluidos los existentes de `.dau`/Excel
-- [ ] Manual: import con `field_selections` variado vs. sin el campo, comparar `pending_questions` resultante
+- [x] Tests: `pytest backend/tests/test_question_classification.py -v` (10 passed); suite completa 185 passed
+- [ ] Manual: import con `field_selections` variado vs. sin el campo, comparar `pending_questions` resultante (pendiente, requiere server + archivo real)
 
 **Dependencies:** Task 3 (comparte el contrato `FieldSelection`)
 
@@ -132,7 +132,7 @@ caigan en `pending_questions`.
 **Estimated scope:** Medium (2-3 files)
 
 ### Checkpoint: Core Features
-- [ ] Suite completa de backend (`pytest backend/tests/ -v`) en verde
+- [x] Suite completa de backend (`pytest backend/tests/ -v`) en verde (185 passed)
 - [ ] Import con selección de campos y clasificación inline probado manualmente contra un `.dau` y un `.xlsx` reales
 
 ---
