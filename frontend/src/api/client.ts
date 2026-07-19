@@ -13,6 +13,8 @@ import type {
   CatalogPreview,
   CodebookSource,
   ColumnMap,
+  FieldPreview,
+  FieldSelection,
   ImportResult,
   LoadReviewState,
   LoginPayload,
@@ -324,6 +326,24 @@ export interface ImportSettings {
   // subproyecto nuevo. No editables después (ver UpdateSubprojectInput).
   minMentionsThreshold?: number | undefined;
   auditPercentage?: number | undefined;
+  // Wizard de selección de campos: None conserva el comportamiento actual
+  // (todos los campos incluidos, sin pre-clasificar).
+  fieldSelections?: FieldSelection[] | undefined;
+}
+
+export async function previewFields(
+  roundId: string,
+  fileId: string,
+  sheet?: string
+): Promise<{ fields: FieldPreview[] }> {
+  return request<{ fields: FieldPreview[] }>(
+    `/rounds/${roundId}/files/${fileId}/preview-fields`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ sheet: sheet ?? null }),
+    }
+  );
 }
 
 export async function importFile(
@@ -344,6 +364,7 @@ export async function importFile(
       source_label: settings.sourceLabel ?? null,
       min_mentions_threshold: settings.minMentionsThreshold ?? null,
       audit_percentage: settings.auditPercentage ?? null,
+      field_selections: settings.fieldSelections ?? null,
     }),
   });
 }

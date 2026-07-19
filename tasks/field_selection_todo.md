@@ -171,11 +171,11 @@ no los tiene instalados).
 `client.ts` para aceptar `field_selections`.
 
 **Acceptance criteria:**
-- [ ] Tipos reflejan exactamente el shape de Task 3/4
-- [ ] `client.ts` no usa `any`
+- [x] Tipos reflejan exactamente el shape de Task 3/4
+- [x] `client.ts` no usa `any`
 
 **Verification:**
-- [ ] `bunx tsc --noEmit` limpio
+- [x] `bunx tsc --noEmit` limpio
 
 **Dependencies:** Task 3, Task 4 (contratos ya definidos en backend)
 

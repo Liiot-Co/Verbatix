@@ -201,6 +201,22 @@ export interface UploadedFile {
   } | null;
 }
 
+// Metadata por campo/columna para el wizard de selección de campos
+// (preview-fields): sugerencia solo para .dau (guess_coding_type), nunca
+// para Excel.
+export interface FieldPreview {
+  field: string;
+  suggested_coding_type: CodingType | null;
+  reason: string | null;
+  sample_values: string[];
+}
+
+export interface FieldSelection {
+  field: string;
+  included: boolean;
+  coding_type: CodingType | null;
+}
+
 export interface ColumnMap {
   respondent_id?: string;
   question_key?: string;
