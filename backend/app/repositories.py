@@ -234,16 +234,33 @@ def classify_question(
     return qid
 
 
-def _get_or_create_respondent(db: Session, round_id: uuid.UUID, respondent_external_id: str) -> uuid.UUID:
+def _get_or_create_respondent(
+    db: Session,
+    round_id: uuid.UUID,
+    respondent_external_id: str,
+    imported_file_id: uuid.UUID,
+    realid: str | None = None,
+) -> uuid.UUID:
+    """v9 (REQ-03): la unicidad del Serial es por (ronda, carga, Serial) — el mismo
+    Serial puede venir legítimamente de dos cargas distintas (Dimension/Enfield
+    numeran cada una desde 1) y ambos se conservan. `realid` identifica a la
+    persona real; mientras el parser no lo separe del Serial, cae al propio
+    respondent_external_id para no dejar la columna vacía."""
     return db.execute(
         text("""
-            insert into respondents (id, round_id, respondent_external_id)
-            values (:id, :round, :resp)
-            on conflict (round_id, respondent_external_id) do update set
-              respondent_external_id = excluded.respondent_external_id
+            insert into respondents (id, round_id, imported_file_id, respondent_external_id, realid)
+            values (:id, :round, :file, :resp, :realid)
+            on conflict (round_id, imported_file_id, respondent_external_id) do update set
+              realid = excluded.realid
             returning id
         """),
-        {"id": uuid.uuid4(), "round": round_id, "resp": respondent_external_id},
+        {
+            "id": uuid.uuid4(),
+            "round": round_id,
+            "file": imported_file_id,
+            "resp": respondent_external_id,
+            "realid": realid or respondent_external_id,
+        },
     ).scalar()
 
 
@@ -319,7 +336,10 @@ def insert_verbatims(
             src = originals.get(key) or originals.get((row["respondent_external_id"], None))
             original = (src or {}).get("original_text") or row["normalized_text"]
             input_code = (src or {}).get("input_code_number")
-            respondent_id = _get_or_create_respondent(db, round_id, row["respondent_external_id"])
+            respondent_id = _get_or_create_respondent(
+                db, round_id, row["respondent_external_id"], file_id,
+                realid=(src or {}).get("realid"),
+            )
 
             result = db.execute(
                 text("""

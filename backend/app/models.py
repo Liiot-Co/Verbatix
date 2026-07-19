@@ -25,12 +25,18 @@ class User(Base):
     email = Column(String, nullable=False)
     name = Column(String, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+    session_status = Column(String, nullable=False, default="offline")  # active | away | offline (REQ-16)
+    last_activity_at = Column(DateTime(timezone=True), nullable=True)  # REQ-16
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
     projects = relationship("Project", back_populates="creator")
     rounds = relationship("Round", back_populates="creator")
-    roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
+    roles = relationship(
+        "UserRole", back_populates="user",
+        primaryjoin="User.id == UserRole.user_id",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserRole(Base):
@@ -39,9 +45,11 @@ class UserRole(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role_code = Column(String, nullable=False)  # 'admin' | 'codificador' | 'supervisor'
+    assigned_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
-    user = relationship("User", back_populates="roles")
+    user = relationship("User", foreign_keys=[user_id], back_populates="roles")
 
     __table_args__ = (UniqueConstraint("user_id", "role_code", name="user_roles_user_id_role_code_key"),)
 
@@ -99,6 +107,7 @@ class Category(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="created")  # created | in_progress | completed
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
@@ -113,8 +122,10 @@ class Question(Base):
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
     question_key = Column(String, nullable=False)
+    display_label = Column(String, nullable=True)
     single_code_per_response = Column(Boolean, nullable=False, default=False)
     expected_max_mentions = Column(Integer, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
@@ -129,6 +140,8 @@ class QuestionAlias(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     canonical_question_id = Column(UUID(as_uuid=True), ForeignKey("questions.id", ondelete="CASCADE"), nullable=False)
     alias_key = Column(String, nullable=False)
+    source_note = Column(String, nullable=True)  # REQ-03: de qué carga salió el alias
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     # Relationships
@@ -148,7 +161,16 @@ class Subproject(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
     codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id"), nullable=False)
+    name = Column(String, nullable=True)  # 'Marcas' | 'Razones'
     coding_type = Column(String, nullable=False)  # 'brands' | 'reasons'
+    # v9 baja la config de proceso/auditoría de rounds a subprojects. rounds
+    # conserva sus copias (transición) hasta migrar el código que aún las lee.
+    origin_mode = Column(String, nullable=False, default="from_scratch")  # from_scratch | homologated
+    source_subproject_id = Column(UUID(as_uuid=True), ForeignKey("subprojects.id"), nullable=True)
+    min_mentions_threshold = Column(Integer, nullable=False, default=3)
+    audit_percentage = Column(Numeric(5, 2), nullable=False, default=10)
+    target_sample_size = Column(Integer, nullable=True)
+    status = Column(String, nullable=False, default="created")
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -192,11 +214,17 @@ class Respondent(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
-    respondent_external_id = Column(String, nullable=False)
+    imported_file_id = Column(UUID(as_uuid=True), ForeignKey("imported_files.id"), nullable=True)  # REQ-03: de qué carga vino
+    respondent_external_id = Column(String, nullable=False)  # Serial real, NUNCA se modifica
+    realid = Column(String, nullable=True)  # identifica a la persona real (detección de duplicados)
+    profile_status = Column(String, nullable=False, default="not_checked")  # REQ-05
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
-        UniqueConstraint("round_id", "respondent_external_id", name="respondents_round_id_respondent_external_id_key"),
+        UniqueConstraint(
+            "round_id", "imported_file_id", "respondent_external_id",
+            name="respondents_round_file_serial_key",
+        ),
     )
 
 
@@ -205,12 +233,15 @@ class ImportedFile(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
-    file_type = Column(String, nullable=False)  # 'verbatims_xlsx' | 'codebook_xlsx' | 'combined_xlsx'
+    file_type = Column(String, nullable=False)  # 'verbatims_xlsx' | 'codebook_xlsx' | 'combined_xlsx' | 'dau'
+    source_label = Column(String, nullable=True)  # REQ-03: 'Dimension Parte 1', diferencia cargas
     sheet_name = Column(String, nullable=True)
     original_filename = Column(String, nullable=False)
     storage_path = Column(String, nullable=True)
     checksum = Column(String, nullable=True)
     total_rows = Column(Integer, nullable=True)
+    detected_max_mentions = Column(Integer, nullable=True)  # REQ-04
+    mentions_decision = Column(String, nullable=True)  # REQ-04: process_all | limit_to_expected
     status = Column(String, nullable=False, default="uploaded")
     error_log = Column(JSON, nullable=True)
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
@@ -230,6 +261,8 @@ class Codebook(Base):
     version = Column(Integer, nullable=False, default=1)
     parent_codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id"), nullable=True)
     imported_from_file_id = Column(UUID(as_uuid=True), ForeignKey("imported_files.id"), nullable=True)
+    origin = Column(String, nullable=False, default="scratch")  # scratch | inherited_round | imported_client_catalog
+    overflow_threshold = Column(Integer, nullable=True)  # REQ-14
     status = Column(String, nullable=False, default="draft")
     approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
@@ -250,6 +283,8 @@ class Code(Base):
     origin = Column(String, nullable=False, default="analyst_manual")
     is_system = Column(Boolean, nullable=False, default=False)
     system_type = Column(String, nullable=True)
+    is_system_overflow = Column(Boolean, nullable=False, default=False)  # REQ-14
+    overflow_base_system_type = Column(String, nullable=True)  # REQ-14
     inherited_from_code_id = Column(UUID(as_uuid=True), ForeignKey("codes.id"), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
@@ -397,3 +432,78 @@ class VerbatimCode(Base):
     verbatim = relationship("Verbatim", back_populates="codes")
 
     __table_args__ = (UniqueConstraint("verbatim_id", "code_id", name="verbatim_codes_verbatim_id_code_id_key"),)
+
+
+class ImportReviewFlag(Base):
+    """REQ-03/REQ-06: cola de decisiones humanas del flujo de importación.
+    Nada se borra ni se auto-resuelve; queda 'pending' hasta que el analista decida."""
+
+    __tablename__ = "import_review_flags"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    imported_file_id = Column(UUID(as_uuid=True), ForeignKey("imported_files.id", ondelete="CASCADE"), nullable=False)
+    respondent_id = Column(UUID(as_uuid=True), ForeignKey("respondents.id", ondelete="CASCADE"), nullable=True)
+    question_id = Column(UUID(as_uuid=True), ForeignKey("questions.id"), nullable=True)
+    resolved_question_id = Column(UUID(as_uuid=True), ForeignKey("questions.id"), nullable=True)
+    # possible_duplicate | not_in_profile | mention_overflow | unmatched_question_column
+    flag_type = Column(String, nullable=False)
+    detail = Column(JSON, nullable=True)
+    # pending | approved_remove | approved_keep | edited | resolved
+    status = Column(String, nullable=False, default="pending")
+    reviewed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class ProfileFile(Base):
+    """REQ-05: archivo de perfil pactado (solo esquema en v9)."""
+
+    __tablename__ = "profile_files"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id", ondelete="CASCADE"), nullable=False)
+    original_filename = Column(String, nullable=False)
+    storage_path = Column(String, nullable=True)
+    total_rows = Column(Integer, nullable=True)
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class ProfileEntry(Base):
+    __tablename__ = "profile_entries"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    profile_file_id = Column(UUID(as_uuid=True), ForeignKey("profile_files.id", ondelete="CASCADE"), nullable=False)
+    respondent_external_id = Column(String, nullable=True)
+    realid = Column(String, nullable=True)
+    completion_indicator = Column(String, nullable=True)
+    quotas = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class Notification(Base):
+    """REQ-11: notificaciones de asignación."""
+
+    __tablename__ = "notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    type = Column(String, nullable=False)
+    title = Column(String, nullable=True)
+    body = Column(Text, nullable=True)
+    related_entity_id = Column(UUID(as_uuid=True), nullable=True)
+    is_read = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class TimeTrackingEvent(Base):
+    """REQ-15: eventos de tiempo por proyecto/subproyecto/export."""
+
+    __tablename__ = "time_tracking_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    subject_type = Column(String, nullable=False)  # project | subproject | export
+    subject_id = Column(UUID(as_uuid=True), nullable=True)
+    event_type = Column(String, nullable=False)  # assigned | opened | last_activity | completed | export_downloaded
+    occurred_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
