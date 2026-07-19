@@ -9,6 +9,9 @@ import GlowCard, { GlowCardGrid, glowVariantForIndex } from "@/components/GlowCa
 import AvatarStack from "@/components/AvatarStack";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { can } from "@/lib/capabilities";
+import MascotAvatar from "@/components/mascot/MascotAvatar";
+import StatusPicker from "@/components/mascot/StatusPicker";
+import { PRESENCE_CATALOG, type PresenceStatus } from "@/lib/presence";
 
 const PAGE_SIZE = 10;
 const RECENT_COUNT = 3;
@@ -47,6 +50,8 @@ export default function ProjectDashboard() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [presenceOpen, setPresenceOpen] = useState(false);
+  const presenceStatus: PresenceStatus = user?.presence_status ?? "disponible";
 
   useEffect(() => {
     getProjects()
@@ -124,10 +129,12 @@ export default function ProjectDashboard() {
               Cada proyecto agrupa estudios (Marcas, Razones) con sus rondas de codificación.
             </p>
           </div>
-          {canManageProjects && <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full shrink-0">
-            <Plus className="w-3.5 h-3.5" />
-            Nuevo proyecto
-          </Link>}
+          <div className="flex items-start gap-3 shrink-0">
+            {canManageProjects && <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full shrink-0">
+              <Plus className="w-3.5 h-3.5" />
+              Nuevo proyecto
+            </Link>}
+          </div>
         </div>
 
         <div className="relative w-full">
@@ -143,6 +150,18 @@ export default function ProjectDashboard() {
           />
         </div>
       </div>
+
+      <div className={`fixed bottom-5 right-5 z-40 transition-opacity duration-150 ${presenceOpen ? "pointer-events-none opacity-0" : ""}`}>
+        <MascotAvatar
+          status={presenceStatus}
+          size="lg"
+          onClick={() => setPresenceOpen(true)}
+          title={`Cambiar estado — ${PRESENCE_CATALOG[presenceStatus].label}`}
+        />
+      </div>
+      <AnimatePresence>
+        {presenceOpen && <StatusPicker status={presenceStatus} onClose={() => setPresenceOpen(false)} variant="floating" />}
+      </AnimatePresence>
 
       <AnimatePresence mode="wait">
         {loading ? (

@@ -362,6 +362,8 @@ export interface UserProfile {
   roles: RoleCode[];
   capabilities: Capability[];
   account_status: AccountStatus;
+  presence_status: PresenceStatus;
+  presence_changed_at: string | null;
   assignments_count: number;
   created_at: string;
 }
@@ -601,3 +603,4 @@ export interface RoundReport {
   processed_at: string | null;
   codes: ReportCodeStat[];
 }
+import type { PresenceStatus } from "@/lib/presence";
