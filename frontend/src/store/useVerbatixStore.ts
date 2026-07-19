@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { UserProfile } from "@/api/types";
 import { getMe } from "@/api/client";
 import { readAuthToken, writeAuthToken } from "@/lib/tokenStorage";
+import type { PresenceStatus } from "@/lib/presence";
 
 interface Toast {
   id: number;
@@ -20,6 +21,7 @@ interface VerbatixState {
   setAuth: (token: string, user: UserProfile) => void;
   hydrateSession: () => Promise<void>;
   logout: () => void;
+  setPresenceLocal: (status: PresenceStatus, changedAt: string | null) => void;
 
   /* Navigation */
   activeProjectId: string | null;
@@ -93,6 +95,13 @@ export const useVerbatixStore = create<VerbatixState>((set) => ({
     writeStored(USER_KEY, null);
     set({ token: null, user: null, isAuthenticated: false, sessionReady: true });
   },
+
+  setPresenceLocal: (presence_status, presence_changed_at) => set((state) => {
+    if (!state.user) return {};
+    const user = { ...state.user, presence_status, presence_changed_at };
+    writeStored(USER_KEY, user);
+    return { user };
+  }),
 
   activeProjectId: readStored<string | null>(ACTIVE_PROJECT_KEY, null),
   setActiveProjectId: (activeProjectId) => {

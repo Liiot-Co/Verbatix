@@ -49,6 +49,7 @@ import type {
   NotificationStream,
 } from "./types";
 import { readAuthToken, writeAuthToken } from "@/lib/tokenStorage";
+import type { PresenceStatus } from "@/lib/presence";
 
 const BASE = "/api/v1";
 const AUTH_BASE = "/api/auth";
@@ -199,6 +200,12 @@ export async function approveAndAssign(userId: string, roles: RoleCode[], projec
 export async function setUserStatus(userId: string, accountStatus: "active" | "suspended"): Promise<void> {
   await request(`/admin/users/${userId}/status`, {
     method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ account_status: accountStatus }),
+  });
+}
+
+export async function setPresence(status: PresenceStatus): Promise<{ status: PresenceStatus; changed_at: string | null }> {
+  return request<{ status: PresenceStatus; changed_at: string | null }>("/presence/me", {
+    method: "PUT", headers: jsonHeaders, body: JSON.stringify({ status }),
   });
 }
 

@@ -3,11 +3,14 @@ export type OriginMode = "from_scratch" | "homologated";
 export type CatalogOrigin = "scratch" | "inherited_round" | "imported_client_catalog";
 export type CodingStatus = "pending" | "auto_coded" | "needs_review" | "manually_coded" | "unknown";
 
+// REQ-07: elección de origen de catálogo por coding_type al crear una ronda.
 export interface CatalogOriginSelection {
   origin: CatalogOrigin;
   source_subproject_id: string | null;
 }
 
+// GET /projects/{id}/codebook-sources — libros oficiales heredables del mismo
+// tipo y cliente, para elegir como origin: "inherited_round".
 export interface CodebookSource {
   source_subproject_id: string;
   round_id: string;
@@ -22,6 +25,7 @@ export interface CodebookSource {
   nets: number;
 }
 
+// POST /rounds/{id}/files/{file_id}/catalog-preview
 export interface CatalogPreview {
   codes: number;
   aliases: number;
@@ -404,6 +408,8 @@ export interface UserProfile {
   roles: RoleCode[];
   capabilities: Capability[];
   account_status: AccountStatus;
+  presence_status: PresenceStatus;
+  presence_changed_at: string | null;
   assignments_count: number;
   created_at: string;
 }
@@ -643,3 +649,4 @@ export interface RoundReport {
   processed_at: string | null;
   codes: ReportCodeStat[];
 }
+import type { PresenceStatus } from "@/lib/presence";
