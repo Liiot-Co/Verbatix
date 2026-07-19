@@ -11,7 +11,6 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.pipeline.resolution import BelowThresholdError, ResolutionConflict, resolve_group
 from app.repositories import (
-    _current_codebook_id,
     create_code,
     get_group_detail,
     get_resolution_queue,

@@ -85,7 +85,8 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
             "code_number": c["code_number"], 
             "label": c["label"], 
             "net": c["net_name"],
-            "aliases": c["aliases"]
+            "aliases": c["aliases"],
+            "system_type": c["system_type"],
         } for c in codes
     ]
 

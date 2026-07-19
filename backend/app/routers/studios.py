@@ -18,7 +18,6 @@ from app.core import scheduler, storage
 from app.pipeline import imports as load_review
 from app.pipeline.ingest import dau, excel
 from app.repositories import (
-    _current_codebook_id,
     build_mention_groups,
     classify_question,
     clone_codebook,
@@ -34,17 +33,12 @@ from app.repositories import (
 router = APIRouter(prefix="/api/v1", tags=["rounds & subprojects"])
 
 CODING_TYPES = ("brands", "reasons")
+CATALOG_ORIGINS = ("scratch", "inherited_round", "imported_client_catalog")
 
 
-def _get_or_create_codebook(db: Session, project_id: uuid.UUID, coding_type: str) -> tuple[uuid.UUID, dict]:
-    """El codebook es compartido por project_id+coding_type (Tarea 3): una Ronda 2
-    reutiliza el mismo libro sin reprocesarlo, en vez de crear uno nuevo."""
-    existing = _current_codebook_id(db, project_id, coding_type)
-    if existing:
-        return existing, {"codes": 0, "aliases": 0, "nets": 0, "reused": True}
-    cb_id = create_codebook(db, project_id, coding_type)
-    seed_system_codes(db, cb_id)
-    return cb_id, {"codes": 0, "aliases": 0, "nets": 0, "reused": False}
+class CatalogOriginIn(BaseModel):
+    origin: str
+    source_subproject_id: uuid.UUID | None = None
 
 
 class RoundIn(BaseModel):
@@ -55,6 +49,88 @@ class RoundIn(BaseModel):
     audit_percentage: float = 10
     origin_mode: str = "from_scratch"
     source_round_id: uuid.UUID | None = None
+    # REQ-07: la elección real es por catálogo/subproyecto. Los campos legacy
+    # anteriores se conservan para el warm-start semántico de Razones.
+    catalog_origins: dict[str, CatalogOriginIn] | None = None
+    # Compatibilidad del cargador por lote: varias rondas creadas juntas
+    # comparten el catálogo inicial, igual que antes de REQ-07.
+    reuse_catalogs_from_round_id: uuid.UUID | None = None
+
+
+def _catalog_source(
+    db: Session,
+    target_project_id: uuid.UUID,
+    coding_type: str,
+    source_subproject_id: uuid.UUID,
+) -> dict:
+    source = db.execute(
+        text("""
+            select sp.id as subproject_id, sp.coding_type, sp.codebook_id,
+                   sp.round_id, r.project_id, p.proyecto_id
+              from subprojects sp
+              join rounds r on r.id = sp.round_id
+              join projects p on p.id = r.project_id
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.id = :source
+               and cb.status = 'approved'
+        """),
+        {"source": source_subproject_id},
+    ).mappings().first()
+    target = db.execute(
+        text("select proyecto_id from projects where id = :id"),
+        {"id": target_project_id},
+    ).mappings().first()
+    if not source:
+        raise HTTPException(400, "El catálogo origen no existe o todavía no está aprobado")
+    same_project = source["project_id"] == target_project_id
+    same_client = (
+        target
+        and target["proyecto_id"] is not None
+        and source["proyecto_id"] == target["proyecto_id"]
+    )
+    if not same_project and not same_client:
+        raise HTTPException(400, "El catálogo origen pertenece a otro cliente")
+    if source["coding_type"] != coding_type:
+        raise HTTPException(400, "No se puede heredar un catálogo de otro tipo")
+    return dict(source)
+
+
+def _create_catalog_for_origin(
+    db: Session,
+    project_id: uuid.UUID,
+    coding_type: str,
+    selection: CatalogOriginIn,
+) -> tuple[uuid.UUID, dict, uuid.UUID | None]:
+    if selection.origin not in CATALOG_ORIGINS:
+        raise HTTPException(400, f"Origen de catálogo inválido para {coding_type}")
+
+    if selection.origin == "inherited_round":
+        if not selection.source_subproject_id:
+            raise HTTPException(400, f"Falta catálogo origen para {coding_type}")
+        source = _catalog_source(
+            db, project_id, coding_type, selection.source_subproject_id
+        )
+        codebook_id = create_codebook(
+            db,
+            project_id,
+            coding_type,
+            source["codebook_id"],
+            origin="inherited_round",
+            status="approved",
+        )
+        copied = clone_codebook(db, source["codebook_id"], codebook_id)
+        return codebook_id, {**copied, "reused": False}, source["round_id"]
+
+    codebook_id = create_codebook(
+        db, project_id, coding_type, origin=selection.origin
+    )
+    if selection.origin == "scratch":
+        seed_system_codes(db, codebook_id)
+    return (
+        codebook_id,
+        {"codes": 0, "aliases": 0, "nets": 0, "reused": False},
+        None,
+    )
 
 
 @router.post("/projects/{project_id}/rounds", status_code=201)
@@ -67,10 +143,31 @@ def create_round(
     require_project(db, project_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
 
-    source_round_project_id = None
-    if payload.origin_mode == "homologated" and payload.source_round_id:
-        source_round = require_round(db, payload.source_round_id, user["id"])
-        source_round_project_id = source_round["project_id"]
+    selections = payload.catalog_origins or {
+        coding_type: CatalogOriginIn(origin="scratch")
+        for coding_type in CODING_TYPES
+    }
+    if set(selections) != set(CODING_TYPES):
+        raise HTTPException(400, "Debes elegir el origen de los catálogos de Marcas y Razones")
+    reasons_source_round_id = None
+    reused_catalogs: dict[str, dict] = {}
+    if payload.reuse_catalogs_from_round_id:
+        rows = db.execute(
+            text("""
+                select sp.coding_type, sp.codebook_id, cb.origin
+                  from rounds r
+                  join subprojects sp on sp.round_id = r.id
+                  join codebooks cb on cb.id = sp.codebook_id
+                 where r.id = :source and r.project_id = :project
+            """),
+            {
+                "source": payload.reuse_catalogs_from_round_id,
+                "project": project_id,
+            },
+        ).mappings().all()
+        reused_catalogs = {row["coding_type"]: dict(row) for row in rows}
+        if set(reused_catalogs) != set(CODING_TYPES):
+            raise HTTPException(400, "La ronda origen no tiene ambos catálogos")
 
     round_id = uuid.uuid4()
     db.execute(
@@ -88,39 +185,73 @@ def create_round(
             "num": payload.round_number,
             "thr": payload.min_mentions_threshold,
             "pct": payload.audit_percentage,
-            "om": payload.origin_mode,
-            "src": payload.source_round_id,
+            "om": "from_scratch",
+            "src": None,
             "u": user["id"],
         },
     )
 
     subprojects = {}
     for coding_type in CODING_TYPES:
-        cb_id, inherited = _get_or_create_codebook(db, project_id, coding_type)
-
-        # Homologación cross-estudio: si este Estudio no tenía codebook propio
-        # todavía para este coding_type (recién creado) y la ronda origen
-        # pertenece a OTRO Estudio, clona su libro — dentro del mismo Estudio
-        # el codebook ya se comparte automáticamente, no hace falta clonar.
-        if (
-            not inherited["reused"]
-            and source_round_project_id
-            and source_round_project_id != project_id
-        ):
-            inherited = {**inherited, **clone_codebook(db, source_round_project_id, coding_type, cb_id)}
+        selection = selections[coding_type]
+        if reused_catalogs:
+            cb_id = reused_catalogs[coding_type]["codebook_id"]
+            inherited = {
+                "codes": 0, "aliases": 0, "nets": 0, "reused": True
+            }
+            source_round_id = None
+            catalog_origin = reused_catalogs[coding_type]["origin"]
+        else:
+            cb_id, inherited, source_round_id = _create_catalog_for_origin(
+                db, project_id, coding_type, selection
+            )
+            catalog_origin = selection.origin
+        if coding_type == "reasons" and source_round_id:
+            reasons_source_round_id = source_round_id
 
         sp_id = uuid.uuid4()
         db.execute(
             text("""
-                insert into subprojects (id, round_id, codebook_id, coding_type)
-                values (:id, :round, :cb, :ct)
+                insert into subprojects (
+                  id, round_id, codebook_id, coding_type, origin_mode,
+                  source_subproject_id, min_mentions_threshold, audit_percentage
+                )
+                values (
+                  :id, :round, :cb, :ct, :origin_mode,
+                  :source, :threshold, :audit
+                )
             """),
-            {"id": sp_id, "round": round_id, "cb": cb_id, "ct": coding_type},
+            {
+                "id": sp_id,
+                "round": round_id,
+                "cb": cb_id,
+                "ct": coding_type,
+                "origin_mode": (
+                    "homologated"
+                    if selection.origin == "inherited_round"
+                    else "from_scratch"
+                ),
+                "source": selection.source_subproject_id,
+                "threshold": payload.min_mentions_threshold,
+                "audit": payload.audit_percentage,
+            },
         )
         subprojects[coding_type] = {
             "id": str(sp_id), "coding_type": coding_type, "codebook_id": str(cb_id),
+            "catalog_origin": catalog_origin,
             "inherited_codes": inherited["codes"], "inherited_aliases": inherited["aliases"],
+            "inherited_nets": inherited["nets"],
         }
+
+    if reasons_source_round_id:
+        db.execute(
+            text("""
+                update rounds
+                   set origin_mode = 'homologated', source_round_id = :source
+                 where id = :id
+            """),
+            {"source": reasons_source_round_id, "id": round_id},
+        )
 
     db.commit()
 
@@ -128,9 +259,67 @@ def create_round(
         "id": str(round_id),
         "project_id": str(project_id),
         **payload.model_dump(mode="json"),
+        "origin_mode": "homologated" if reasons_source_round_id else "from_scratch",
+        "source_round_id": (
+            str(reasons_source_round_id) if reasons_source_round_id else None
+        ),
         "status": "created",
         "subprojects": list(subprojects.values()),
     }
+
+
+@router.get("/projects/{project_id}/codebook-sources")
+def list_codebook_sources(
+    project_id: uuid.UUID,
+    coding_type: str,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Catálogos oficiales heredables del mismo tipo y cliente."""
+    require_project(db, project_id, user["id"])
+    if coding_type not in CODING_TYPES:
+        raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
+
+    rows = db.execute(
+        text("""
+            select distinct on (cb.id)
+                   sp.id as source_subproject_id, sp.round_id, cb.id as codebook_id,
+                   cb.version, p.id as project_id, p.name as project_name,
+                   r.name as round_name, r.round_number,
+                   (select count(*) from codes c
+                     where c.codebook_id = cb.id and c.is_active) as codes,
+                   (select count(*) from code_aliases a
+                     join codes c on c.id = a.code_id
+                    where a.codebook_id = cb.id and c.is_active) as aliases,
+                   (select count(*) from nets n
+                     where n.codebook_id = cb.id) as nets
+              from projects target
+              join projects p
+                on p.id = target.id
+                or (
+                  target.proyecto_id is not null
+                  and p.proyecto_id = target.proyecto_id
+                )
+              join rounds r on r.project_id = p.id
+              join subprojects sp on sp.round_id = r.id
+              join codebooks cb on cb.id = sp.codebook_id
+             where target.id = :project
+               and sp.coding_type = :coding_type
+               and cb.status = 'approved'
+             order by cb.id, r.round_number desc, r.created_at desc
+        """),
+        {"project": project_id, "coding_type": coding_type},
+    ).mappings().all()
+    return [
+        {
+            **dict(row),
+            "source_subproject_id": str(row["source_subproject_id"]),
+            "round_id": str(row["round_id"]),
+            "codebook_id": str(row["codebook_id"]),
+            "project_id": str(row["project_id"]),
+        }
+        for row in rows
+    ]
 
 
 @router.delete("/rounds/{round_id}", status_code=204)
@@ -445,6 +634,112 @@ class ImportIn(BaseModel):
     source_label: str | None = None
 
 
+class CatalogFileIn(BaseModel):
+    sheet: str
+    coding_type: str
+
+
+def _catalog_file_context(
+    db: Session,
+    round_id: uuid.UUID,
+    file_id: uuid.UUID,
+    coding_type: str,
+) -> tuple[dict, dict]:
+    if coding_type not in CODING_TYPES:
+        raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
+    meta = db.execute(
+        text("""
+            select storage_path, file_type
+              from imported_files
+             where id = :id and round_id = :round
+        """),
+        {"id": file_id, "round": round_id},
+    ).mappings().first()
+    target = db.execute(
+        text("""
+            select sp.codebook_id, cb.origin, cb.status
+              from subprojects sp
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.round_id = :round and sp.coding_type = :coding_type
+        """),
+        {"round": round_id, "coding_type": coding_type},
+    ).mappings().first()
+    if not meta:
+        raise HTTPException(404, "Archivo no encontrado")
+    if not target or target["origin"] != "imported_client_catalog":
+        raise HTTPException(400, "Ese catálogo no fue configurado como importado")
+    return dict(meta), dict(target)
+
+
+@router.post("/rounds/{round_id}/files/{file_id}/catalog-preview")
+def preview_client_catalog(
+    round_id: uuid.UUID,
+    file_id: uuid.UUID,
+    payload: CatalogFileIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    meta, _ = _catalog_file_context(
+        db, round_id, file_id, payload.coding_type
+    )
+    bucket, _, path = meta["storage_path"].partition("/")
+    try:
+        parsed = excel.parse_codebook(
+            storage.download(bucket, path), payload.sheet
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, f"Hoja de catálogo inválida: {exc}") from exc
+    numbers = [code["code_number"] for code in parsed["codes"]]
+    return {
+        "codes": len(parsed["codes"]),
+        "aliases": sum(len(code["aliases"]) for code in parsed["codes"]),
+        "nets": len(parsed["nets"]),
+        "system_codes_overflow": any(95 <= number <= 99 for number in numbers),
+    }
+
+
+@router.post("/rounds/{round_id}/files/{file_id}/catalog-import")
+def import_client_catalog(
+    round_id: uuid.UUID,
+    file_id: uuid.UUID,
+    payload: CatalogFileIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    meta, target = _catalog_file_context(
+        db, round_id, file_id, payload.coding_type
+    )
+    bucket, _, path = meta["storage_path"].partition("/")
+    try:
+        parsed = excel.parse_codebook(
+            storage.download(bucket, path), payload.sheet
+        )
+        imported = insert_codebook_from_excel(
+            db,
+            target["codebook_id"],
+            parsed,
+            imported_from_file_id=file_id,
+            approved_by=user["id"],
+        )
+    except (ValueError, KeyError) as exc:
+        db.rollback()
+        raise HTTPException(400, f"Catálogo inválido: {exc}") from exc
+    db.execute(
+        text("""
+            update imported_files
+               set file_type = 'codebook_xlsx', status = 'validated'
+             where id = :id
+        """),
+        {"id": file_id},
+    )
+    db.commit()
+    return imported
+
+
 @router.post("/rounds/{round_id}/files/{file_id}/import")
 def import_file(
     round_id: uuid.UUID,
@@ -483,14 +778,46 @@ def import_file(
     # ANTES de insertar (después, esta misma carga ya contaría como previa).
     is_additional_load = load_review.round_has_previous_load(db, round_id, file_id)
 
-    n_inserted, df, pending_questions = insert_verbatims(db, round_id, project_id, file_id, rows)
-
     n_codes = n_aliases = 0
     if payload.codebook_sheet:
-        codebook_id = _current_codebook_id(db, project_id, payload.codebook_coding_type)
-        parsed = excel.parse_codebook(content, payload.codebook_sheet)
-        imported = insert_codebook_from_excel(db, codebook_id, parsed)
+        _, target = _catalog_file_context(
+            db, round_id, file_id, payload.codebook_coding_type
+        )
+        try:
+            parsed = excel.parse_codebook(content, payload.codebook_sheet)
+            imported = insert_codebook_from_excel(
+                db,
+                target["codebook_id"],
+                parsed,
+                imported_from_file_id=file_id,
+                approved_by=user["id"],
+            )
+        except (ValueError, KeyError) as exc:
+            db.rollback()
+            raise HTTPException(400, f"Catálogo inválido: {exc}") from exc
         n_codes, n_aliases = imported["codes"], imported["aliases"]
+
+    pending_catalogs = db.execute(
+        text("""
+            select sp.coding_type
+              from subprojects sp
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.round_id = :round
+               and cb.origin = 'imported_client_catalog'
+               and cb.status <> 'approved'
+        """),
+        {"round": round_id},
+    ).scalars().all()
+    if pending_catalogs:
+        raise HTTPException(
+            409,
+            "Confirma primero los catálogos importados de: "
+            + ", ".join(pending_catalogs),
+        )
+
+    n_inserted, df, pending_questions = insert_verbatims(
+        db, round_id, project_id, file_id, rows
+    )
 
     subproject_ids = db.execute(
         text("select id from subprojects where round_id = :round"),

@@ -76,7 +76,16 @@ def resolve_group(
 
     if action == "discard":
         discard = db.execute(
-            text("select id from codes where codebook_id = :cb and code_number = :n"),
+            text("""
+                select id from codes
+                 where codebook_id = :cb
+                   and (
+                     system_type = 'anomaly'
+                     or (system_type is null and code_number = :n)
+                   )
+                 order by system_type nulls last
+                 limit 1
+            """),
             {"cb": cb_id, "n": settings.discard_code_number},
         ).mappings().first()
         if discard:

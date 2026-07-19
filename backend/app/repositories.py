@@ -18,7 +18,13 @@ SYSTEM_CODES = [
 
 
 def create_codebook(
-    db: Session, project_id: uuid.UUID, coding_type: str, parent_codebook_id=None
+    db: Session,
+    project_id: uuid.UUID,
+    coding_type: str,
+    parent_codebook_id=None,
+    *,
+    origin: str = "scratch",
+    status: str = "draft",
 ) -> uuid.UUID:
     """El codebook vive a nivel Estudio (project_id+coding_type), compartido entre
     categorías/rondas — una Ronda 2 puede heredar el mismo libro sin reprocesarlo."""
@@ -29,46 +35,70 @@ def create_codebook(
     ).scalar()
     db.execute(
         text("""
-            insert into codebooks (id, project_id, coding_type, version, parent_codebook_id, status)
-            values (:id, :project, :ct, :v, :parent, 'draft')
+            insert into codebooks (
+              id, project_id, coding_type, version, parent_codebook_id, origin, status
+            )
+            values (:id, :project, :ct, :v, :parent, :origin, :status)
         """),
-        {"id": cb_id, "project": project_id, "ct": coding_type, "v": version, "parent": parent_codebook_id},
+        {
+            "id": cb_id,
+            "project": project_id,
+            "ct": coding_type,
+            "v": version,
+            "parent": parent_codebook_id,
+            "origin": origin,
+            "status": status,
+        },
     )
     return cb_id
 
 
-def seed_system_codes(db: Session, codebook_id: uuid.UUID) -> None:
+def seed_system_codes(db: Session, codebook_id: uuid.UUID, *, overflow: bool = False) -> None:
+    """Crea códigos técnicos una sola vez.
+
+    Si el catálogo del cliente ocupa 95..99, los códigos Verbatix nacen
+    directamente en 995..999; nunca se renumera una fila ya persistida.
+    """
     for number, label, stype in SYSTEM_CODES:
+        persisted_number = number + 900 if overflow else number
         db.execute(
             text("""
-                insert into codes (id, codebook_id, code_number, label, origin, is_system, system_type)
-                values (:id, :cb, :n, :l, 'inherited', true, :st)
+                insert into codes (
+                  id, codebook_id, code_number, label, origin, is_system,
+                  system_type, is_system_overflow, overflow_base_system_type
+                )
+                values (
+                  :id, :cb, :n, :l, 'inherited', true,
+                  :st, :overflow, :overflow_type
+                )
                 on conflict (codebook_id, code_number) do nothing
             """),
-            {"id": uuid.uuid4(), "cb": codebook_id, "n": number, "l": label, "st": stype},
+            {
+                "id": uuid.uuid4(),
+                "cb": codebook_id,
+                "n": persisted_number,
+                "l": label,
+                "st": stype,
+                "overflow": overflow,
+                "overflow_type": stype if overflow else None,
+            },
         )
 
 
 def clone_codebook(
-    db: Session, source_project_id: uuid.UUID, source_coding_type: str, target_codebook_id: uuid.UUID
+    db: Session, source_codebook_id: uuid.UUID, target_codebook_id: uuid.UUID
 ) -> dict:
-    src = db.execute(
-        text("select id from codebooks where project_id = :project and coding_type = :ct order by version desc limit 1"),
-        {"project": source_project_id, "ct": source_coding_type},
-    ).scalar()
-    if not src:
-        return {"codes": 0, "aliases": 0, "nets": 0}
-
     codes = db.execute(
         text("""
             insert into codes (id, codebook_id, code_number, label, origin, is_system,
-                               system_type, inherited_from_code_id)
+                               system_type, inherited_from_code_id,
+                               is_system_overflow, overflow_base_system_type)
             select gen_random_uuid(), :cb, code_number, label, 'inherited', is_system,
-                   system_type, id
+                   system_type, id, is_system_overflow, overflow_base_system_type
             from codes where codebook_id = :src and is_active
             returning id
         """),
-        {"cb": target_codebook_id, "src": src},
+        {"cb": target_codebook_id, "src": source_codebook_id},
     ).rowcount
 
     aliases = db.execute(
@@ -82,7 +112,7 @@ def clone_codebook(
             join codes nc on nc.codebook_id = :cb and nc.inherited_from_code_id = oc.id
             where a.codebook_id = :src
         """),
-        {"cb": target_codebook_id, "src": src},
+        {"cb": target_codebook_id, "src": source_codebook_id},
     ).rowcount
 
     nets = db.execute(
@@ -101,13 +131,47 @@ def clone_codebook(
             join codes oc on oc.id = onc.code_id
             join codes nc on nc.codebook_id = :cb and nc.inherited_from_code_id = oc.id
         """),
-        {"cb": target_codebook_id, "src": src},
+        {"cb": target_codebook_id, "src": source_codebook_id},
     ).rowcount
 
     return {"codes": codes, "aliases": aliases, "nets": nets}
 
 
-def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict) -> dict:
+def insert_codebook_from_excel(
+    db: Session,
+    codebook_id: uuid.UUID,
+    parsed: dict,
+    *,
+    imported_from_file_id: uuid.UUID,
+    approved_by,
+) -> dict:
+    """Confirma un catálogo de cliente conservando sus números exactos."""
+    numbers = [code["code_number"] for code in parsed["codes"]]
+    if len(numbers) != len(set(numbers)):
+        raise ValueError("El catálogo contiene números de código repetidos")
+    if (
+        any(95 <= number <= 99 for number in numbers)
+        and any(995 <= number <= 999 for number in numbers)
+    ):
+        raise ValueError(
+            "El catálogo ocupa simultáneamente 95–99 y 995–999; "
+            "no hay un rango seguro para los códigos de sistema"
+        )
+
+    codebook = db.execute(
+        text("select origin, status from codebooks where id = :id for update"),
+        {"id": codebook_id},
+    ).mappings().first()
+    if not codebook or codebook["origin"] != "imported_client_catalog":
+        raise ValueError("El subproyecto no fue configurado para importar un catálogo")
+
+    existing_client_codes = db.execute(
+        text("select count(*) from codes where codebook_id = :cb and not is_system"),
+        {"cb": codebook_id},
+    ).scalar()
+    if existing_client_codes:
+        raise ValueError("El catálogo del cliente ya fue importado")
+
     net_ids, n_alias = {}, 0
     for i, name in enumerate(parsed["nets"]):
         nid = uuid.uuid4()
@@ -125,23 +189,17 @@ def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict
         db.execute(
             text("""
                 insert into codes (id, codebook_id, code_number, label, origin, is_system, system_type)
-                values (:id, :cb, :n, :l, 'inherited', :sys, :st)
-                on conflict (codebook_id, code_number) do nothing
+                values (:id, :cb, :n, :l, 'imported_client', false, null)
             """),
             {
                 "id": cid,
                 "cb": codebook_id,
                 "n": c["code_number"],
                 "l": c["label"],
-                "sys": c["is_system"],
-                "st": next((s[2] for s in SYSTEM_CODES if s[0] == c["code_number"]), None),
             },
         )
 
-        real_id = db.execute(
-            text("select id from codes where codebook_id = :cb and code_number = :n"),
-            {"cb": codebook_id, "n": c["code_number"]},
-        ).scalar()
+        real_id = cid
 
         if c["net"] and c["net"] in net_ids:
             db.execute(
@@ -175,7 +233,25 @@ def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict
             )
             n_alias += 1
 
-    return {"codes": len(parsed["codes"]), "aliases": n_alias, "nets": len(parsed["nets"])}
+    overflow = any(95 <= number <= 99 for number in numbers)
+    seed_system_codes(db, codebook_id, overflow=overflow)
+    db.execute(
+        text("""
+            update codebooks
+               set imported_from_file_id = :file,
+                   status = 'approved',
+                   approved_by = :user,
+                   approved_at = now()
+             where id = :cb
+        """),
+        {"file": imported_from_file_id, "user": approved_by, "cb": codebook_id},
+    )
+    return {
+        "codes": len(parsed["codes"]),
+        "aliases": n_alias,
+        "nets": len(parsed["nets"]),
+        "system_codes_overflow": overflow,
+    }
 
 
 def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str | None) -> uuid.UUID | None:
@@ -190,7 +266,7 @@ def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str |
     ).scalar()
     if direct:
         return direct
-    return db.execute(
+    result = db.execute(
         text("""
             select q.id from questions q
             join question_aliases qa on qa.canonical_question_id = q.id
@@ -198,6 +274,7 @@ def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str |
         """),
         {"project": project_id, "qk": question_key},
     ).scalar()
+    return result
 
 
 def classify_question(
@@ -247,7 +324,7 @@ def _get_or_create_respondent(
     persona real (el parser .dau ya lo separa del Serial); cuando la fuente no
     trae un realid aparte (Excel), cae al propio respondent_external_id — REQ-03
     trata Serial/realid como sinónimos si no hay campo separado."""
-    return db.execute(
+    result = db.execute(
         text("""
             insert into respondents (id, round_id, imported_file_id, respondent_external_id, realid)
             values (:id, :round, :file, :resp, :realid)
@@ -263,6 +340,7 @@ def _get_or_create_respondent(
             "realid": realid or respondent_external_id,
         },
     ).scalar()
+    return result
 
 
 def insert_verbatims(
@@ -737,10 +815,21 @@ def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UU
     if existing:
         return {"id": str(existing["id"]), "code_number": existing["code_number"], "label": existing["label"], "is_new": False}
 
-    next_number = db.execute(
-        text("select coalesce(max(code_number), 0) + 1 from codes where codebook_id = :cb and not is_system"),
+    # Serializa la asignación para que dos resoluciones concurrentes no elijan
+    # el mismo número. Los números existentes jamás se reciclan ni actualizan.
+    db.execute(
+        text("select id from codebooks where id = :cb for update"),
         {"cb": codebook_id},
-    ).scalar()
+    )
+    number_rows = db.execute(
+        text("select code_number, is_system from codes where codebook_id = :cb"),
+        {"cb": codebook_id},
+    ).mappings().all()
+    occupied = {row["code_number"] for row in number_rows}
+    non_system = [row["code_number"] for row in number_rows if not row["is_system"]]
+    next_number = (max(non_system) if non_system else 0) + 1
+    while next_number in occupied:
+        next_number += 1
 
     code_id = uuid.uuid4()
     db.execute(
@@ -1336,6 +1425,31 @@ def set_round_status(db: Session, round_id: uuid.UUID, status: str) -> None:
         text("update rounds set status = :st, updated_at = now() where id = :id"),
         {"st": status, "id": round_id},
     )
+
+
+def approve_scratch_codebooks_for_round(
+    db: Session, round_id: uuid.UUID, user_id
+) -> int:
+    """Oficializa catálogos scratch solo cuando la ronda cerró su auditoría."""
+    result = db.execute(
+        text("""
+            update codebooks cb
+               set status = 'approved',
+                   approved_by = :user,
+                   approved_at = now()
+             where cb.origin = 'scratch'
+               and cb.status <> 'approved'
+               and cb.id in (
+                 select sp.codebook_id
+                   from subprojects sp
+                   join rounds r on r.id = sp.round_id
+                  where sp.round_id = :round
+                    and r.status = 'audit_approved'
+               )
+        """),
+        {"round": round_id, "user": user_id},
+    )
+    return getattr(result, "rowcount", 0)
 
 
 def log_action(

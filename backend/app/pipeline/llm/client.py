@@ -57,17 +57,31 @@ def _build_prompt(codebook: list[dict], verbatims: list[dict], coding_type: str)
     codebook_lines = "\n".join(codebook_lines)
     verbatim_lines = "\n".join(f"{v['id']}: {v['text']}" for v in verbatims)
     domain_intro = _DOMAIN_INTRO.get(coding_type, _DOMAIN_INTRO["reasons"])
-    code97_rule = _CODE97_RULE.get(coding_type, _CODE97_RULE["reasons"])
+    system_numbers = {
+        c["system_type"]: c["code_number"]
+        for c in codebook
+        if c.get("system_type")
+    }
+    anomaly = system_numbers.get("anomaly", 95)
+    no_answer = system_numbers.get("no_answer", 96)
+    other_mentions = system_numbers.get("other_mentions", 97)
+    none = system_numbers.get("none", 98)
+    no_recall = system_numbers.get("no_recall", 99)
+    code97_rule = _CODE97_RULE.get(
+        coding_type, _CODE97_RULE["reasons"]
+    ).replace("97", str(other_mentions))
     return (
         f"Eres un clasificador de verbatims de encuestas de marketing. {domain_intro}\n\n"
         "No estás obligado a dar una respuesta afirmativa. Usa criterio, no adivines:\n"
         "- Si el texto encaja claramente con un code_number del codebook, asígnalo.\n"
         "- Sé tolerante con errores ortográficos y de tipeo comunes (ej. 'pueraza' -> 'pureza').\n"
-        "- Usa un código de sistema (95 menciones confusas/incorrectas, 96 no sabe/no contesta, "
-        "98 ninguna, 99 no recuerda/no responde) SOLO cuando el texto en sí expresa literalmente "
-        "esa situación: \"no sé\" -> 96; vacío, ilegible, o una respuesta clara que NO corresponde "
+        f"- Usa un código de sistema ({anomaly} menciones confusas/incorrectas, "
+        f"{no_answer} no sabe/no contesta, {none} ninguna, {no_recall} no recuerda/no responde) "
+        "SOLO cuando el texto en sí expresa literalmente "
+        f"esa situación: \"no sé\" -> {no_answer}; vacío, ilegible, o una respuesta clara que NO corresponde "
         "en absoluto al tema de la pregunta (p.ej. una razón de compra en una pregunta de marcas) "
-        "-> 95; \"ninguna\"/\"nada\" -> 98; \"no responde\"/\"no recuerda\" -> 99. No son un cajón "
+        f"-> {anomaly}; \"ninguna\"/\"nada\" -> {none}; "
+        f"\"no responde\"/\"no recuerda\" -> {no_recall}. No son un cajón "
         "de sastre para casos difíciles de clasificar.\n"
         f"{code97_rule}\n"
         "- Si el caso es genuinamente difícil o ambiguo y ninguna de las reglas anteriores aplica "

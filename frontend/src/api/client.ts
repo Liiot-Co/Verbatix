@@ -9,6 +9,9 @@ import type {
   AuditReviewResult,
   AuditSessionSummary,
   BulkResolveResult,
+  CatalogOriginSelection,
+  CatalogPreview,
+  CodebookSource,
   ColumnMap,
   ImportResult,
   LoadReviewState,
@@ -175,7 +178,7 @@ export async function getProjects(): Promise<ProjectListItem[]> {
 export async function createProject(
   externalCode: string,
   name: string
-): Promise<{ id: string; external_code: string; name: string; created_at: string }> {
+): Promise<{ id: string; external_code: string; name: string; proyecto_id: string | null; created_at: string }> {
   return request("/projects", {
     method: "POST",
     headers: jsonHeaders,
@@ -214,6 +217,8 @@ export interface CreateRoundInput {
   audit_percentage: number;
   origin_mode: "from_scratch" | "homologated";
   source_round_id?: string | null | undefined;
+  catalog_origins: Record<"brands" | "reasons", CatalogOriginSelection>;
+  reuse_catalogs_from_round_id?: string | null;
 }
 
 export async function createRound(projectId: string, input: CreateRoundInput): Promise<Round> {
@@ -222,6 +227,15 @@ export async function createRound(projectId: string, input: CreateRoundInput): P
     headers: jsonHeaders,
     body: JSON.stringify(input),
   });
+}
+
+export async function getCodebookSources(
+  projectId: string,
+  codingType: "brands" | "reasons"
+): Promise<CodebookSource[]> {
+  return request<CodebookSource[]>(
+    `/projects/${projectId}/codebook-sources?coding_type=${codingType}`
+  );
 }
 
 /* ── Rondas: archivos, import, proceso (Fase 1 + Fase 2) ── */
@@ -234,6 +248,38 @@ export async function uploadFile(roundId: string, file: File): Promise<UploadedF
   const form = new FormData();
   form.append("file", file);
   return request<UploadedFile>(`/rounds/${roundId}/files`, { method: "POST", body: form });
+}
+
+export async function previewClientCatalog(
+  roundId: string,
+  fileId: string,
+  sheet: string,
+  codingType: "brands" | "reasons"
+): Promise<CatalogPreview> {
+  return request<CatalogPreview>(
+    `/rounds/${roundId}/files/${fileId}/catalog-preview`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ sheet, coding_type: codingType }),
+    }
+  );
+}
+
+export async function importClientCatalog(
+  roundId: string,
+  fileId: string,
+  sheet: string,
+  codingType: "brands" | "reasons"
+): Promise<CatalogPreview> {
+  return request<CatalogPreview>(
+    `/rounds/${roundId}/files/${fileId}/catalog-import`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ sheet, coding_type: codingType }),
+    }
+  );
 }
 
 export async function importFile(

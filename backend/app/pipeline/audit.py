@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.repositories import (
+    approve_scratch_codebooks_for_round,
     assign_codes_to_verbatim,
     create_audit_code_review,
     create_audit_item,
@@ -337,6 +338,7 @@ def approve_session(db: Session, subproject_id: uuid.UUID, *, user_id) -> dict:
     ctx = _subproject_context(db, subproject_id)
     finalize_audit_session(db, session["id"], user_id)
     set_round_status(db, ctx["round_id"], "audit_approved")
+    approve_scratch_codebooks_for_round(db, ctx["round_id"], user_id)
     log_action(
         db, user_id, ctx["round_id"], "audit_session", uuid.UUID(session["id"]), "audit:approve",
         old_value={"status": session["status"]},
