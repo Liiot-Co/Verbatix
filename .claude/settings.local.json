@@ -12,7 +12,8 @@
       "Bash(uv --version)",
       "Bash(git -C /root/Verbatix show --stat d2ee4501)",
       "Bash(git -C /root/Verbatix show d2ee4501)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(file /root/Verbatix/img/*)"
     ],
     "additionalDirectories": [
       "/mnt/h/Mi unidad/Liiot"
