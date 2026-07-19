@@ -21,6 +21,7 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.pipeline.ingest import dau, excel
 from app.repositories import log_action
 
 
@@ -35,6 +36,44 @@ def suggest_source_label(filename: str) -> str:
     stem = re.sub(r"[_\-]+", " ", stem)
     stem = re.sub(r"\s+", " ", stem).strip()
     return stem or "Carga"
+
+
+def field_metadata_for_dau(records: list[dict[str, str]], n: int = 5) -> list[dict]:
+    """Metadata por campo de un `.dau` ya parseado, para el preview de selección
+    de campos: sugerencia de coding_type (patrón NBS_UNAID/VYK) + muestra de
+    valores. Excluye los mismos campos de infraestructura que `dau.parse_verbatims`."""
+    fields = sorted({
+        key for record in records for key in record
+        if not key.startswith("##") and key not in dau._NON_RESPONSE_FIELDS
+    })
+    out = []
+    for field in fields:
+        coding_type = dau.guess_coding_type(field)
+        reason = (
+            "coincide con plantilla conocida (NBS_UNAID/VYK)" if coding_type
+            else "sin patrón conocido, requiere clasificación manual"
+        )
+        out.append({
+            "field": field,
+            "suggested_coding_type": coding_type,
+            "reason": reason,
+            "sample_values": dau.sample_values(records, field, n),
+        })
+    return out
+
+
+def field_metadata_for_excel(rows: list[dict[str, object]], columns: list[str], n: int = 5) -> list[dict]:
+    """Metadata por columna de una hoja de Excel ya leída: sin heurística de
+    sugerencia (no hay patrón fiable de nombre de columna), solo muestra."""
+    return [
+        {
+            "field": column,
+            "suggested_coding_type": None,
+            "reason": None,
+            "sample_values": excel.sample_values(rows, column, n),
+        }
+        for column in columns
+    ]
 
 
 def find_checksum_duplicate(db: Session, round_id: uuid.UUID, checksum: str) -> dict | None:

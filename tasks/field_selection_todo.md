@@ -45,14 +45,14 @@ devuelve `None`. Equivalente para Excel pero con `suggested_coding_type=None`,
 archivo que ya tiene `suggested_source_label` y la lógica de duplicados).
 
 **Acceptance criteria:**
-- [ ] Campo con patrón conocido (`NBS_UNAID*`, `VYK[`) → `suggested_coding_type` poblado + `reason` describe el patrón
-- [ ] Campo sin patrón conocido → `suggested_coding_type=None`, `reason="sin patrón conocido..."`
-- [ ] Columna de Excel → siempre `suggested_coding_type=None`, `reason=None`
-- [ ] `sample_values` presente en ambos casos
+- [x] Campo con patrón conocido (`NBS_UNAID*`, `VYK[`) → `suggested_coding_type` poblado + `reason` describe el patrón
+- [x] Campo sin patrón conocido → `suggested_coding_type=None`, `reason="sin patrón conocido..."`
+- [x] Columna de Excel → siempre `suggested_coding_type=None`, `reason=None`
+- [x] `sample_values` presente en ambos casos
 
 **Verification:**
-- [ ] Tests: nuevo `pytest backend/tests/test_imports.py -v` (o el archivo que agrupe `pipeline/imports.py`)
-- [ ] Manual: N/A
+- [x] Tests: `pytest backend/tests/test_imports.py -v` (3 passed); suite completa 179 passed
+- [x] Manual: N/A
 
 **Dependencies:** Task 1
 
@@ -63,8 +63,8 @@ archivo que ya tiene `suggested_source_label` y la lógica de duplicados).
 **Estimated scope:** Small (1 archivo + tests)
 
 ### Checkpoint: Foundation
-- [ ] Tests unitarios de Task 1-2 en verde
-- [ ] Ningún endpoint ni contrato de API tocado todavía
+- [x] Tests unitarios de Task 1-2 en verde
+- [x] Ningún endpoint ni contrato de API tocado todavía
 
 ---
 
