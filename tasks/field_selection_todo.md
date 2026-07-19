@@ -244,12 +244,12 @@ viene poblado, mostrando `reason` como texto de ayuda/tooltip.
 **Description:** Mismo cambio que Task 8, aplicado al flujo de carga adicional (REQ-03).
 
 **Acceptance criteria:**
-- [ ] Mismo comportamiento que Task 8, verificado en este flujo
-- [ ] `CreationWizard` y `AddLoadView` usan el mismo `FieldSelectionTable` (no hay segunda implementación divergente)
+- [x] Mismo comportamiento que Task 8, verificado en este flujo (`showCodingType = round.subprojects.length > 1`, mismo readOnly-for-Excel)
+- [x] `CreationWizard` y `AddLoadView` usan el mismo `FieldSelectionTable` (no hay segunda implementación divergente)
 
 **Verification:**
-- [ ] `bunx tsc --noEmit` limpio
-- [ ] Manual: flujo de "carga adicional" end-to-end
+- [x] `bunx tsc --noEmit` limpio; `bun run build` limpio
+- [ ] Manual: flujo de "carga adicional" end-to-end (pendiente, requiere backend corriendo + ronda real)
 
 **Dependencies:** Task 7 (puede ir en paralelo con Task 8, ambos consumen el mismo componente)
 
@@ -259,10 +259,20 @@ viene poblado, mostrando `reason` como texto de ayuda/tooltip.
 **Estimated scope:** Small (1 file, reusa Task 7)
 
 ### Checkpoint: Complete
-- [ ] Todos los criterios de aceptación de Tasks 1-9 cumplidos
-- [ ] `pytest backend/tests/ -v` y `bunx tsc --noEmit` limpios
-- [ ] Recorrido manual completo: `.dau`+`both`, Excel+`both`, cualquiera+scope único
-- [ ] Ready for review
+- [x] Todos los criterios de aceptación de Tasks 1-9 cumplidos (salvo verificación manual en navegador, pendiente de server real)
+- [x] `pytest backend/tests/ -v` (185 passed) y `bunx tsc --noEmit` / `bun run build` limpios
+- [ ] Recorrido manual completo: `.dau`+`both`, Excel+`both`, cualquiera+scope único (pendiente — requiere backend + frontend corriendo con datos reales)
+- [x] Ready for review
+
+## Decisión tomada durante la implementación (Task 8)
+
+Excel field_selections quedó fuera de alcance funcional en este incremento: sus filas ya traen `question_key`
+desde la columna "Question ID" del sheet (valores, no encabezados), así que un checkbox/segmentado por columna
+no correspondería a nada real en `insert_verbatims`. Se preguntó al usuario y se optó por: Excel usa
+`FieldSelectionTable` en modo `readOnly` (solo `sample_values`, sin controles), y el import de Excel sigue el
+flujo `columnMap` de siempre sin tocar. `.dau` sí tiene selección funcional completa. Si se necesita selección
+funcional para Excel más adelante, requiere un modo "wide" nuevo en `excel.parse_verbatims` (fuera del alcance
+de este plan, tocaría `excel.py` y `repositories.py` de nuevo).
 
 ## Parallelization
 

@@ -16,6 +16,7 @@ import {
   classifyQuestion,
   getRound,
   importFile,
+  previewFields,
   resolveImportFlag,
   uploadFile,
 } from "@/api/client";
@@ -24,6 +25,8 @@ import type {
   ColumnMap,
   DetectedSheet,
   DuplicateFlag,
+  FieldPreview,
+  FieldSelection,
   RoundStatus,
   SerialCollision,
   UploadedFile,
@@ -31,6 +34,7 @@ import type {
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb from "./Breadcrumb";
+import FieldSelectionTable, { initialFieldSelections } from "./FieldSelectionTable";
 
 type Step = "upload" | "confirm" | "review";
 
@@ -53,6 +57,8 @@ export default function AddLoadView() {
   const [sourceLabel, setSourceLabel] = useState("");
   const [verbatimsSheet, setVerbatimsSheet] = useState("");
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
+  const [fieldPreviews, setFieldPreviews] = useState<FieldPreview[]>([]);
+  const [fieldSelections, setFieldSelections] = useState<FieldSelection[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   const [pendingQuestions, setPendingQuestions] = useState<string[]>([]);
@@ -105,6 +111,27 @@ export default function AddLoadView() {
   );
   const isDau = uploaded?.file_type === "dau";
   const canImport = !!(uploaded && verbatimsSheet && (isDau || columnMap.verbatim));
+  const showCodingType = (round?.subprojects.length ?? 0) > 1;
+
+  // Selección de campos: para .dau se dispara apenas se sube el archivo; para
+  // Excel espera a que haya una hoja elegida (ver misma decisión en CreationWizard).
+  useEffect(() => {
+    if (!roundId || !uploaded) {
+      setFieldPreviews([]);
+      setFieldSelections([]);
+      return;
+    }
+    if (!isDau && !verbatimsSheet) return;
+    let cancelled = false;
+    void previewFields(roundId, uploaded.file_id, isDau ? undefined : verbatimsSheet).then(({ fields }) => {
+      if (cancelled) return;
+      setFieldPreviews(fields);
+      setFieldSelections(initialFieldSelections(fields));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [roundId, uploaded, verbatimsSheet, isDau]);
 
   const pendingFlags = useMemo(
     () => duplicates.filter((d) => d.status === "pending").length,
@@ -120,7 +147,13 @@ export default function AddLoadView() {
         uploaded.file_id,
         verbatimsSheet,
         columnMap as ColumnMap,
-        { sourceLabel: sourceLabel.trim() || undefined }
+        {
+          sourceLabel: sourceLabel.trim() || undefined,
+          // Solo .dau: ver nota en CreationWizard sobre por qué Excel no envía
+          // field_selections (su question_key viene de la columna "Question ID",
+          // no del nombre de columna).
+          ...(isDau ? { fieldSelections } : {}),
+        }
       );
       if (result.pending_questions.length > 0) {
         setPendingQuestions(result.pending_questions);
@@ -152,7 +185,7 @@ export default function AddLoadView() {
     } finally {
       setSubmitting(false);
     }
-  }, [roundId, uploaded, canImport, verbatimsSheet, columnMap, sourceLabel, navigate, showToast]);
+  }, [roundId, uploaded, canImport, verbatimsSheet, columnMap, sourceLabel, isDau, fieldSelections, navigate, showToast]);
 
   const handleClassifyQuestions = useCallback(async () => {
     if (!round?.project_id || pendingQuestions.length === 0) return;
@@ -329,6 +362,21 @@ export default function AddLoadView() {
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {fieldPreviews.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                {isDau ? "Campos a clasificar" : "Muestra de valores"}
+              </label>
+              <FieldSelectionTable
+                fields={fieldPreviews}
+                value={fieldSelections}
+                onChange={setFieldSelections}
+                showCodingType={showCodingType}
+                readOnly={!isDau}
+              />
             </div>
           )}
 
