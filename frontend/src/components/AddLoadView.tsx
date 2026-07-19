@@ -120,9 +120,7 @@ export default function AddLoadView() {
         uploaded.file_id,
         verbatimsSheet,
         columnMap as ColumnMap,
-        undefined,
-        undefined,
-        sourceLabel.trim() || undefined
+        { sourceLabel: sourceLabel.trim() || undefined }
       );
       if (result.pending_questions.length > 0) {
         setPendingQuestions(result.pending_questions);

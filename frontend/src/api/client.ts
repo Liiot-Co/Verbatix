@@ -282,24 +282,35 @@ export async function importClientCatalog(
   );
 }
 
+export interface ImportSettings {
+  codebookSheet?: string | undefined;
+  codebookCodingType?: "brands" | "reasons" | undefined;
+  // REQ-03: etiqueta de la carga, confirmada/editada por el analista antes de importar.
+  sourceLabel?: string | undefined;
+  // Capturados al soltar el archivo — solo se usan si esta importación crea un
+  // subproyecto nuevo. No editables después (ver UpdateSubprojectInput).
+  minMentionsThreshold?: number | undefined;
+  auditPercentage?: number | undefined;
+}
+
 export async function importFile(
   roundId: string,
   fileId: string,
   verbatimsSheet: string,
   columnMap: ColumnMap,
-  codebookSheet?: string,
-  codebookCodingType?: "brands" | "reasons",
-  sourceLabel?: string
+  settings: ImportSettings = {}
 ): Promise<ImportResult> {
   return request<ImportResult>(`/rounds/${roundId}/files/${fileId}/import`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({
       verbatims_sheet: verbatimsSheet,
-      codebook_sheet: codebookSheet ?? null,
-      codebook_coding_type: codebookSheet ? codebookCodingType : null,
+      codebook_sheet: settings.codebookSheet ?? null,
+      codebook_coding_type: settings.codebookSheet ? settings.codebookCodingType : null,
       column_map: columnMap,
-      source_label: sourceLabel ?? null,
+      source_label: settings.sourceLabel ?? null,
+      min_mentions_threshold: settings.minMentionsThreshold ?? null,
+      audit_percentage: settings.auditPercentage ?? null,
     }),
   });
 }

@@ -11,7 +11,7 @@ ROUND_ID = uuid.uuid4()
 FILE_ID = uuid.uuid4()
 SUBPROJECT_BRANDS = uuid.uuid4()
 SUBPROJECT_REASONS = uuid.uuid4()
-QUESTION_KEY = "NBS_UNAID_FUP_ADD[{_4}].Slice"
+QUESTION_KEY = "CUST_BE1[1].Slice"  # no sigue ningún patrón conocido: requiere clasificación manual
 
 
 class FakeResult:
@@ -43,15 +43,22 @@ class FakeSession:
         self.inserted_verbatims: list[dict] = []
 
     def execute(self, stmt, params=None):
-        sql = str(stmt)
+        sql = str(stmt).lower()
         params = params or {}
+
+        if "select id, question_key, coding_type from questions where project_id" in sql:
+            return FakeResult(mappings_list=[
+                {"id": q["id"], "question_key": qk, "coding_type": q["coding_type"]}
+                for (project, qk), q in self.questions.items()
+                if project == params["project"]
+            ])
 
         if "select id from questions where project_id" in sql:
             q = self.questions.get((params["project"], params["qk"]))
             return FakeResult(scalar=q["id"] if q else None)
 
         if "join question_aliases qa" in sql:
-            return FakeResult(scalar=None)  # sin alias en este test
+            return FakeResult(mappings_list=[])  # sin alias en este test
 
         if "insert into questions" in sql:
             self.questions[(params["project"], params["qk"])] = {
@@ -72,13 +79,22 @@ class FakeSession:
             ])
 
         if "insert into respondents" in sql:
-            key = (params["round"], params["resp"])
-            if key not in self.respondents:
-                self.respondents[key] = uuid.uuid4()
-            return FakeResult(scalar=self.respondents[key])
+            for p in params if isinstance(params, list) else [params]:
+                key = (p["round"], p["resp"])
+                if key not in self.respondents:
+                    self.respondents[key] = p["id"]
+            return FakeResult(rowcount=1)
+
+        if "select respondent_external_id, id from respondents" in sql:
+            resps = set(params["resps"])
+            return FakeResult(mappings_list=[
+                {"respondent_external_id": resp, "id": rid}
+                for (round_id, resp), rid in self.respondents.items()
+                if round_id == params["round"] and resp in resps
+            ])
 
         if "insert into verbatims" in sql:
-            self.inserted_verbatims.append(params)
+            self.inserted_verbatims.extend(params if isinstance(params, list) else [params])
             return FakeResult(rowcount=1)
 
         return FakeResult()
@@ -121,3 +137,48 @@ def test_classify_question_is_idempotent_per_project():
 
     assert first_id == second_id
     assert db.questions[(PROJECT_ID, QUESTION_KEY)]["coding_type"] == "brands"
+
+
+def test_known_nbs_unaid_pattern_auto_classifies_as_reasons_without_pending():
+    db = FakeSession()
+    rows = [{
+        "respondent_external_id": "8",
+        "question_key": "NBS_UNAIDBlock[{_1}].NBS_UNAID",
+        "original_text": "el precio",
+    }]
+
+    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+
+    assert pending == []
+    assert n_inserted == 1
+    assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_REASONS
+
+
+def test_known_nbs_unaid_fup_pattern_auto_classifies_as_brands_without_pending():
+    db = FakeSession()
+    rows = [{
+        "respondent_external_id": "8",
+        "question_key": "NBS_UNAID_FUP_ADD[{_4}].Slice",
+        "original_text": "pura vida",
+    }]
+
+    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+
+    assert pending == []
+    assert n_inserted == 1
+    assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_BRANDS
+
+
+def test_known_vyk_pattern_auto_classifies_as_brands_without_pending():
+    db = FakeSession()
+    rows = [{
+        "respondent_external_id": "8",
+        "question_key": "VYK[1].Slice",
+        "original_text": "gloria",
+    }]
+
+    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+
+    assert pending == []
+    assert n_inserted == 1
+    assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_BRANDS

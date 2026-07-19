@@ -44,7 +44,7 @@ interface BatchItem {
 
 const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: "project", label: "Proyecto", icon: "📁" },
-  { key: "studio", label: "Configuración", icon: "🏷️" },
+  { key: "studio", label: "Libro de códigos", icon: "📚" },
   { key: "round", label: "Ronda y Excel", icon: "🔄" },
 ];
 
@@ -108,7 +108,11 @@ export default function CreationWizard() {
   const [newExternalCode, setNewExternalCode] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
 
-  // REQ-07: cada subproyecto elige obligatoriamente su origen de catálogo.
+  // REQ-07: cada subproyecto elige obligatoriamente su origen de catálogo, y
+  // la ronda crea sus subproyectos (Marcas/Razones) de inmediato con ese
+  // origen. newStudyCodingType solo se usa para decirle al backend a qué
+  // subproyecto pertenece una hoja de libro de códigos Excel (no hay forma de
+  // inferirlo de la hoja misma).
   const [round, setRound] = useState<Round | null>(null);
   const newStudyCodingType: CodingType = "brands";
   const [catalogOrigins, setCatalogOrigins] = useState<Record<CodingType, CatalogOriginSelection>>({
@@ -127,9 +131,11 @@ export default function CreationWizard() {
   // a la vez para que la pantalla no se alargue.
   const [expandedCodingType, setExpandedCodingType] = useState<CodingType | null>("brands");
 
-  // Step 3: ronda (wave de datos dentro del estudio) + Excel — umbrales de
-  // clasificación se configuran por ronda, no por estudio: todos los estudios
-  // de una misma ola comparten el mismo mínimo de menciones y % de auditoría.
+  // Step 2: ronda (wave de datos dentro del estudio) + Excel. min_mentions/
+  // % auditoría se capturan acá, al soltar el archivo, y viajan con el import
+  // — no se pueden editar después: cambiarlas mientras el motor ya procesó con
+  // el valor viejo deja el catálogo por frecuencia y el muestreo de auditoría
+  // inconsistentes (bug real reportado en producción).
   const [rName, setRName] = useState("Ronda 1 - 2026");
   const [rRoundNumber, setRRoundNumber] = useState(1);
   const [rThreshold, setRThreshold] = useState(3);
@@ -164,6 +170,9 @@ export default function CreationWizard() {
       setNewExternalCode(detail.external_code);
       setNewProjectName(detail.name);
 
+      const nextNum = nextRoundNumber(detail.rounds ?? []);
+      setRRoundNumber(nextNum);
+      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
       goToStep("studio");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -190,18 +199,23 @@ export default function CreationWizard() {
   const handleCreateProject = async () => {
     if (!newExternalCode.trim() || !newProjectName.trim()) return;
     try {
+      let detail = projectDetail;
       if (!project) {
         const created = await createProject(newExternalCode.trim(), newProjectName.trim());
         setProject(created);
         setActiveProjectId(created.id);
-        setProjectDetail({
+        detail = {
           ...created,
           rounds: [],
           categories: [],
           proyecto_id: created.proyecto_id ?? null,
           created_at: new Date().toISOString(),
-        });
+        };
+        setProjectDetail(detail);
       }
+      const nextNum = nextRoundNumber(detail?.rounds ?? []);
+      setRRoundNumber(nextNum);
+      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
       playSuccess();
       goToStep("studio");
     } catch {
@@ -229,7 +243,9 @@ export default function CreationWizard() {
     goToStep("round");
   };
 
-  // La ronda se crea directamente dentro del Estudio (`projects` en schema v8).
+  // La ronda se crea directamente dentro del Estudio (`projects` en schema v8),
+  // con sus subproyectos (Marcas/Razones) y el origen de catálogo elegido en
+  // el paso "studio" (ver docstring de newStudyCodingType arriba).
   const ensureRound = async (): Promise<Round | null> => {
     if (round) return round;
     if (!project || !rName.trim()) return null;
@@ -420,7 +436,12 @@ export default function CreationWizard() {
       if (result.pending_questions.length > 0) {
         setPendingQuestions(result.pending_questions);
         setQuestionTypes(Object.fromEntries(result.pending_questions.map((question) => [question, newStudyCodingType])));
-        showToast("Clasifica las nuevas variables antes de procesar la ronda.", "info");
+        showToast(
+          isDau
+            ? "Este .dau tiene variables fuera de la plantilla conocida — revisa el detalle antes de continuar."
+            : "Clasifica las nuevas variables antes de procesar la ronda.",
+          "info"
+        );
         return;
       }
       showToast(
@@ -486,8 +507,7 @@ export default function CreationWizard() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (step === "round") return goToStep("studio");
-      if (step === "studio") return goToStep("project");
+      if (step === "round" || step === "studio") return goToStep("project");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -823,7 +843,7 @@ export default function CreationWizard() {
           {step === "round" && project && (
             <div className="space-y-3">
               <motion.button
-                onClick={() => goToStep("studio")}
+                onClick={() => goToStep("project")}
                 whileHover={{ x: -2 }}
                 whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
@@ -857,23 +877,21 @@ export default function CreationWizard() {
                   whileFocus={{ scale: 1.002 }}
                 />
 
-                <motion.div className={newStudyCodingType === "brands" ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
-                  {newStudyCodingType === "brands" && (
-                    <div>
-                      <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</motion.label>
-                      <motion.input
-                        type="number"
-                        min={1}
-                        disabled={!!round}
-                        className="input w-full text-sm mt-1"
-                        value={rThreshold}
-                        onChange={(e) => setRThreshold(Number(e.target.value))}
-                        whileFocus={{ scale: 1.002 }}
-                      />
-                    </div>
-                  )}
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">% de auditoría</motion.label>
+                    <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</div>
+                    <motion.input
+                      type="number"
+                      min={1}
+                      disabled={!!round}
+                      className="input w-full text-sm mt-1"
+                      value={rThreshold}
+                      onChange={(e) => setRThreshold(Number(e.target.value))}
+                      whileFocus={{ scale: 1.002 }}
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">% de auditoría</div>
                     <motion.input
                       type="number"
                       min={0}
@@ -885,7 +903,10 @@ export default function CreationWizard() {
                       whileFocus={{ scale: 1.002 }}
                     />
                   </div>
-                </motion.div>
+                </div>
+                <p className="text-xs text-p-text-faint">
+                  Se fijan al soltar el archivo — no se pueden cambiar después de importar.
+                </p>
               </div>
 
               {importedCatalogTypes.length > 0 && (
@@ -1124,7 +1145,25 @@ export default function CreationWizard() {
                       </motion.div>
                     )}
 
-                    {pendingQuestions.length > 0 && (
+                    {pendingQuestions.length > 0 && isDau && (
+                      <div className="flex items-start gap-2 text-sm text-p-warning bg-p-warning/10 border border-p-warning/30 rounded-lg p-3">
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <p>
+                            Este .dau tiene variables fuera de la plantilla conocida (NBS_UNAID*), por lo que
+                            no se pueden clasificar como Marcas o Razones automáticamente. Contacta a
+                            ingeniería para clasificarlas antes de continuar la importación:
+                          </p>
+                          <ul className="text-xs font-mono space-y-0.5 pl-1">
+                            {pendingQuestions.map((questionKey) => (
+                              <li key={questionKey} className="truncate">{questionKey}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+
+                    {pendingQuestions.length > 0 && !isDau && (
                       <div className="space-y-3 rounded-lg border border-p-warning/40 bg-p-warning/10 p-3">
                         <div className="text-sm font-semibold text-p-text">Clasifica las variables nuevas</div>
                         <p className="text-xs text-p-text-muted">

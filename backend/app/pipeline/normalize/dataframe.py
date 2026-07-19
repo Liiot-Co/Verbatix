@@ -28,8 +28,6 @@ from typing import Literal
 
 import polars as pl
 
-from .text import normalize
-
 CodingType = Literal["brands", "reasons"]
 OUTPUT_COLUMNS = (
     "respondent_external_id",
@@ -66,7 +64,16 @@ def rows_to_normalized_df(rows: list[dict], coding_type: str) -> pl.DataFrame:
         )
         .with_columns(
             pl.col("original_text")
-            .map_elements(normalize, return_dtype=pl.Utf8)
+            .str.to_lowercase()
+            .str.replace_all(r"[áàâäãā]", "a")
+            .str.replace_all(r"[éèêëē]", "e")
+            .str.replace_all(r"[íìîïī]", "i")
+            .str.replace_all(r"[óòôöõō]", "o")
+            .str.replace_all(r"[úùûüū]", "u")
+            .str.replace_all(r"[ñ]", "n")
+            .str.replace_all(r"[^\w\s]", " ")
+            .str.replace_all(r"\s+", " ")
+            .str.strip_chars()
             .alias("normalized_text"),
         )
         .filter(pl.col("normalized_text").str.len_chars() > 0)

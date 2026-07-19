@@ -1,8 +1,14 @@
 """CRUD de Ronda (ola de datos de un Estudio: su propio Excel, verbatims,
-codebook heredado, procesamiento) y sus 2 Subproyectos (Marcas/Razones, v8).
+codebook heredado, procesamiento) y sus Subproyectos (Marcas/Razones, v8).
 
 No hay "crear Estudio" aquí — el Estudio (`projects`) se crea vía
-routers/projects.py. Crear una Ronda crea automáticamente sus 2 subprojects."""
+routers/projects.py. Crear una Ronda crea sus subproyectos de inmediato, uno
+por coding_type, cada uno con el origen de catálogo que el analista eligió
+(REQ-07: `scratch` / `inherited_round` / `imported_client_catalog` — sección
+2.5b). `get_or_create_subproject` (repositories.py) se conserva como red de
+seguridad idempotente para rondas creadas antes de REQ-07 o para un
+coding_type que aparezca en un import sin haber pasado por `catalog_origins`
+— en el flujo normal ya encuentra el subproyecto creado y no hace nada."""
 import hashlib
 import uuid
 
@@ -23,6 +29,7 @@ from app.repositories import (
     clone_codebook,
     create_codebook,
     get_coded_summary,
+    get_or_create_subproject,
     get_pending_summary,
     insert_codebook_from_excel,
     insert_verbatims,
@@ -140,6 +147,9 @@ def create_round(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    """Crea la ronda y sus subproyectos de inmediato, uno por coding_type,
+    cada uno con el origen de catálogo elegido en `catalog_origins` (REQ-07:
+    `scratch` / `inherited_round` / `imported_client_catalog`)."""
     require_project(db, project_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
 
@@ -363,7 +373,8 @@ def get_round(
 
     subproject_rows = db.execute(
         text("""
-            select sp.id, sp.coding_type, sp.codebook_id,
+            select sp.id, sp.coding_type, sp.codebook_id, sp.status, sp.origin_mode,
+                   sp.source_subproject_id, sp.min_mentions_threshold, sp.audit_percentage,
                    (select count(*) from verbatims where subproject_id = sp.id) as verbatims_total,
                    (select count(*) from mention_groups where subproject_id = sp.id) as mention_groups,
                    (select count(*) from codes where codebook_id = sp.codebook_id) as codes_total,
@@ -395,6 +406,11 @@ def get_round(
             "id": str(sp["id"]),
             "coding_type": sp["coding_type"],
             "codebook_id": str(sp["codebook_id"]) if sp["codebook_id"] else None,
+            "status": sp["status"],
+            "origin_mode": sp["origin_mode"],
+            "source_subproject_id": str(sp["source_subproject_id"]) if sp["source_subproject_id"] else None,
+            "min_mentions_threshold": sp["min_mentions_threshold"],
+            "audit_percentage": float(sp["audit_percentage"]),
             "counters": {
                 "verbatims_total": sp["verbatims_total"],
                 "mention_groups": sp["mention_groups"],
@@ -441,6 +457,70 @@ def get_round(
         "audit": audit,
         "subprojects": subprojects,
     }
+
+
+class SubprojectUpdateIn(BaseModel):
+    # min_mentions_threshold/audit_percentage NO son editables acá a propósito:
+    # se fijan una sola vez, al importar el archivo que crea el subproyecto
+    # (ver ImportIn), porque cambiarlas mientras el motor ya procesó con el
+    # valor viejo deja el catálogo por frecuencia y el muestreo de auditoría
+    # inconsistentes (bug real reportado en producción).
+    origin_mode: str | None = None
+    source_round_id: uuid.UUID | None = None  # solo con origin_mode='homologated'
+
+
+@router.patch("/subprojects/{subproject_id}")
+def update_subproject(
+    subproject_id: uuid.UUID,
+    payload: SubprojectUpdateIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Homologación por subproyecto — lo único que sigue siendo editable después
+    de creado (min_mentions_threshold/audit_percentage ya no, ver SubprojectUpdateIn)."""
+    sp = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+
+    updates: dict = {}
+    if payload.origin_mode is not None:
+        if sp["status"] != "created":
+            raise HTTPException(400, "No se puede cambiar el origen: el subproyecto ya empezó a procesar")
+        if payload.origin_mode not in ("from_scratch", "homologated"):
+            raise HTTPException(400, "origin_mode debe ser 'from_scratch' o 'homologated'")
+        if payload.origin_mode == "homologated" and sp["source_subproject_id"]:
+            raise HTTPException(400, "El subproyecto ya está homologado; no se puede volver a cambiar el origen")
+
+        updates["origin_mode"] = payload.origin_mode
+        if payload.origin_mode == "homologated" and payload.source_round_id:
+            source_round = require_round(db, payload.source_round_id, user["id"])
+            source_sp_id = db.execute(
+                text("select id from subprojects where round_id = :round and coding_type = :ct"),
+                {"round": payload.source_round_id, "ct": sp["coding_type"]},
+            ).scalar()
+            if source_sp_id:
+                updates["source_subproject_id"] = source_sp_id
+                # Solo clona si este codebook es nuevo (nada más que los códigos
+                # de sistema) — mismo criterio que create_round tenía antes de
+                # que la homologación se moviera acá (evita duplicar códigos si
+                # ya tenía contenido propio).
+                has_own_codes = db.execute(
+                    text("select exists(select 1 from codes where codebook_id = :cb and not is_system)"),
+                    {"cb": sp["codebook_id"]},
+                ).scalar()
+                if not has_own_codes and source_round["project_id"] != sp["project_id"]:
+                    clone_codebook(db, source_round["project_id"], sp["coding_type"], sp["codebook_id"])
+
+    if not updates:
+        raise HTTPException(400, "Nada que actualizar")
+
+    set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+    db.execute(
+        text(f"update subprojects set {set_clause}, updated_at = now() where id = :id"),
+        {**updates, "id": subproject_id},
+    )
+    db.commit()
+
+    return {"id": str(subproject_id), **updates}
 
 
 @router.get("/subprojects/{subproject_id}/mention-groups")
@@ -632,6 +712,12 @@ class ImportIn(BaseModel):
     # REQ-03: etiqueta de la carga ('Dimension Parte 1'), confirmada/editada por
     # el analista antes de importar. None conserva la sugerida en el upload.
     source_label: str | None = None
+    # Red de seguridad para rondas creadas antes de REQ-07 (sin catalog_origins,
+    # ver get_or_create_subproject en repositories.py): solo se usan si esta
+    # importación todavía tiene que crear el subproyecto de este coding_type.
+    # Uno ya existente conserva su config original.
+    min_mentions_threshold: int | None = None
+    audit_percentage: float | None = None
 
 
 class CatalogFileIn(BaseModel):
@@ -816,7 +902,9 @@ def import_file(
         )
 
     n_inserted, df, pending_questions = insert_verbatims(
-        db, round_id, project_id, file_id, rows
+        db, round_id, project_id, file_id, rows,
+        min_mentions_threshold=payload.min_mentions_threshold,
+        audit_percentage=payload.audit_percentage,
     )
 
     subproject_ids = db.execute(
