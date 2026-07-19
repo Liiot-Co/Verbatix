@@ -11,7 +11,7 @@ ROUND_ID = uuid.uuid4()
 FILE_ID = uuid.uuid4()
 SUBPROJECT_BRANDS = uuid.uuid4()
 SUBPROJECT_REASONS = uuid.uuid4()
-QUESTION_KEY = "NBS_UNAID_FUP_ADD[{_4}].Slice"
+QUESTION_KEY = "CUST_BE1[1].Slice"  # no sigue ningún patrón conocido: requiere clasificación manual
 
 
 class FakeResult:
@@ -121,3 +121,48 @@ def test_classify_question_is_idempotent_per_project():
 
     assert first_id == second_id
     assert db.questions[(PROJECT_ID, QUESTION_KEY)]["coding_type"] == "brands"
+
+
+def test_known_nbs_unaid_pattern_auto_classifies_as_reasons_without_pending():
+    db = FakeSession()
+    rows = [{
+        "respondent_external_id": "8",
+        "question_key": "NBS_UNAIDBlock[{_1}].NBS_UNAID",
+        "original_text": "el precio",
+    }]
+
+    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+
+    assert pending == []
+    assert n_inserted == 1
+    assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_REASONS
+
+
+def test_known_nbs_unaid_fup_pattern_auto_classifies_as_brands_without_pending():
+    db = FakeSession()
+    rows = [{
+        "respondent_external_id": "8",
+        "question_key": "NBS_UNAID_FUP_ADD[{_4}].Slice",
+        "original_text": "pura vida",
+    }]
+
+    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+
+    assert pending == []
+    assert n_inserted == 1
+    assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_BRANDS
+
+
+def test_known_vyk_pattern_auto_classifies_as_brands_without_pending():
+    db = FakeSession()
+    rows = [{
+        "respondent_external_id": "8",
+        "question_key": "VYK[1].Slice",
+        "original_text": "gloria",
+    }]
+
+    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+
+    assert pending == []
+    assert n_inserted == 1
+    assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_BRANDS
