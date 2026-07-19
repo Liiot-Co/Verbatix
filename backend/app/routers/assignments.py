@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/v1/projects/{project_id}/assignments", tags=["as
 
 class AssignmentIn(BaseModel):
     user_id: uuid.UUID
-    role_context: str  # "codificador" | "supervisor"
+    role_context: str | None = None  # legado: las capacidades vienen de user_roles
 
 
 @router.post("", status_code=201)
@@ -29,7 +29,7 @@ def create_assignment(
     user: CurrentUser = Depends(current_user),
 ):
     require_admin(db, user["id"])
-    if payload.role_context not in ("codificador", "supervisor"):
+    if payload.role_context not in (None, "codificador", "supervisor"):
         raise HTTPException(400, "role_context debe ser 'codificador' o 'supervisor'")
 
     aid = uuid.uuid4()
@@ -38,7 +38,8 @@ def create_assignment(
             insert into assignments (id, project_id, user_id, role_context, status, assigned_by)
             values (:id, :p, :u, :ctx, 'active', :by)
             on conflict (project_id, user_id) do update set
-              role_context = excluded.role_context, status = 'active', assigned_by = excluded.assigned_by
+              role_context = excluded.role_context, status = 'active', assigned_by = excluded.assigned_by,
+              revoked_at = null, assigned_at = now()
         """),
         {"id": aid, "p": project_id, "u": payload.user_id, "ctx": payload.role_context, "by": user["id"]},
     )
@@ -55,10 +56,14 @@ def list_assignments(
     require_project(db, project_id, user["id"])
     rows = db.execute(
         text("""
-            select a.id, a.user_id, u.email, u.name, a.role_context, a.status, a.assigned_at
+            select a.id, a.user_id, u.email, u.name, u.account_status,
+                   a.status, a.assigned_at,
+                   coalesce(array_agg(distinct ur.role_code) filter (where ur.role_code is not null), '{}') roles
             from assignments a
             join users u on u.id = a.user_id
-            where a.project_id = :p
+            left join user_roles ur on ur.user_id = u.id
+            where a.project_id = :p and a.status = 'active' and a.revoked_at is null
+            group by a.id, u.email, u.name, u.account_status
             order by a.assigned_at desc
         """),
         {"p": project_id},
@@ -69,7 +74,9 @@ def list_assignments(
             "user_id": str(r["user_id"]),
             "email": r["email"],
             "name": r["name"],
-            "role_context": r["role_context"],
+            "initials": (r["name"] or r["email"] or "?")[0].upper(),
+            "roles": list(r["roles"]),
+            "account_status": r["account_status"],
             "status": r["status"],
             "assigned_at": r["assigned_at"],
         }
@@ -87,7 +94,7 @@ def revoke_assignment(
     require_admin(db, user["id"])
     updated = db.execute(
         text("""
-            update assignments set status = 'reassigned'
+            update assignments set status = 'reassigned', revoked_at = now()
             where project_id = :p and user_id = :uid and status = 'active'
             returning id
         """),

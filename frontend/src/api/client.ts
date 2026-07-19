@@ -1,5 +1,6 @@
 import type {
   AuditApproveResult,
+  AuditReadiness,
   AuditCodeReview,
   AuditItemList,
   AuditPatchResult,
@@ -31,9 +32,13 @@ import type {
   SignupResponse,
   UploadedFile,
   UserProfile,
+  AdminUser,
+  RoleCode,
+  ProjectMember,
   VerbatimList,
   VerbatimSummary,
 } from "./types";
+import { readAuthToken, writeAuthToken } from "@/lib/tokenStorage";
 
 const BASE = "/api/v1";
 const AUTH_BASE = "/api/auth";
@@ -47,11 +52,7 @@ export class ApiError extends Error {
 }
 
 function getToken(): string | null {
-  try {
-    return localStorage.getItem("verbatix:token");
-  } catch {
-    return null;
-  }
+  return readAuthToken();
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -71,7 +72,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
     if (res.status === 401) {
-      localStorage.removeItem("verbatix:token");
+      writeAuthToken(null);
       localStorage.removeItem("verbatix:user");
       window.location.href = "/login";
     }
@@ -90,17 +91,25 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 async function authRequest<T>(url: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
   const res = await fetch(`${AUTH_BASE}${url}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options?.headers as Record<string, string>),
     },
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`API ${res.status}: ${text}`);
+    let message = text;
+    try {
+      const parsed = JSON.parse(text) as { detail?: string };
+      if (parsed.detail) message = parsed.detail;
+    } catch { /* keep response text */ }
+    throw new ApiError(res.status, message);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -123,7 +132,34 @@ export async function signup(payload: SignupPayload): Promise<SignupResponse> {
 }
 
 export async function getMe(): Promise<UserProfile> {
-  return authRequest<UserProfile>("/me", { headers: { Authorization: `Bearer ${getToken()}` } });
+  return authRequest<UserProfile>("/me", { cache: "no-store" });
+}
+
+export async function logoutSession(): Promise<void> {
+  await authRequest<void>("/logout", { method: "POST" });
+}
+
+export async function recoverAccount(payload: { email: string; recovery_code: string; password: string }): Promise<SignupResponse> {
+  return authRequest<SignupResponse>("/recover", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export async function getAdminUsers(status?: string, q?: string): Promise<AdminUser[]> {
+  const params = new URLSearchParams();
+  if (status) params.set("account_status", status);
+  if (q) params.set("q", q);
+  return request<AdminUser[]>(`/admin/users?${params}`);
+}
+
+export async function approveAndAssign(userId: string, roles: RoleCode[], projectIds: string[]): Promise<void> {
+  await request(`/admin/users/${userId}/approve-and-assign`, {
+    method: "POST", headers: jsonHeaders, body: JSON.stringify({ roles, project_ids: projectIds }),
+  });
+}
+
+export async function setUserStatus(userId: string, accountStatus: "active" | "suspended"): Promise<void> {
+  await request(`/admin/users/${userId}/status`, {
+    method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ account_status: accountStatus }),
+  });
 }
 
 /* ── Projects ── */
@@ -146,6 +182,18 @@ export async function createProject(
 
 export async function getProject(projectId: string): Promise<ProjectDetail> {
   return request<ProjectDetail>(`/projects/${projectId}`);
+}
+
+export async function getProjectMembers(projectId: string): Promise<ProjectMember[]> {
+  return request<ProjectMember[]>(`/projects/${projectId}/assignments`);
+}
+
+export async function assignProjectMember(projectId: string, userId: string): Promise<void> {
+  await request(`/projects/${projectId}/assignments`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ user_id: userId }) });
+}
+
+export async function revokeProjectMember(projectId: string, userId: string): Promise<void> {
+  await request(`/projects/${projectId}/assignments/${userId}`, { method: "DELETE" });
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
@@ -305,6 +353,10 @@ export async function bulkResolve(
 
 /* ── Auditoría (Fase 5) ── */
 
+export async function getAuditReadiness(roundId: string): Promise<AuditReadiness> {
+  return request<AuditReadiness>(`/rounds/${roundId}/audit/readiness`);
+}
+
 // Crea o reanuda (idempotente) la sesión; con resample=true re-muestrea una
 // sesión desactualizada por un reproceso del motor (crea sesión nueva).
 export async function createAuditSession(
@@ -355,6 +407,14 @@ export async function patchAuditItem(
     headers: jsonHeaders,
     body: JSON.stringify(input),
   });
+}
+
+export async function editAuditComment(commentId: string, content: string): Promise<void> {
+  await request(`/audit-comments/${commentId}`, { method: "PATCH", headers: jsonHeaders, body: JSON.stringify({ content }) });
+}
+
+export async function deleteAuditComment(commentId: string): Promise<void> {
+  await request(`/audit-comments/${commentId}`, { method: "DELETE" });
 }
 
 // Aprueba una sección (un código de la muestra): da por correctos los items

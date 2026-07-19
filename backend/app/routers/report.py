@@ -6,13 +6,27 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.access import require_round
+from app.core.access import is_admin, require_capability, require_round
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.pipeline.export import build_export_zip
 from app.repositories import get_round_export_data, get_round_report
 
 router = APIRouter(prefix="/api/v1", tags=["report"])
+
+
+def _require_final_for_member(db: Session, round_id: uuid.UUID, user_id) -> None:
+    if is_admin(db, user_id):
+        return
+    pending = db.execute(text("""
+        select 1 from subprojects sp where sp.round_id = :round_id
+          and not exists (
+            select 1 from audit_sessions ases
+            where ases.subproject_id = sp.id and ases.status = 'approved'
+          ) limit 1
+    """), {"round_id": round_id}).scalar()
+    if pending:
+        raise HTTPException(403, "El reporte estará disponible al aprobar toda la auditoría")
 
 
 @router.get("/rounds/{round_id}/report")
@@ -22,6 +36,8 @@ def round_report(
     user: CurrentUser = Depends(current_user),
 ):
     require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "reports.view")
+    _require_final_for_member(db, round_id, user["id"])
     return get_round_report(db, round_id)
 
 
@@ -32,6 +48,8 @@ def export_codebook(
     user: CurrentUser = Depends(current_user),
 ):
     require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "reports.export")
+    _require_final_for_member(db, round_id, user["id"])
     nav = db.execute(
         text("""
             select p.external_code, r.round_number

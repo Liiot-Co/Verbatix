@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.access import require_project, visible_project_ids
+from app.core.access import require_capability, require_project, visible_project_ids
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 
@@ -25,6 +25,7 @@ def create_project(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_capability(db, user["id"], "projects.manage")
     pid = uuid.uuid4()
     try:
         db.execute(
@@ -65,7 +66,23 @@ def list_projects(
     rows = db.execute(
         text("""
             select p.id, p.external_code, p.name, p.created_at,
-                   count(distinct r.id) as rounds_count
+                   count(distinct r.id) as rounds_count,
+                   (select count(*) from assignments a
+                    where a.project_id = p.id and a.status = 'active' and a.revoked_at is null)
+                     as assigned_users_count,
+                   coalesce((
+                     select jsonb_agg(jsonb_build_object(
+                       'id', preview.id, 'name', preview.name, 'email', preview.email,
+                       'initials', preview.initials, 'roles', preview.roles
+                     )) from (
+                       select u.id, u.name, u.email,
+                              upper(left(coalesce(nullif(u.name, ''), u.email), 1)) initials,
+                              array(select role_code from user_roles where user_id = u.id order by role_code) roles
+                       from assignments a join users u on u.id = a.user_id
+                       where a.project_id = p.id and a.status = 'active' and a.revoked_at is null
+                       order by coalesce(u.name, u.email) limit 3
+                     ) preview
+                   ), '[]'::jsonb) assigned_users_preview
             from projects p
             left join rounds r on r.project_id = p.id
             where :ids is null or p.id = any(:ids)
@@ -82,6 +99,8 @@ def list_projects(
             "studies_count": 1,
             "rounds_count": r["rounds_count"],
             "created_at": r["created_at"],
+            "assigned_users_count": r["assigned_users_count"],
+            "assigned_users_preview": r["assigned_users_preview"],
         }
         for r in rows
     ]
@@ -93,9 +112,10 @@ def delete_project(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    require_capability(db, user["id"], "projects.manage")
     deleted = db.execute(
-        text("delete from projects where id = :id and created_by = :u returning id"),
-        {"id": project_id, "u": user["id"]},
+        text("delete from projects where id = :id returning id"),
+        {"id": project_id},
     ).scalar()
     if not deleted:
         raise HTTPException(404, "Proyecto no encontrado")

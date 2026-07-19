@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import type { UserProfile } from "@/api/types";
+import { getMe } from "@/api/client";
+import { readAuthToken, writeAuthToken } from "@/lib/tokenStorage";
 
 interface Toast {
   id: number;
@@ -14,7 +16,9 @@ interface VerbatixState {
   token: string | null;
   user: UserProfile | null;
   isAuthenticated: boolean;
+  sessionReady: boolean;
   setAuth: (token: string, user: UserProfile) => void;
+  hydrateSession: () => Promise<void>;
   logout: () => void;
 
   /* Navigation */
@@ -35,7 +39,6 @@ let toastId = 0;
 const MAX_VISIBLE_TOASTS = 5;
 
 const ACTIVE_PROJECT_KEY = "verbatix:activeProjectId";
-const TOKEN_KEY = "verbatix:token";
 const USER_KEY = "verbatix:user";
 
 function readStored<T>(key: string, fallback: T): T {
@@ -57,20 +60,38 @@ function writeStored(key: string, val: unknown) {
 }
 
 export const useVerbatixStore = create<VerbatixState>((set) => ({
-  token: readStored<string | null>(TOKEN_KEY, null),
+  token: readAuthToken(),
   user: readStored<UserProfile | null>(USER_KEY, null),
-  isAuthenticated: !!readStored<string | null>(TOKEN_KEY, null),
+  isAuthenticated: false,
+  sessionReady: false,
 
   setAuth: (token, user) => {
-    writeStored(TOKEN_KEY, token);
+    writeAuthToken(token);
     writeStored(USER_KEY, user);
-    set({ token, user, isAuthenticated: true });
+    set({ token, user, isAuthenticated: true, sessionReady: true });
+  },
+
+  hydrateSession: async () => {
+    const token = readAuthToken();
+    if (!token) {
+      set({ token: null, user: null, isAuthenticated: false, sessionReady: true });
+      return;
+    }
+    try {
+      const user = await getMe();
+      writeStored(USER_KEY, user);
+      set({ token, user, isAuthenticated: true, sessionReady: true });
+    } catch {
+      writeAuthToken(null);
+      writeStored(USER_KEY, null);
+      set({ token: null, user: null, isAuthenticated: false, sessionReady: true });
+    }
   },
 
   logout: () => {
-    writeStored(TOKEN_KEY, null);
+    writeAuthToken(null);
     writeStored(USER_KEY, null);
-    set({ token: null, user: null, isAuthenticated: false });
+    set({ token: null, user: null, isAuthenticated: false, sessionReady: true });
   },
 
   activeProjectId: readStored<string | null>(ACTIVE_PROJECT_KEY, null),

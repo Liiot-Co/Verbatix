@@ -3,6 +3,10 @@ import AppShell from "@/components/AppShell";
 import AuthGuard from "@/components/AuthGuard";
 import SignInPage from "@/components/SignInPage";
 import SignUpPage from "@/components/SignUpPage";
+import RecoverAccountPage from "@/components/RecoverAccountPage";
+import AccountStatePage from "@/components/AccountStatePage";
+import TeamAdminPage from "@/components/TeamAdminPage";
+import CapabilityGuard from "@/components/CapabilityGuard";
 import ProjectDashboard from "@/components/ProjectDashboard";
 import ProjectDetail from "@/components/ProjectDetail";
 import CreationWizard from "@/components/CreationWizard";
@@ -18,6 +22,11 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<SignInPage />} />
         <Route path="/signup" element={<SignUpPage />} />
+        <Route path="/forgot-password" element={<RecoverAccountPage intro />} />
+        <Route path="/recover-account" element={<RecoverAccountPage />} />
+        <Route path="/pending-approval" element={<AuthGuard><AccountStatePage state="pending" /></AuthGuard>} />
+        <Route path="/no-assignments" element={<AuthGuard><AccountStatePage state="unassigned" /></AuthGuard>} />
+        <Route path="/account-suspended" element={<AuthGuard><AccountStatePage state="suspended" /></AuthGuard>} />
         <Route
           path="/*"
           element={
@@ -27,12 +36,13 @@ export default function App() {
                   <Routes>
                     <Route path="/" element={<ProjectDashboard />} />
                     <Route path="/projects/:projectId" element={<ProjectDetail />} />
-                    <Route path="/wizard" element={<CreationWizard />} />
+                    <Route path="/wizard" element={<CapabilityGuard capability="projects.manage"><CreationWizard /></CapabilityGuard>} />
+                    <Route path="/team" element={<CapabilityGuard capability="users.manage"><TeamAdminPage /></CapabilityGuard>} />
                     <Route path="/rounds/:roundId" element={<UnifiedStudioView />} />
                     <Route path="/rounds/:roundId/preliminary" element={<UnifiedStudioView />} />
                     <Route path="/rounds/:roundId/verbatims" element={<UnifiedStudioView />} />
-                    <Route path="/rounds/:roundId/audit" element={<AuditView />} />
-                    <Route path="/rounds/:roundId/report" element={<ReportView />} />
+                    <Route path="/rounds/:roundId/audit" element={<CapabilityGuard capability="audit.view"><AuditView /></CapabilityGuard>} />
+                    <Route path="/rounds/:roundId/report" element={<CapabilityGuard capability="reports.view"><ReportView /></CapabilityGuard>} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </main>

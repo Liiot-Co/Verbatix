@@ -5,18 +5,25 @@ import {
   Check,
   CheckCircle2,
   ClipboardCheck,
+  Clock3,
   MessageSquare,
   Pencil,
   RefreshCw,
+  ShieldCheck,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import {
   approveAudit,
   approveAuditSection,
+  ApiError,
   createAuditSession,
   deleteAuditItem,
+  deleteAuditComment,
+  editAuditComment,
   getAuditCodes,
+  getAuditReadiness,
   getAuditItems,
   getRound,
   getRoundCodes,
@@ -26,6 +33,7 @@ import {
 import type {
   AuditCodeReview,
   AuditItem,
+  AuditReadiness,
   AuditSessionSummary,
   CodingType,
   RoundCode,
@@ -34,6 +42,7 @@ import type {
 import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { playSuccess, playTick } from "@/lib/sound";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { can } from "@/lib/capabilities";
 import Breadcrumb from "./Breadcrumb";
 
 const ITEMS_PAGE = 200;
@@ -68,6 +77,9 @@ export default function AuditView() {
   const { roundId } = useParams<{ roundId: string }>();
   const navigate = useNavigate();
   const showToast = useVerbatixStore((s) => s.showToast);
+  const user = useVerbatixStore((s) => s.user);
+  const canApprove = can(user, "audit.approve");
+  const canManageRound = can(user, "rounds.manage");
 
   const [studio, setStudio] = useState<RoundStatus | null>(null);
   const [activeSubprojectId, setActiveSubprojectId] = useState<string | null>(null);
@@ -79,6 +91,9 @@ export default function AuditView() {
   const [loading, setLoading] = useState(true);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<AuditReadiness | null>(null);
+  const [waitingForCoding, setWaitingForCoding] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
   const [busy, setBusy] = useState(false);
 
   const [focusIndex, setFocusIndex] = useState(0);
@@ -102,15 +117,29 @@ export default function AuditView() {
     return list;
   }, []);
 
-  // Bootstrap: POST crea o reanuda la sesión (idempotente) — cubre el deep-link
-  // a /audit sin sesión creada. Un 422 significa resolución incompleta.
+  // Bootstrap: primero consulta la disponibilidad global de la ronda. La
+  // auditoría solo empieza cuando Marcas y Razones llegaron a cero pendientes.
   useEffect(() => {
     if (!roundId) return;
+    let cancelled = false;
     setLoading(true);
+    setBlockedReason(null);
     (async () => {
       try {
         const s = await getRound(roundId);
+        if (cancelled) return;
         setStudio(s);
+        const availability = await getAuditReadiness(roundId);
+        if (cancelled) return;
+        setReadiness(availability);
+        if (!availability.ready) {
+          setWaitingForCoding(true);
+          setSummary(null);
+          setReviews([]);
+          setSelectedReviewId(null);
+          return;
+        }
+        setWaitingForCoding(false);
         const subprojectId = activeSubprojectId
           ?? s.subprojects.find((subproject) => subproject.coding_type === "brands")?.id
           ?? s.subprojects[0]?.id;
@@ -120,6 +149,7 @@ export default function AuditView() {
         }
         if (!activeSubprojectId) setActiveSubprojectId(subprojectId);
         const session = await createAuditSession(subprojectId);
+        if (cancelled) return;
         setSummary(session);
         const [list] = await Promise.all([
           loadReviews(subprojectId),
@@ -128,17 +158,34 @@ export default function AuditView() {
         const firstPending = list.find((r) => r.reviewed_count < r.items_count) ?? list[0];
         if (firstPending) setSelectedReviewId(firstPending.id);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "";
-        if (message.includes("422")) {
-          setBlockedReason("Quedan grupos sin resolver en el Centro de Resolución.");
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 422) {
+          setWaitingForCoding(true);
+          setBlockedReason(null);
         } else {
           setBlockedReason("No se pudo iniciar la auditoría.");
         }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  }, [roundId, activeSubprojectId, loadReviews, navigate]);
+    return () => { cancelled = true; };
+  }, [roundId, activeSubprojectId, loadReviews, retryKey]);
+
+  // El supervisor puede dejar esta pantalla abierta: se habilita sola cuando
+  // el codificador resuelve el último grupo.
+  useEffect(() => {
+    if (!roundId || !waitingForCoding) return;
+    const intervalId = window.setInterval(() => {
+      getAuditReadiness(roundId)
+        .then((availability) => {
+          setReadiness(availability);
+          if (availability.ready) setRetryKey((value) => value + 1);
+        })
+        .catch(() => {});
+    }, 6000);
+    return () => window.clearInterval(intervalId);
+  }, [roundId, waitingForCoding]);
 
   useEffect(() => {
     if (!selectedReviewId) {
@@ -264,16 +311,25 @@ export default function AuditView() {
       const comment = commentDraft.trim();
       setCommentItemId(null);
       setCommentDraft("");
-      applyOptimistic(item.id, { comment: comment || item.comment }, async () => {
+      if (!comment) return;
+      applyOptimistic(item.id, {
+        comment,
+        comments: [...item.comments, {
+          id: `pending-${Date.now()}`, author_id: user?.id ?? null,
+          author_name: user?.name ?? null, author_email: user?.email ?? null,
+          roles: user?.roles ?? [], content: comment,
+          created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        }],
+      }, async () => {
         await patchAuditItem(item.id, { comment });
         return null;
       });
     },
-    [commentDraft, applyOptimistic]
+    [commentDraft, applyOptimistic, user]
   );
 
   const handleApprove = useCallback(async () => {
-    if (!activeSubprojectId || !summary || busy) return;
+    if (!canApprove || !activeSubprojectId || !summary || busy) return;
     setBusy(true);
     try {
       const res = await approveAudit(activeSubprojectId);
@@ -297,7 +353,7 @@ export default function AuditView() {
     } finally {
       setBusy(false);
     }
-  }, [roundId, activeSubprojectId, summary, busy, showToast, navigate]);
+  }, [roundId, activeSubprojectId, summary, busy, showToast, navigate, canApprove]);
 
   const handleResample = useCallback(async () => {
     if (!activeSubprojectId || busy) return;
@@ -334,7 +390,7 @@ export default function AuditView() {
       },
       {
         key: "a",
-        action: () => !approved && handleApproveSection(),
+        action: () => canApprove && !approved && handleApproveSection(),
         description: "Aprobar sección",
         category: "Acciones",
       },
@@ -399,31 +455,136 @@ export default function AuditView() {
     );
   }
 
-  const studyCrumb = studio
-    ? {
-        label: studio.project_name,
-        to: `/projects/${studio.project_id}`,
-      }
-    : { label: "Estudio", to: `/rounds/${roundId}` };
+  const auditBreadcrumbs = [
+    { label: "Proyectos", to: "/" },
+    ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
+    ...(studio ? [{ label: studio.name, to: `/rounds/${roundId}` }] : []),
+    { label: "Auditoría" },
+  ];
+
+  if (waitingForCoding) {
+    const pending = readiness?.pending ?? 0;
+    return (
+      <div className="max-w-5xl mx-auto py-4 space-y-4">
+        <Breadcrumb items={auditBreadcrumbs} />
+        <div className="card relative overflow-hidden border-p-accent/20">
+          <motion.div
+            className="absolute -top-24 -right-20 w-72 h-72 rounded-full bg-p-accent/10 blur-3xl pointer-events-none"
+            animate={{ scale: [1, 1.12, 1], opacity: [0.45, 0.8, 0.45] }}
+            transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
+          />
+          <motion.div
+            className="absolute -bottom-28 -left-20 w-72 h-72 rounded-full bg-p-success/10 blur-3xl pointer-events-none"
+            animate={{ scale: [1.1, 0.95, 1.1], opacity: [0.35, 0.65, 0.35] }}
+            transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+          />
+
+          <div className="relative px-6 py-10 sm:px-10 sm:py-12 text-center">
+            <div className="relative w-20 h-20 mx-auto mb-5">
+              <motion.div
+                className="absolute inset-0 rounded-full border border-p-accent/30"
+                animate={{ scale: [1, 1.35], opacity: [0.8, 0] }}
+                transition={{ duration: 2.2, repeat: Infinity, ease: "easeOut" }}
+              />
+              <div className="absolute inset-2 rounded-2xl bg-p-accent-soft flex items-center justify-center shadow-sm">
+                <Clock3 className="w-8 h-8 text-p-accent" />
+              </div>
+              <Sparkles className="absolute -right-1 top-0 w-5 h-5 text-p-warning" />
+            </div>
+
+            <span className="badge-warning inline-flex mb-3">Codificación en curso</span>
+            <h1 className="font-heading text-2xl sm:text-3xl font-semibold text-p-text tracking-tight">
+              Preparando la auditoría
+            </h1>
+            <p className="text-sm text-p-text-muted max-w-xl mx-auto mt-3 leading-relaxed">
+              El equipo de codificación está terminando los últimos grupos. La muestra de auditoría se habilitará automáticamente cuando Marcas y Razones lleguen a cero pendientes.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-3xl mx-auto mt-8 text-left">
+              <div className="rounded-xl border border-p-accent/30 bg-p-accent/5 p-4">
+                <div className="flex items-center gap-2 text-p-accent font-semibold text-sm">
+                  <motion.span
+                    className="w-2 h-2 rounded-full bg-p-accent"
+                    animate={{ opacity: [1, 0.3, 1] }}
+                    transition={{ duration: 1.4, repeat: Infinity }}
+                  />
+                  1. Codificación
+                </div>
+                <p className="text-xs text-p-text-muted mt-2">
+                  {pending > 0 ? `${pending} ${pending === 1 ? "grupo pendiente" : "grupos pendientes"}` : "Confirmando el cierre"}
+                </p>
+              </div>
+              <div className="rounded-xl border border-p-border bg-p-surface/70 p-4 opacity-75">
+                <div className="flex items-center gap-2 text-p-text font-semibold text-sm">
+                  <ClipboardCheck className="w-4 h-4 text-p-text-faint" /> 2. Auditoría
+                </div>
+                <p className="text-xs text-p-text-muted mt-2">Se habilita al terminar la codificación</p>
+              </div>
+              <div className="rounded-xl border border-p-border bg-p-surface/70 p-4 opacity-60">
+                <div className="flex items-center gap-2 text-p-text font-semibold text-sm">
+                  <ShieldCheck className="w-4 h-4 text-p-text-faint" /> 3. Aprobación
+                </div>
+                <p className="text-xs text-p-text-muted mt-2">El supervisor cierra la revisión</p>
+              </div>
+            </div>
+
+            {readiness && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl mx-auto mt-5">
+                {readiness.subprojects.map((subproject) => (
+                  <div key={subproject.id} className="rounded-xl bg-p-bg-subtle/70 border border-p-border px-4 py-3 text-left">
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="font-semibold text-p-text">
+                        {subproject.coding_type === "brands" ? "Marcas" : "Razones"}
+                      </span>
+                      <span className={subproject.ready ? "text-p-success font-semibold" : "text-p-text-muted"}>
+                        {subproject.ready ? "Listo" : `${subproject.pending} pendientes`}
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-p-surface mt-2 overflow-hidden">
+                      <motion.div
+                        className={subproject.ready ? "h-full bg-p-success" : "h-full bg-p-accent"}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${subproject.progress_pct}%` }}
+                        transition={{ duration: 0.6 }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-center gap-3 mt-7">
+              <button
+                type="button"
+                onClick={() => setRetryKey((value) => value + 1)}
+                className="btn-primary text-sm"
+              >
+                <RefreshCw className="w-4 h-4" /> Comprobar ahora
+              </button>
+              <Link
+                to={studio ? `/projects/${studio.project_id}` : "/"}
+                className="btn-ghost text-sm"
+              >
+                Volver al proyecto
+              </Link>
+            </div>
+            <p className="text-[11px] text-p-text-faint mt-4">Esta pantalla se actualiza automáticamente cada 6 segundos.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (blockedReason) {
     return (
       <div className="max-w-3xl mx-auto py-4 space-y-4">
-        <Breadcrumb
-          items={[
-            { label: "Proyectos", to: "/" },
-            ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
-            studyCrumb,
-            { label: "Reporte", to: `/rounds/${roundId}/report` },
-            { label: "Auditoría" },
-          ]}
-        />
+        <Breadcrumb items={auditBreadcrumbs} />
         <div className="card p-8 text-center space-y-3">
           <AlertTriangle className="w-8 h-8 text-p-warning mx-auto" />
           <h1 className="font-heading text-xl font-semibold text-p-text">Auditoría no disponible</h1>
           <p className="text-sm text-p-text-muted">{blockedReason}</p>
-          <Link to={`/rounds/${roundId}/report`} className="btn-primary inline-flex justify-center">
-            Ir al reporte
+          <Link to={studio ? `/projects/${studio.project_id}` : "/"} className="btn-primary inline-flex justify-center">
+            Volver al proyecto
           </Link>
         </div>
       </div>
@@ -438,15 +599,7 @@ export default function AuditView() {
 
   return (
     <div className="max-w-[1400px] mx-auto py-4 space-y-4">
-      <Breadcrumb
-        items={[
-          { label: "Proyectos", to: "/" },
-          ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
-          studyCrumb,
-          { label: "Reporte", to: `/rounds/${roundId}/report` },
-          { label: "Auditoría" },
-        ]}
-      />
+      <Breadcrumb items={auditBreadcrumbs} />
 
       {studio && (
         <div className="inline-flex rounded-lg border border-p-border p-0.5">
@@ -484,7 +637,7 @@ export default function AuditView() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {!approved && (
+            {!approved && canManageRound && (
               <button
                 type="button"
                 className="btn-ghost text-sm py-2"
@@ -493,7 +646,7 @@ export default function AuditView() {
                 Ver reporte
               </button>
             )}
-            {!approved && (
+            {!approved && canApprove && (
             <motion.button
               whileHover={{ scale: summary.target_met ? 1.02 : 1 }}
               whileTap={{ scale: summary.target_met ? 0.98 : 1 }}
@@ -601,10 +754,10 @@ export default function AuditView() {
                 <span className="flex items-center gap-1"><kbd className="kbd-hint">R</kbd>Reasignar</span>
                 <span className="flex items-center gap-1"><kbd className="kbd-hint">E</kbd>Comentar</span>
                 <span className="flex items-center gap-1"><kbd className="kbd-hint">X</kbd>Eliminar</span>
-                <span className="flex items-center gap-1"><kbd className="kbd-hint">A</kbd>Aprobar sección</span>
+                {canApprove && <span className="flex items-center gap-1"><kbd className="kbd-hint">A</kbd>Aprobar sección</span>}
               </span>
               {/* La unidad de revisión: se aprueba la sección completa, no cada verbatim. */}
-              {!approved && selectedReview && (
+              {!approved && canApprove && selectedReview && (
                 selectedReview.status === "pending" ? (
                   <motion.button
                     whileHover={{ scale: 1.02 }}
@@ -673,7 +826,7 @@ export default function AuditView() {
                         onSubmitReassign={() => submitReassign(item)}
                         onToggleComment={() => {
                           setCommentItemId((id) => (id === item.id ? null : item.id));
-                          setCommentDraft(item.comment ?? "");
+                          setCommentDraft("");
                           setTimeout(() => commentInputRef.current?.focus(), 60);
                         }}
                         onCommentChange={setCommentDraft}
@@ -745,6 +898,7 @@ function AuditRow({
   onCancelDelete,
   onConfirmDelete,
 }: AuditRowProps) {
+  const currentUser = useVerbatixStore((state) => state.user);
   const chip = ITEM_CHIP[item.status];
   const removed = item.current_codes.length === 0;
   const changed =
@@ -796,7 +950,8 @@ function AuditRow({
           </div>
         </td>
         <td className="px-4 py-2.5 text-xs text-p-text-muted max-w-[140px]">
-          <span className="line-clamp-2">{item.comment ?? "—"}</span>
+          <span className="line-clamp-2">{item.comments[item.comments.length - 1]?.content ?? item.comment ?? "—"}</span>
+          {item.comments.length > 1 && <span className="block text-[10px] text-p-text-faint mt-1">{item.comments.length} comentarios</span>}
         </td>
         <td className="px-4 py-2.5">
           {approved ? (
@@ -891,14 +1046,15 @@ function AuditRow({
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Comentario</span>
+                <div className="min-w-0 flex-1"><div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide mb-2">Conversación</div>{item.comments.length > 0 && <div className="space-y-2 mb-3 max-h-32 overflow-auto">{item.comments.map((comment) => <div key={comment.id} className="rounded-lg bg-p-surface border border-p-border p-2"><div className="flex items-center gap-2"><div className="text-[10px] text-p-text-faint flex-1">{comment.author_name ?? comment.author_email ?? "Usuario"} · {comment.roles.join(", ")}</div>{(comment.author_id === currentUser?.id || currentUser?.roles.includes("admin")) && !comment.id.startsWith("pending-") && <><button aria-label="Editar comentario" className="text-p-text-faint hover:text-p-accent" onClick={async () => { const content = prompt("Editar comentario", comment.content)?.trim(); if (content) { await editAuditComment(comment.id, content); window.location.reload(); } }}><Pencil className="w-3 h-3" /></button><button aria-label="Eliminar comentario" className="text-p-text-faint hover:text-p-error" onClick={async () => { if (confirm("¿Eliminar este comentario?")) { await deleteAuditComment(comment.id); window.location.reload(); } }}><Trash2 className="w-3 h-3" /></button></>}</div><div className="text-xs text-p-text mt-0.5">{comment.content}</div></div>)}</div>}
+                <div className="flex items-center gap-2"><span className="text-xs font-semibold text-p-text-muted">Añadir</span>
                 <input
                   ref={commentInputRef}
                   type="text"
                   value={commentDraft}
                   onChange={(e) => onCommentChange(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && onSubmitComment()}
-                  placeholder="Nota para la constancia de auditoría…"
+                  placeholder="Escribe un comentario…"
                   className="input text-xs py-1 flex-1 max-w-md"
                   aria-label="Comentario del item"
                 />
@@ -906,8 +1062,8 @@ function AuditRow({
                   onClick={onSubmitComment}
                   className="px-2.5 py-1 rounded-lg project-row-icon-2 text-xs font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150"
                 >
-                  Guardar
-                </button>
+                  Publicar
+                </button></div></div>
                 <button onClick={onToggleComment} className="text-xs text-p-text-faint underline underline-offset-2">
                   Cancelar
                 </button>

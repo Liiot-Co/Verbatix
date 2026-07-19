@@ -28,6 +28,22 @@ export interface ProjectListItem {
   studies_count: number;
   rounds_count: number;
   created_at: string;
+  assigned_users_count: number;
+  assigned_users_preview: AssignedUserPreview[];
+}
+
+export interface AssignedUserPreview {
+  id: string;
+  name: string | null;
+  email: string;
+  initials: string;
+  roles: RoleCode[];
+}
+
+export interface ProjectMember extends AssignedUserPreview {
+  user_id: string;
+  account_status: AccountStatus;
+  assigned_at: string;
 }
 
 export interface ProjectDetail {
@@ -221,22 +237,37 @@ export interface LoginResponse {
 export interface SignupPayload {
   email: string;
   password: string;
+  name?: string;
 }
 
 export interface SignupResponse {
-  id?: string;
-  email?: string;
-  access_token?: string;
-  token_type?: string;
+  access_token: string;
+  token_type: string;
+  recovery_code: string;
+  user: { id: string; email: string };
 }
+
+export type RoleCode = "admin" | "codificador" | "supervisor";
+export type AccountStatus = "pending" | "active" | "suspended";
+export type Capability =
+  | "users.manage" | "assignments.manage" | "projects.manage" | "rounds.manage"
+  | "resolution.view" | "resolution.edit" | "audit.view" | "audit.edit"
+  | "audit.approve" | "reports.view" | "reports.export";
 
 export interface UserProfile {
   id: string;
   email: string;
   name: string | null;
-  role: string;
-  is_active: boolean;
+  roles: RoleCode[];
+  capabilities: Capability[];
+  account_status: AccountStatus;
+  assignments_count: number;
   created_at: string;
+}
+
+export interface AdminUser extends UserProfile {
+  assignments_count: number;
+  project_ids: string[];
 }
 
 /* ── Resolution Center (Fase 4) ── */
@@ -325,6 +356,22 @@ export type AuditItemStatus = "pending" | "correct" | "reassigned";
 export type AuditSessionStatus = "pending" | "in_progress" | "approved";
 export type AuditCodeReviewStatus = "pending" | "approved" | "with_corrections";
 
+export interface AuditReadiness {
+  ready: boolean;
+  pending: number;
+  round_status: string | null;
+  subprojects: Array<{
+    id: string;
+    coding_type: CodingType;
+    total: number;
+    pending: number;
+    auto_coded: number;
+    resolved: number;
+    progress_pct: number;
+    ready: boolean;
+  }>;
+}
+
 // GET/POST /rounds/{id}/audit/session — resumen de la última sesión.
 export interface AuditSessionSummary {
   id: string;
@@ -375,7 +422,19 @@ export interface AuditItem {
   current_codes: AuditItemCode[];
   status: AuditItemStatus;
   comment: string | null;
+  comments: AuditComment[];
   reviewed_at: string | null;
+}
+
+export interface AuditComment {
+  id: string;
+  author_id: string | null;
+  author_name: string | null;
+  author_email: string | null;
+  roles: RoleCode[];
+  content: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface AuditItemList {

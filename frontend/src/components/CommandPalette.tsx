@@ -3,6 +3,9 @@ import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Keyboard, ChevronRight, LayoutDashboard, Sparkles, ArrowLeft, ArrowRight, RefreshCw, Download } from "lucide-react";
 import { modLabel } from "@/hooks/useKeyboardShortcuts";
+import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { can } from "@/lib/capabilities";
+import type { UserProfile } from "@/api/types";
 
 interface CommandItem {
   label: string;
@@ -14,10 +17,9 @@ interface CommandItem {
   category: string;
 }
 
-function getCommands(): CommandItem[] {
+function getCommands(user: UserProfile | null): CommandItem[] {
   const m = () => modLabel();
-  return [
-    {
+  const commands: CommandItem[] = [{
       label: "Ir al Dashboard",
       description: "Ver lista de proyectos",
       icon: <LayoutDashboard className="w-4 h-4" />,
@@ -25,8 +27,25 @@ function getCommands(): CommandItem[] {
       action: () => window.location.href = "/",
       keywords: ["dashboard", "proyectos", "inicio", "home", "index"],
       category: "Navegación",
-    },
-    {
+    }, {
+      label: "Atrás", description: "Navegar a la página anterior",
+      icon: <ArrowLeft className="w-4 h-4" />, shortcut: `${m()}←`,
+      action: () => window.history.back(), keywords: ["atras", "back", "volver"], category: "Navegación",
+    }, {
+      label: "Adelante", description: "Navegar a la página siguiente",
+      icon: <ArrowRight className="w-4 h-4" />, shortcut: `${m()}→`,
+      action: () => window.history.forward(), keywords: ["adelante", "forward", "siguiente"], category: "Navegación",
+    }, {
+      label: "Buscar", description: "Enfocar campo de búsqueda",
+      icon: <Search className="w-4 h-4" />, shortcut: `${m()}F`,
+      action: () => (document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement | null)?.focus(),
+      keywords: ["buscar", "search", "filtrar"], category: "Acciones",
+    }, {
+      label: "Recargar página", description: "Actualizar la vista actual",
+      icon: <RefreshCw className="w-4 h-4" />, shortcut: `${m()}R`,
+      action: () => window.location.reload(), keywords: ["recargar", "actualizar"], category: "Acciones",
+    }];
+  if (can(user, "projects.manage")) commands.splice(1, 0, {
       label: "Nuevo proyecto",
       description: "Crear proyecto desde el wizard",
       icon: <Sparkles className="w-4 h-4" />,
@@ -34,57 +53,19 @@ function getCommands(): CommandItem[] {
       action: () => window.location.href = "/wizard",
       keywords: ["nuevo", "crear", "proyecto", "wizard", "asistente"],
       category: "Acciones",
-    },
-    {
-      label: "Atrás",
-      description: "Navegar a la página anterior",
-      icon: <ArrowLeft className="w-4 h-4" />,
-      shortcut: `${m()}←`,
-      action: () => window.history.back(),
-      keywords: ["atras", "back", "anterior", "volver", "retroceder"],
-      category: "Navegación",
-    },
-    {
-      label: "Adelante",
-      description: "Navegar a la página siguiente",
-      icon: <ArrowRight className="w-4 h-4" />,
-      shortcut: `${m()}→`,
-      action: () => window.history.forward(),
-      keywords: ["adelante", "forward", "siguiente", "avanzar"],
-      category: "Navegación",
-    },
-    {
-      label: "Buscar",
-      description: "Enfocar campo de búsqueda",
-      icon: <Search className="w-4 h-4" />,
-      shortcut: `${modLabel()}F`,
-      action: () => {
-        const input = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement | null;
-        input?.focus();
-      },
-      keywords: ["buscar", "search", "filtrar", "find", "localizar"],
-      category: "Acciones",
-    },
-    {
-      label: "Recargar página",
-      description: "Actualizar la vista actual",
-      icon: <RefreshCw className="w-4 h-4" />,
-      shortcut: `${m()}R`,
-      action: () => window.location.reload(),
-      keywords: ["recargar", "refresh", "actualizar", "reload"],
-      category: "Acciones",
-    },
-    {
+    });
+  if (can(user, "reports.export")) commands.push({
       label: "Exportar resultados",
       icon: <Download className="w-4 h-4" />,
       action: () => {},
       keywords: ["exportar", "export", "descargar", "excel"],
       category: "Acciones",
-    },
-  ];
+    });
+  return commands;
 }
 
 export function CommandPalette() {
+  const user = useVerbatixStore((state) => state.user);
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -92,7 +73,7 @@ export function CommandPalette() {
 
   const toggle = () => setIsOpen((o) => !o);
 
-  const cmds = useMemo(() => getCommands(), []);
+  const cmds = useMemo(() => getCommands(user), [user]);
   const filtered = cmds.filter((cmd) => {
     const q = query.toLowerCase().trim();
     if (!q) return true;

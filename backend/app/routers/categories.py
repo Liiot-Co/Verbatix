@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.access import require_project
+from app.core.access import require_capability, require_project
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 
@@ -26,6 +26,7 @@ def create_category(
     user: CurrentUser = Depends(current_user),
 ):
     require_project(db, project_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
     cid = uuid.uuid4()
     db.execute(
         text("insert into categories (id, project_id, name) values (:id, :p, :name)"),
@@ -57,6 +58,7 @@ def delete_category(
     user: CurrentUser = Depends(current_user),
 ):
     require_project(db, project_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
     deleted = db.execute(
         text("delete from categories where id = :id and project_id = :p returning id"),
         {"id": category_id, "p": project_id},

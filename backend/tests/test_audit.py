@@ -20,6 +20,7 @@ from app.pipeline.audit import (
     start_audit_session,
     update_item,
 )
+from app.routers.audit import _round_audit_readiness
 
 ROUND_ID = uuid.uuid4()
 SUBPROJECT_ID = uuid.uuid4()
@@ -118,6 +119,43 @@ def test_bigger_pct_is_superset_of_smaller():
 
 def test_empty_population_yields_empty_sample():
     assert select_sample([], 50, seed=7) == []
+
+
+class ReadinessResult:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return self.rows
+
+
+class ReadinessSession:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute(self, _statement, _params=None):
+        return ReadinessResult(self.rows)
+
+
+def test_round_audit_waits_for_every_subproject_and_processing_phase():
+    brand_id, reason_id = uuid.uuid4(), uuid.uuid4()
+    rows = [
+        {"id": brand_id, "coding_type": "brands", "total": 10, "pending": 2, "auto_coded": 5, "resolved": 3},
+        {"id": reason_id, "coding_type": "reasons", "total": 0, "pending": 0, "auto_coded": 0, "resolved": 0},
+    ]
+    waiting = _round_audit_readiness(ReadinessSession(rows), ROUND_ID, "preliminary_ready")
+    assert waiting["ready"] is False
+    assert waiting["pending"] == 2
+    assert waiting["subprojects"][0]["progress_pct"] == 80.0
+
+    finished_rows = [{**row, "pending": 0} for row in rows]
+    still_processing = _round_audit_readiness(ReadinessSession(finished_rows), ROUND_ID, "processing")
+    ready = _round_audit_readiness(ReadinessSession(finished_rows), ROUND_ID, "preliminary_ready")
+    assert still_processing["ready"] is False
+    assert ready["ready"] is True
 
 
 # ── start_audit_session ──

@@ -1,193 +1,181 @@
+"""Registro, login, sesiones y recuperación para PostgreSQL local."""
+from __future__ import annotations
+
 import uuid
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.access import require_admin
-from app.core.auth import CurrentUser, current_user
-from app.core.config import settings
+from app.core.access import CAPABILITIES_BY_ROLE
+from app.core.auth import CurrentUser, session_user
 from app.core.database import get_db
+from app.core.security import (
+    hash_password,
+    issue_session,
+    normalize_email,
+    revoke_sessions,
+    rotate_recovery_code,
+    sha256,
+    verify_password,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
 ROLE_CODES = ("admin", "codificador", "supervisor")
 
 
-class LoginIn(BaseModel):
+class CredentialsIn(BaseModel):
     email: str
-    password: str
+    password: str = Field(min_length=8)
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        email = normalize_email(value)
+        if "@" not in email or email.startswith("@") or email.endswith("@"):
+            raise ValueError("Correo inválido")
+        return email
 
 
-class SignUpIn(BaseModel):
-    email: str
-    password: str
+class SignUpIn(CredentialsIn):
+    name: str | None = Field(default=None, max_length=120)
 
 
-@router.post("/signup")
-def signup(payload: SignUpIn):
-    """Crea cuenta via Supabase Auth. Devuelve JWT si auto-confirm está activo."""
-    if settings.app_mode == "local":
-        # No hay cuentas en local: cualquier email/password "funciona" y
-        # entra como el dev user fijo (igual que /login).
-        return {
-            "id": settings.local_dev_user_id,
-            "email": payload.email,
-            "access_token": "local-dev-token",
-            "token_type": "bearer",
-        }
-    r = httpx.post(
-        f"{settings.supabase_url.rstrip('/')}/auth/v1/signup",
-        headers={
-            "apikey": settings.supabase_secret_key,
-            "Content-Type": "application/json",
-        },
-        json={"email": payload.email, "password": payload.password},
-        timeout=30,
-    )
-    if r.status_code != 200:
-        detail = r.json().get("msg") or r.json().get("error_description") or r.text
-        raise HTTPException(r.status_code, f"Registro falló: {detail}")
-    data = r.json()
-    return {
-        "id": data.get("id"),
-        "email": data.get("email"),
-        "access_token": data.get("access_token"),
-        "token_type": data.get("token_type", "bearer"),
+class RecoverIn(CredentialsIn):
+    recovery_code: str = Field(min_length=20, max_length=40)
+
+
+def _roles_and_capabilities(db: Session, user_id) -> tuple[list[str], list[str]]:
+    roles = list(db.execute(
+        text("select role_code from user_roles where user_id = :id order by role_code"),
+        {"id": user_id},
+    ).scalars().all())
+    capabilities = sorted({cap for role in roles for cap in CAPABILITIES_BY_ROLE.get(role, set())})
+    return roles, capabilities
+
+
+def _session_response(db: Session, row, *, recovery_code: str | None = None) -> dict:
+    token, expires_at = issue_session(db, row["id"])
+    db.commit()
+    result = {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_at": expires_at,
+        "user": {"id": str(row["id"]), "email": row["email"]},
     }
+    if recovery_code is not None:
+        result["recovery_code"] = recovery_code
+    return result
 
 
-class LoginIn(BaseModel):
-    email: str
-    password: str
+@router.post("/signup", status_code=201)
+def signup(payload: SignUpIn, db: Session = Depends(get_db)):
+    user_id = uuid.uuid4()
+    try:
+        db.execute(
+            text("""
+                insert into users
+                    (id, email, name, password_hash, account_status, is_active)
+                values (:id, :email, :name, :password_hash, 'pending', true)
+            """),
+            {
+                "id": user_id,
+                "email": payload.email,
+                "name": payload.name.strip() if payload.name and payload.name.strip() else payload.email.split("@")[0],
+                "password_hash": hash_password(payload.password),
+            },
+        )
+        recovery_code = rotate_recovery_code(db, user_id)
+        row = {"id": user_id, "email": payload.email}
+        return _session_response(db, row, recovery_code=recovery_code)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "No fue posible registrar la cuenta") from exc
 
 
 @router.post("/login")
-def login(payload: LoginIn):
-    """Obtiene un JWT de Supabase Auth."""
-    if settings.app_mode == "local":
-        # Sin Supabase Auth que consultar: cualquier email/password entra
-        # como el dev user fijo (current_user() en app.core.auth ya lo
-        # devuelve sin mirar el token; este solo alimenta la pantalla de
-        # login para que el flujo normal del front funcione).
-        return {
-            "access_token": "local-dev-token",
-            "refresh_token": None,
-            "token_type": "bearer",
-            "expires_in": None,
-            "user": {"id": settings.local_dev_user_id, "email": payload.email or settings.local_dev_user_email},
-        }
-    r = httpx.post(
-        f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=password",
-        headers={
-            "apikey": settings.supabase_secret_key,
-            "Content-Type": "application/json",
-        },
-        json={"email": payload.email, "password": payload.password},
-        timeout=30,
+def login(payload: CredentialsIn, db: Session = Depends(get_db)):
+    row = db.execute(
+        text("""
+            select id, email, password_hash, account_status
+            from users where lower(btrim(email)) = :email
+        """),
+        {"email": payload.email},
+    ).mappings().first()
+    if not row or not verify_password(row["password_hash"], payload.password):
+        raise HTTPException(401, "Correo o contraseña incorrectos")
+    if row["account_status"] == "suspended":
+        raise HTTPException(403, "Cuenta suspendida")
+    return _session_response(db, row)
+
+
+@router.post("/logout", status_code=204)
+def logout(
+    response: Response,
+    user: CurrentUser = Depends(session_user),
+    db: Session = Depends(get_db),
+):
+    db.execute(
+        text("update auth_sessions set revoked_at = now() where id = :id"),
+        {"id": user["session_id"]},
     )
-    if r.status_code != 200:
-        raise HTTPException(401, f"Login falló: {r.text}")
-    data = r.json()
-    return {
-        "access_token": data["access_token"],
-        "refresh_token": data.get("refresh_token"),
-        "token_type": data.get("token_type", "bearer"),
-        "expires_in": data.get("expires_in"),
-        "user": {"id": data.get("user", {}).get("id"), "email": data.get("user", {}).get("email")},
-    }
+    db.commit()
+    return response
 
 
 @router.get("/me")
-def get_me(user: CurrentUser = Depends(current_user), db: Session = Depends(get_db)):
+def get_me(user: CurrentUser = Depends(session_user), db: Session = Depends(get_db)):
     row = db.execute(
-        text("select id, email, name, is_active, created_at from users where id = :id"),
+        text("""
+            select id, email, name, account_status, created_at
+            from users where id = :id
+        """),
         {"id": user["id"]},
-    ).mappings().first()
-
-    if not row:
-        # Normalmente lo crea el trigger handle_new_user() al registrarse en
-        # Supabase Auth (001_schema_v8.sql); esto es solo el respaldo si /me
-        # se llama antes de que esa fila exista todavía.
-        db.execute(
-            text("""
-                insert into users (id, email, name)
-                values (:id, :email, :name)
-                on conflict (id) do nothing
-            """),
-            {
-                "id": user["id"],
-                "email": user.get("email") or "",
-                "name": (user.get("email") or "User").split("@")[0],
-            },
-        )
-        db.execute(
-            text("""
-                insert into user_roles (id, user_id, role_code)
-                values (gen_random_uuid(), :id, 'codificador')
-                on conflict (user_id, role_code) do nothing
-            """),
-            {"id": user["id"]},
-        )
-        db.commit()
-        row = db.execute(
-            text("select id, email, name, is_active, created_at from users where id = :id"),
-            {"id": user["id"]},
-        ).mappings().first()
-
-    roles = db.execute(
-        text("select role_code from user_roles where user_id = :id"),
+    ).mappings().one()
+    roles, capabilities = _roles_and_capabilities(db, user["id"])
+    assignments_count = db.execute(
+        text("select count(*) from assignments where user_id = :id and status = 'active' and revoked_at is null"),
         {"id": user["id"]},
-    ).scalars().all()
-
+    ).scalar_one()
     return {
-        "id": str(row["id"]),
-        "email": row["email"],
-        "name": row["name"],
-        "roles": list(roles),
-        "is_active": row["is_active"],
+        "id": str(row["id"]), "email": row["email"], "name": row["name"],
+        "roles": roles, "capabilities": capabilities,
+        "account_status": row["account_status"],
+        "assignments_count": assignments_count,
         "created_at": row["created_at"],
     }
 
 
-class RoleIn(BaseModel):
-    role_code: str
+@router.post("/forgot-password")
+def forgot_password():
+    return {"message": "Usa el código personal de recuperación entregado al registrarte."}
 
 
-@router.post("/users/{user_id}/roles", status_code=201)
-def assign_role(
-    user_id: uuid.UUID,
-    payload: RoleIn,
-    db: Session = Depends(get_db),
-    user: CurrentUser = Depends(current_user),
-):
-    require_admin(db, user["id"])
-    if payload.role_code not in ROLE_CODES:
-        raise HTTPException(400, f"role_code debe ser uno de {ROLE_CODES}")
-    db.execute(
+@router.post("/recover")
+def recover(payload: RecoverIn, db: Session = Depends(get_db)):
+    row = db.execute(
         text("""
-            insert into user_roles (id, user_id, role_code)
-            values (gen_random_uuid(), :uid, :role)
-            on conflict (user_id, role_code) do nothing
+            select u.id, u.email, prc.id as recovery_id
+            from users u
+            join password_recovery_codes prc on prc.user_id = u.id
+            where lower(btrim(u.email)) = :email and prc.code_hash = :code_hash
+              and prc.used_at is null and prc.revoked_at is null
+            order by prc.created_at desc limit 1
         """),
-        {"uid": user_id, "role": payload.role_code},
-    )
-    db.commit()
-    return {"user_id": str(user_id), "role_code": payload.role_code}
-
-
-@router.delete("/users/{user_id}/roles/{role_code}", status_code=204)
-def revoke_role(
-    user_id: uuid.UUID,
-    role_code: str,
-    db: Session = Depends(get_db),
-    user: CurrentUser = Depends(current_user),
-):
-    require_admin(db, user["id"])
+        {"email": payload.email, "code_hash": sha256(payload.recovery_code.strip().upper())},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(400, "No fue posible recuperar la cuenta con esos datos")
     db.execute(
-        text("delete from user_roles where user_id = :uid and role_code = :role"),
-        {"uid": user_id, "role": role_code},
+        text("update users set password_hash = :h where id = :id"),
+        {"h": hash_password(payload.password), "id": row["id"]},
     )
-    db.commit()
+    db.execute(
+        text("update password_recovery_codes set used_at = now() where id = :id"),
+        {"id": row["recovery_id"]},
+    )
+    revoke_sessions(db, row["id"])
+    recovery_code = rotate_recovery_code(db, row["id"])
+    return _session_response(db, row, recovery_code=recovery_code)

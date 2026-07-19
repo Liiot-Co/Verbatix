@@ -4,8 +4,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChevronLeft, ChevronRight, FolderOpen, Plus, Search, Sparkles } from "lucide-react";
 import { getProjects } from "@/api/client";
 import type { ProjectListItem } from "@/api/types";
-import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useKeyboardShortcuts, registerShortcuts, type PageShortcut } from "@/hooks/useKeyboardShortcuts";
 import GlowCard, { GlowCardGrid, glowVariantForIndex } from "@/components/GlowCard";
+import AvatarStack from "@/components/AvatarStack";
+import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { can } from "@/lib/capabilities";
 
 const PAGE_SIZE = 10;
 const RECENT_COUNT = 3;
@@ -37,6 +40,8 @@ function studySummaryLabel(studies: number, rounds: number): string {
 
 export default function ProjectDashboard() {
   const navigate = useNavigate();
+  const user = useVerbatixStore((state) => state.user);
+  const canManageProjects = can(user, "projects.manage");
 
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,8 +86,9 @@ export default function ProjectDashboard() {
   };
 
   useEffect(() => {
-    registerShortcuts("dashboard", [
-      {
+    const shortcuts: PageShortcut[] = [
+    ];
+    if (canManageProjects) shortcuts.splice(1, 0, {
         key: "f",
         meta: true,
         action: () => {
@@ -100,16 +106,10 @@ export default function ProjectDashboard() {
         action: () => navigate("/wizard"),
         description: "Nuevo proyecto",
         category: "Acciones",
-      },
-      {
-        key: "r",
-        meta: true,
-        action: () => window.location.reload(),
-        description: "Recargar proyectos",
-        category: "Acciones",
-      },
-    ]);
-  }, [navigate]);
+      });
+    shortcuts.push({ key: "r", meta: true, action: () => window.location.reload(), description: "Recargar proyectos", category: "Acciones" });
+    registerShortcuts("dashboard", shortcuts);
+  }, [canManageProjects, navigate]);
 
   useKeyboardShortcuts("dashboard");
 
@@ -124,10 +124,10 @@ export default function ProjectDashboard() {
               Cada proyecto agrupa estudios (Marcas, Razones) con sus rondas de codificación.
             </p>
           </div>
-          <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full shrink-0">
+          {canManageProjects && <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full shrink-0">
             <Plus className="w-3.5 h-3.5" />
             Nuevo proyecto
-          </Link>
+          </Link>}
         </div>
 
         <div className="relative w-full">
@@ -172,9 +172,9 @@ export default function ProjectDashboard() {
                 Crea el primero para empezar a codificar verbatims.
               </p>
             </div>
-            <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full mt-1">
+            {canManageProjects && <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full mt-1">
               <Plus className="w-3.5 h-3.5" /> Nuevo proyecto
-            </Link>
+            </Link>}
           </motion.div>
         ) : (
           <motion.div
@@ -247,6 +247,7 @@ export default function ProjectDashboard() {
                             {formatRelativeDate(project.created_at)}
                           </div>
                         </div>
+                        <AvatarStack projectId={project.id} users={project.assigned_users_preview} total={project.assigned_users_count} />
                         <span
                           className={[
                             "shrink-0 uppercase tracking-wide",

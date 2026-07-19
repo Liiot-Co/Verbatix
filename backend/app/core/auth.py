@@ -1,42 +1,45 @@
-"""Verificación del JWT de Supabase (ES256/RS256 vía JWKS) — o, en app_mode=local,
-un usuario fijo sin llamadas a Supabase (ver Settings.app_mode)."""
-import jwt
+"""Autenticación local mediante sesiones opacas almacenadas como SHA-256."""
+from __future__ import annotations
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWKClient
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.database import get_db
+from app.core.security import sha256
 
 
 class CurrentUser(dict):
-    """{'id': <uuid>, 'email': <str>}"""
+    """Usuario de sesión; incluye id, correo, estado y session_id."""
 
 
-if settings.app_mode == "local":
+_bearer = HTTPBearer(auto_error=False)
 
-    def current_user() -> CurrentUser:
-        return CurrentUser({"id": settings.local_dev_user_id, "email": settings.local_dev_user_email})
 
-else:
-    _jwks_client = PyJWKClient(settings.supabase_jwks_url, cache_keys=True)
-    _bearer = HTTPBearer(auto_error=True)
+def session_user(
+    cred: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: Session = Depends(get_db),
+) -> CurrentUser:
+    if not cred or cred.scheme.lower() != "bearer":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesión requerida")
+    row = db.execute(
+        text("""
+            select u.id, u.email, u.name, u.account_status, s.id as session_id
+            from auth_sessions s
+            join users u on u.id = s.user_id
+            where s.token_hash = :h and s.revoked_at is null and s.expires_at > now()
+        """),
+        {"h": sha256(cred.credentials)},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesión inválida o expirada")
+    return CurrentUser(dict(row))
 
-    def current_user(
-        cred: HTTPAuthorizationCredentials = Depends(_bearer),
-    ) -> CurrentUser:
-        token = cred.credentials
-        try:
-            signing_key = _jwks_client.get_signing_key_from_jwt(token).key
-            claims = jwt.decode(
-                token,
-                signing_key,
-                algorithms=["ES256", "RS256"],
-                audience="authenticated",
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Token inválido: {exc}",
-            ) from exc
 
-        return CurrentUser({"id": claims["sub"], "email": claims.get("email")})
+def current_user(user: CurrentUser = Depends(session_user)) -> CurrentUser:
+    if user["account_status"] == "pending":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cuenta pendiente de aprobación")
+    if user["account_status"] == "suspended":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cuenta suspendida")
+    return user

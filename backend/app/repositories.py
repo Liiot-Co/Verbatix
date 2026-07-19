@@ -636,15 +636,14 @@ def list_codebook_codes(db: Session, codebook_id: uuid.UUID, include_system: boo
 
 def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UUID | None, user_id) -> dict:
     """Crea un código nuevo (deduplicado por normalize(label)); si ya existe, lo retorna."""
-    formatted_label = label.strip().capitalize() if label else label
-    norm_label = normalize(formatted_label)
+    norm_label = normalize(label.strip()) if label else label
     existing = db.execute(
         text("""
             select id, code_number, label from codes
             where codebook_id = :cb and is_active and lower(label) = lower(:label)
             limit 1
         """),
-        {"cb": codebook_id, "label": label},
+        {"cb": codebook_id, "label": norm_label},
     ).mappings().first()
     if not existing:
         rows = db.execute(
@@ -670,7 +669,7 @@ def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UU
             insert into codes (id, codebook_id, code_number, label, origin, is_system, created_by)
             values (:id, :cb, :n, :l, 'analyst_manual', false, :u)
         """),
-        {"id": code_id, "cb": codebook_id, "n": next_number, "l": formatted_label, "u": user_id},
+        {"id": code_id, "cb": codebook_id, "n": next_number, "l": norm_label, "u": user_id},
     )
     if net_id:
         db.execute(
@@ -997,7 +996,17 @@ def list_audit_items(db: Session, review_id: uuid.UUID, limit: int, offset: int)
                        ) order by vc.output_index
                      ) filter (where vc.id is not null),
                      '[]'::jsonb
-                   ) as current_codes
+                   ) as current_codes,
+                   coalesce((
+                     select jsonb_agg(jsonb_build_object(
+                       'id', ac.id, 'author_id', ac.author_id,
+                       'author_name', u.name, 'author_email', u.email,
+                       'roles', array(select role_code from user_roles where user_id = ac.author_id order by role_code),
+                       'content', ac.content, 'created_at', ac.created_at, 'updated_at', ac.updated_at
+                     ) order by ac.created_at)
+                     from audit_comments ac left join users u on u.id = ac.author_id
+                     where ac.audit_item_id = i.id and ac.deleted_at is null
+                   ), '[]'::jsonb) as comments
             from audit_items i
             join verbatims v on v.id = i.verbatim_id
             left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
@@ -1026,6 +1035,7 @@ def list_audit_items(db: Session, review_id: uuid.UUID, limit: int, offset: int)
             "current_codes": r["current_codes"],
             "status": r["status"],
             "comment": r["comment"],
+            "comments": r["comments"],
             "reviewed_at": r["reviewed_at"].isoformat() if r["reviewed_at"] else None,
         }
         for r in rows
@@ -1223,6 +1233,26 @@ def finalize_audit_session(db: Session, session_id: str, user_id) -> None:
 
 
 def set_round_status(db: Session, round_id: uuid.UUID, status: str) -> None:
+    if status == "audit_approved":
+        # Una sección/subproyecto aprobado no debe adelantar a toda la ronda.
+        # La sesión que se acaba de finalizar ya está visible en esta transacción.
+        db.execute(
+            text("""
+                update rounds r set status = 'audit_approved', updated_at = now()
+                where r.id = :id
+                  and exists (select 1 from subprojects where round_id = r.id)
+                  and not exists (
+                    select 1 from subprojects sp
+                    where sp.round_id = r.id
+                      and not exists (
+                        select 1 from audit_sessions ases
+                        where ases.subproject_id = sp.id and ases.status = 'approved'
+                      )
+                  )
+            """),
+            {"id": round_id},
+        )
+        return
     db.execute(
         text("update rounds set status = :st, updated_at = now() where id = :id"),
         {"st": status, "id": round_id},

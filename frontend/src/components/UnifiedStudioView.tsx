@@ -10,6 +10,7 @@ import ResolutionCenter from "./ResolutionCenter";
 import { useKeyboardShortcuts, registerShortcuts, modLabel } from "@/hooks/useKeyboardShortcuts";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { can } from "@/lib/capabilities";
 
 // Decoupled components
 import { AgentProcessingUI } from "./studio/AgentProcessingUI";
@@ -64,6 +65,10 @@ export default function UnifiedStudioView() {
   const navigate = useNavigate();
   const searchRef = useRef<HTMLInputElement>(null);
   const showToast = useVerbatixStore((s) => s.showToast);
+  const user = useVerbatixStore((s) => s.user);
+  const canManageRound = can(user, "rounds.manage");
+  const canViewResolution = can(user, "resolution.view");
+  const hasReportCapability = can(user, "reports.view");
 
   const [round, setRound] = useState<RoundStatus | null>(null);
   const [activeSubprojectId, setActiveSubprojectId] = useState<string | null>(null);
@@ -87,11 +92,19 @@ export default function UnifiedStudioView() {
       ?? currentRound.subprojects[0]?.id;
     if (!subprojectId) return;
     if (!activeSubprojectId) setActiveSubprojectId(subprojectId);
-    await Promise.all([
-      getPreliminary(roundId).then(setPreliminary),
-      getResolutionSummary(subprojectId).then(setResolution),
-    ]);
-  }, [roundId, activeSubprojectId]);
+    const requests: Promise<unknown>[] = [];
+    if (canManageRound || canViewResolution) {
+      requests.push(getPreliminary(roundId).then(setPreliminary));
+    } else {
+      setPreliminary(null);
+    }
+    if (canViewResolution) {
+      requests.push(getResolutionSummary(subprojectId).then(setResolution));
+    } else {
+      setResolution(null);
+    }
+    await Promise.allSettled(requests);
+  }, [roundId, activeSubprojectId, canManageRound, canViewResolution]);
 
   const loadVerbatims = useCallback(() => {
     if (!activeSubprojectId) return;
@@ -137,7 +150,7 @@ export default function UnifiedStudioView() {
   }, [autoProcessing, loadData, loadVerbatims]);
 
   const handleProcess = async () => {
-    if (!roundId) return;
+    if (!roundId || !canManageRound) return;
     setProcessing(true);
     try {
       await processRound(roundId);
@@ -247,13 +260,15 @@ export default function UnifiedStudioView() {
       </div>
 
       <div
-        className={`grid grid-cols-1 gap-4 items-start ${preliminary && !isProcessingNow && !fullscreenResolution ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
+        className={`grid grid-cols-1 gap-4 items-start ${canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
         style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
       >
       <div className="space-y-4 min-w-0 order-2 xl:order-none">
 
       <StudioHeader
         studio={round}
+        canManageRound={canManageRound}
+        canViewReport={hasReportCapability && (canManageRound || round.audit.status === "approved")}
         autoProcessing={autoProcessing}
         neverProcessed={neverProcessed}
         isProcessingNow={isProcessingNow}
@@ -273,7 +288,7 @@ export default function UnifiedStudioView() {
         ))}
       </div>
 
-      {preliminary && (
+      {canViewResolution && preliminary && (
         <StudioSummaryCards
           summary={summary}
           momentum={momentum}
@@ -341,7 +356,7 @@ export default function UnifiedStudioView() {
 
       </div>
 
-      {preliminary && !isProcessingNow && !fullscreenResolution && (
+      {canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution && (
         <motion.div
           initial={{ opacity: 0, x: 40, scale: 0.95 }}
           animate={{ opacity: 1, x: 0, scale: 1 }}
@@ -366,7 +381,7 @@ export default function UnifiedStudioView() {
       )}
       </div>
 
-      {fullscreenResolution && !isProcessingNow && activeSubproject && (
+      {canViewResolution && fullscreenResolution && !isProcessingNow && activeSubproject && (
         <ResolutionCenter
           subprojectId={activeSubproject.id}
           codingType={activeSubproject.coding_type}

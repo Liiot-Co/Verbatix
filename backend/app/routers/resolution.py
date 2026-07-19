@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.access import require_mention_group, require_subproject
+from app.core.access import has_capability, require_capability, require_mention_group, require_resolution_phase, require_subproject
 from app.core.auth import CurrentUser, current_user
 from app.core.config import settings
 from app.core.database import get_db
@@ -47,7 +47,9 @@ def resolution_queue(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_subproject(db, subproject_id, user["id"])
+    resource = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "resolution.view")
+    require_resolution_phase(resource)
     status_list = statuses.split(",") if statuses else _default_statuses()
     items, total = get_resolution_queue(db, subproject_id, status_list, limit, offset)
     return {"total": total, "items": items}
@@ -59,7 +61,9 @@ def resolution_summary(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_subproject(db, subproject_id, user["id"])
+    resource = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "resolution.view")
+    require_resolution_phase(resource)
     return get_resolution_summary(db, subproject_id)
 
 
@@ -71,6 +75,11 @@ def subproject_codes(
     user: CurrentUser = Depends(current_user),
 ):
     sp = require_subproject(db, subproject_id, user["id"])
+    # El supervisor necesita el catálogo para reasignar códigos dentro de la
+    # auditoría, aunque no tenga acceso al Centro de Resolución.
+    if not has_capability(db, user["id"], "resolution.view"):
+        require_capability(db, user["id"], "audit.view")
+    require_resolution_phase(sp)
     return list_codebook_codes(db, sp["codebook_id"], include_system)
 
 
@@ -87,6 +96,8 @@ def create_subproject_code(
     user: CurrentUser = Depends(current_user),
 ):
     sp = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "resolution.edit")
+    require_resolution_phase(sp)
     cb_id = sp["codebook_id"]
     if not cb_id:
         raise HTTPException(404, "Subproyecto no tiene codebook")
@@ -101,7 +112,9 @@ def mention_group_detail(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_mention_group(db, group_id, user["id"])
+    resource = require_mention_group(db, group_id, user["id"])
+    require_capability(db, user["id"], "resolution.view")
+    require_resolution_phase(resource)
     detail = get_group_detail(db, group_id)
     if not detail:
         raise HTTPException(404, "Grupo no encontrado")
@@ -123,7 +136,9 @@ def resolve_mention_group(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_mention_group(db, group_id, user["id"])
+    resource = require_mention_group(db, group_id, user["id"])
+    require_capability(db, user["id"], "resolution.edit")
+    require_resolution_phase(resource)
     detail = get_group_detail(db, group_id)
     if not detail:
         raise HTTPException(404, "Grupo no encontrado")
@@ -160,7 +175,9 @@ def bulk_resolve(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_subproject(db, subproject_id, user["id"])
+    resource = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "resolution.edit")
+    require_resolution_phase(resource)
     decision = payload.decision.model_dump(mode="json", exclude={"expected_status"})
     resolved, failed = [], []
     for gid in payload.group_ids:
@@ -180,7 +197,9 @@ def unresolve_mention_group(
     user: CurrentUser = Depends(current_user),
 ):
     """Deshace la última resolución de un grupo (atajo Ctrl/Cmd+Z en el sidebar)."""
-    require_mention_group(db, group_id, user["id"])
+    resource = require_mention_group(db, group_id, user["id"])
+    require_capability(db, user["id"], "resolution.edit")
+    require_resolution_phase(resource)
     detail = get_group_detail(db, group_id)
     if not detail:
         raise HTTPException(404, "Grupo no encontrado")
