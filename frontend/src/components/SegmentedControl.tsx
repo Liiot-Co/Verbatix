@@ -6,7 +6,8 @@ export interface SegmentedControlOption<T extends string> {
 interface SegmentedControlProps<T extends string> {
   name: string;
   options: SegmentedControlOption<T>[];
-  value: T;
+  // null = sin selección (p.ej. Excel, donde no hay sugerencia de coding_type).
+  value: T | null;
   onChange: (value: T) => void;
   ariaLabel?: string;
 }

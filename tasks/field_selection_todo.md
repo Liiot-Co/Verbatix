@@ -196,13 +196,13 @@ prop desde el wizard padre. Pre-selecciona el segmento si `suggested_coding_type
 viene poblado, mostrando `reason` como texto de ayuda/tooltip.
 
 **Acceptance criteria:**
-- [ ] `codingScope !== "both"` → no renderiza ningún segmentado, campo hereda el tipo de la ronda implícitamente
-- [ ] `codingScope === "both"` y hay sugerencia (`.dau`) → segmentado pre-marcado + razón visible
-- [ ] `codingScope === "both"` sin sugerencia (Excel) → segmentado sin preselección
-- [ ] Checkbox de exclusión funciona independiente del segmentado
+- [x] `codingScope !== "both"` → no renderiza ningún segmentado, campo hereda el tipo de la ronda implícitamente (prop `showCodingType`, computada por el wizard padre)
+- [x] `codingScope === "both"` y hay sugerencia (`.dau`) → segmentado pre-marcado + razón visible (`initialFieldSelections` siembra `coding_type` desde `suggested_coding_type`)
+- [x] `codingScope === "both"` sin sugerencia (Excel) → segmentado sin preselección (`SegmentedControl` ahora acepta `value: T | null`)
+- [x] Checkbox de exclusión funciona independiente del segmentado
 
 **Verification:**
-- [ ] `bunx tsc --noEmit` limpio
+- [x] `bunx tsc --noEmit` limpio
 - [ ] Manual: usado dentro de Task 8/9
 
 **Dependencies:** Task 5, Task 6
