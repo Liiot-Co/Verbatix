@@ -147,12 +147,12 @@ ocultos + labels estilizados con Tailwind como segmentos. Props: `options`,
 no los tiene instalados).
 
 **Acceptance criteria:**
-- [ ] Navegable por teclado (radios nativos lo dan gratis)
-- [ ] Reusable para 2 o más opciones (min. `brands`/`reasons`)
-- [ ] Sin `any`, tipado estricto (regla del proyecto)
+- [x] Navegable por teclado (radios nativos lo dan gratis)
+- [x] Reusable para 2 o más opciones (min. `brands`/`reasons`)
+- [x] Sin `any`, tipado estricto (regla del proyecto)
 
 **Verification:**
-- [ ] `bunx tsc --noEmit` limpio
+- [x] `bunx tsc --noEmit` limpio
 - [ ] Manual: render en Storybook-less smoke — probar en el propio wizard (Task 8)
 
 **Dependencies:** None
