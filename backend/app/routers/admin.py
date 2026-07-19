@@ -1,6 +1,7 @@
 """Administración transaccional de cuentas, roles y asignaciones."""
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Literal
 
@@ -13,6 +14,9 @@ from app.core.access import require_admin
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.core.security import revoke_sessions, rotate_recovery_code
+from app.services.notifications import emit
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 VALID_ROLES = {"admin", "codificador", "supervisor"}
@@ -139,11 +143,16 @@ def replace_roles(user_id: uuid.UUID, payload: RolesIn, db: Session = Depends(ge
     return {"id": str(user_id), "roles": roles}
 
 
-def _replace_assignments(db: Session, target_id, project_ids: list[uuid.UUID], actor_id) -> None:
+def _replace_assignments(db: Session, target_id, project_ids: list[uuid.UUID], actor_id) -> list[uuid.UUID]:
+    """Sync active assignments to `project_ids`. Returns projects newly granted."""
     unique_ids = list(dict.fromkeys(project_ids))
     existing_count = db.execute(text("select count(*) from projects where id = any(:ids)"), {"ids": unique_ids}).scalar() if unique_ids else 0
     if existing_count != len(unique_ids):
         raise HTTPException(400, "Uno o más proyectos no existen")
+    already_active = set(db.execute(text("""
+        select project_id from assignments
+        where user_id = :u and status = 'active' and revoked_at is null
+    """), {"u": target_id}).scalars().all())
     if unique_ids:
         db.execute(text("""
             update assignments set status = 'reassigned', revoked_at = now()
@@ -155,6 +164,7 @@ def _replace_assignments(db: Session, target_id, project_ids: list[uuid.UUID], a
             update assignments set status = 'reassigned', revoked_at = now()
             where user_id = :u and status = 'active' and revoked_at is null
         """), {"u": target_id})
+    newly_assigned: list[uuid.UUID] = []
     for project_id in unique_ids:
         db.execute(text("""
             insert into assignments (project_id, user_id, role_context, status, assigned_by)
@@ -163,15 +173,40 @@ def _replace_assignments(db: Session, target_id, project_ids: list[uuid.UUID], a
             set status = 'active', revoked_at = null, assigned_by = excluded.assigned_by,
                 assigned_at = now(), role_context = null
         """), {"p": project_id, "u": target_id, "actor": actor_id})
+        if project_id not in already_active:
+            newly_assigned.append(project_id)
+    return newly_assigned
+
+
+def _notify_new_assignments(db: Session, target_id, project_ids: list[uuid.UUID], actor_id) -> None:
+    """Same non-critical channel as POST /projects/{id}/assignments."""
+    if not project_ids or target_id == actor_id:
+        return
+    for project_id in project_ids:
+        try:
+            emit(
+                db,
+                notification_type="project_assigned",
+                title="Nuevo proyecto asignado",
+                body="Te asignaron a un proyecto. Ya puedes revisar su trabajo pendiente.",
+                related_entity_id=project_id,
+                user_ids=[target_id],
+                sender_id=actor_id,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("No se pudo emitir la notificación de asignación (admin)")
 
 
 @router.put("/users/{user_id}/assignments")
 def replace_assignments(user_id: uuid.UUID, payload: AssignmentSetIn, db: Session = Depends(get_db),
                         user: CurrentUser = Depends(current_user)):
     require_admin(db, user["id"])
-    _replace_assignments(db, user_id, payload.project_ids, user["id"])
+    newly = _replace_assignments(db, user_id, payload.project_ids, user["id"])
     _log(db, user["id"], user_id, "assignments.replace", new_value={"project_ids": [str(v) for v in payload.project_ids]})
     db.commit()
+    _notify_new_assignments(db, user_id, newly, user["id"])
     return {"id": str(user_id), "project_ids": [str(v) for v in payload.project_ids]}
 
 
@@ -187,7 +222,7 @@ def approve_and_assign(user_id: uuid.UUID, payload: ApproveAssignIn, db: Session
     db.execute(text("delete from user_roles where user_id = :u"), {"u": user_id})
     for role in roles:
         db.execute(text("insert into user_roles (user_id, role_code) values (:u, :r)"), {"u": user_id, "r": role})
-    _replace_assignments(db, user_id, payload.project_ids, user["id"])
+    newly = _replace_assignments(db, user_id, payload.project_ids, user["id"])
     db.execute(text("""
         update users set account_status = 'active', is_active = true,
           approved_by = :actor, approved_at = now() where id = :u
@@ -196,6 +231,7 @@ def approve_and_assign(user_id: uuid.UUID, payload: ApproveAssignIn, db: Session
         "roles": roles, "project_ids": [str(v) for v in payload.project_ids],
     })
     db.commit()
+    _notify_new_assignments(db, user_id, newly, user["id"])
     return {"id": str(user_id), "account_status": "active", "roles": roles,
             "project_ids": [str(v) for v in payload.project_ids]}
 
