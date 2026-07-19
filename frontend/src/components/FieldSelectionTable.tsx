@@ -29,43 +29,87 @@ export default function FieldSelectionTable({
     onChange(value.map((fs) => (fs.field === field ? { ...fs, ...patch } : fs)));
   };
 
+  const showTypeColumn = !readOnly && showCodingType;
+
   return (
-    <div className="rounded-xl border border-p-border divide-y divide-p-border overflow-hidden">
-      {fields.map((preview) => {
-        const selection = byField.get(preview.field);
-        if (!readOnly && !selection) return null;
-        return (
-          <div key={preview.field} className="flex items-start gap-3 px-3 py-2.5">
-            {!readOnly && selection && (
-              <input
-                type="checkbox"
-                checked={selection.included}
-                onChange={(e) => update(preview.field, { included: e.target.checked })}
-                className="mt-1 h-4 w-4 rounded border-p-border-mid accent-p-accent"
-                aria-label={`Incluir campo ${preview.field}`}
-              />
-            )}
-            <div className="min-w-0 flex-1 space-y-1">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-sm font-medium text-p-text truncate">{preview.field}</span>
-                {!readOnly && selection && showCodingType && selection.included && (
-                  <SegmentedControl
-                    name={`coding-type-${preview.field}`}
-                    options={CODING_OPTIONS}
-                    value={selection.coding_type}
-                    onChange={(coding_type) => update(preview.field, { coding_type })}
-                    ariaLabel={`Tipo de clasificación para ${preview.field}`}
-                  />
-                )}
-              </div>
-              {preview.reason && <p className="text-xs text-p-text-muted">{preview.reason}</p>}
-              {preview.sample_values.length > 0 && (
-                <p className="text-xs text-p-text-faint truncate">Ej: {preview.sample_values.join(" · ")}</p>
+    <div className="rounded-xl border border-p-border overflow-hidden">
+      {/* Región de scroll contenida: con muchos campos (.dau puede traer 20+),
+          esto evita que la tabla empuje toda la página del wizard a un scroll
+          descontrolado — un único scroll acotado en vez de scrolls anidados.
+          El thead queda sticky para no perder el contexto de columnas al bajar. */}
+      <div className="max-h-80 overflow-y-auto">
+        <table className="w-full border-collapse text-sm">
+          <thead className="sticky top-0 z-10 bg-p-surface">
+            <tr className="border-b border-p-border text-[11px] font-semibold uppercase tracking-wide text-p-text-muted">
+              {!readOnly && (
+                <th scope="col" className="w-9 px-3 py-2 text-left">
+                  <span className="sr-only">Incluir</span>
+                </th>
               )}
-            </div>
-          </div>
-        );
-      })}
+              <th scope="col" className="px-3 py-2 text-left">Campo</th>
+              {showTypeColumn && <th scope="col" className="w-40 px-3 py-2 text-left">Tipo</th>}
+              <th scope="col" className="px-3 py-2 text-left">Muestra de valores</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-p-border">
+            {fields.map((preview) => {
+              const selection = byField.get(preview.field);
+              if (!readOnly && !selection) return null;
+              return (
+                <tr key={preview.field} className="align-top">
+                  {!readOnly && selection && (
+                    <td className="px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={selection.included}
+                        onChange={(e) => update(preview.field, { included: e.target.checked })}
+                        className="mt-0.5 h-4 w-4 rounded border-p-border-mid accent-p-accent"
+                        aria-label={`Incluir campo ${preview.field}`}
+                      />
+                    </td>
+                  )}
+                  <td className="min-w-0 max-w-[14rem] px-3 py-2.5">
+                    <span className="block truncate text-sm font-medium text-p-text" title={preview.field}>
+                      {preview.field}
+                    </span>
+                    {preview.reason && (
+                      <p className="mt-0.5 text-xs text-p-text-muted">{preview.reason}</p>
+                    )}
+                  </td>
+                  {showTypeColumn && (
+                    <td className="px-3 py-2.5">
+                      {selection && selection.included && (
+                        <SegmentedControl
+                          name={`coding-type-${preview.field}`}
+                          options={CODING_OPTIONS}
+                          value={selection.coding_type}
+                          onChange={(coding_type) => update(preview.field, { coding_type })}
+                          ariaLabel={`Tipo de clasificación para ${preview.field}`}
+                        />
+                      )}
+                    </td>
+                  )}
+                  <td className="px-3 py-2.5">
+                    {preview.sample_values.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {preview.sample_values.map((sample, i) => (
+                          <span
+                            key={i}
+                            title={sample}
+                            className="max-w-[10rem] truncate rounded-full bg-p-bg-subtle px-2 py-0.5 text-[11px] text-p-text-faint"
+                          >
+                            {sample}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

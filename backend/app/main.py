@@ -11,10 +11,12 @@ from app.core import reminders, scheduler
 from app.routers import admin, assignments, audit, auth, categories, notifications, projects, proyectos, report, resolution, studios
 from app.routers.auth import get_me
 
+from scripts.run_migrations import run_migrations
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     check_db()
+    run_migrations()
     with SessionLocal() as db:
         bootstrap_local_admin(db)
     scheduler.start()

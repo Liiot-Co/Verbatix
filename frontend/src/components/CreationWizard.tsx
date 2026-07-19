@@ -35,7 +35,7 @@ import type {
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { nextRoundNumber } from "@/lib/projectTree";
 
-type WizardStep = "project" | "studio" | "round";
+type WizardStep = "project" | "studio" | "round" | "fields";
 
 type BatchFileStatus = "pending" | "uploading" | "importing" | "done" | "error";
 
@@ -50,6 +50,7 @@ const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: "project", label: "Proyecto", icon: "📁" },
   { key: "studio", label: "Libro de códigos", icon: "📚" },
   { key: "round", label: "Ronda y Excel", icon: "🔄" },
+  { key: "fields", label: "Campos", icon: "🧩" },
 ];
 
 const CODING_LABELS: Record<CodingType, string> = {
@@ -564,7 +565,7 @@ export default function CreationWizard() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (step === "round" || step === "studio") return goToStep("project");
+      if (step === "round" || step === "studio" || step === "fields") return goToStep("project");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -593,8 +594,13 @@ export default function CreationWizard() {
     }, 100);
   }, [step]);
 
+  // El paso "fields" (revisión de campos) necesita más ancho que el resto
+  // del wizard para que la tabla no quede apretada — el contenedor exterior
+  // ya no fija max-width; cada paso lo declara por su cuenta.
+  const stepContentWidth = step === "fields" ? "max-w-4xl" : "max-w-2xl";
+
   return (
-    <div className="relative max-w-2xl mx-auto py-4 space-y-6">
+    <div className="relative mx-auto py-4 space-y-6 px-4">
       {/* Ambient wash — drifts warmer as the wizard progresses */}
       <motion.div
         aria-hidden
@@ -605,19 +611,19 @@ export default function CreationWizard() {
         transition={{ duration: 0.7, ease: "easeInOut" }}
       />
 
-      <Breadcrumb items={crumbs} />
+      <div className="max-w-2xl mx-auto space-y-6">
+        <Breadcrumb items={crumbs} />
 
-      <div className="space-y-1"
-      >
-        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">
-          {isNewRoundFlow || project ? "Nueva ronda" : "Nuevo estudio"}
-        </h1>
-      </div>
+        <div className="space-y-1">
+          <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">
+            {isNewRoundFlow || project ? "Nueva ronda" : "Nuevo estudio"}
+          </h1>
+        </div>
 
-      {/* Stepper */}
-      <nav className="flex items-center"
-        aria-label="Progreso del asistente"
-      >
+        {/* Stepper */}
+        <nav className="flex items-center"
+          aria-label="Progreso del asistente"
+        >
         {STEPS.map((s, i) => {
           const done = i < stepIndex;
           const active = i === stepIndex;
@@ -665,7 +671,8 @@ export default function CreationWizard() {
             </motion.div>
           );
         })}
-      </nav>
+        </nav>
+      </div>
 
       <AnimatePresence mode="wait" custom={direction}>
         <motion.div
@@ -676,6 +683,7 @@ export default function CreationWizard() {
           animate="center"
           exit="exit"
           transition={{ duration: 0.25, ease: [0.19, 1, 0.22, 1] as const }}
+          className={`${stepContentWidth} mx-auto`}
         >
           {/* Step 1: Proyecto */}
           {step === "project" && (
@@ -1230,172 +1238,205 @@ export default function CreationWizard() {
                     )}
 
                     {fieldPreviews.length > 0 && (
-                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1.5 pt-1">
-                        <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                          {isDau ? "Campos a clasificar" : "Muestra de valores"}
-                        </motion.label>
-                        <FieldSelectionTable
-                          fields={fieldPreviews}
-                          value={fieldSelections}
-                          onChange={setFieldSelections}
-                          showCodingType={codingScope === "both"}
-                          readOnly={!isDau}
-                        />
-                      </motion.div>
-                    )}
-
-                    {sheetError && (
-                      <motion.div
-                        initial={{ opacity: 0, y: -10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="flex items-center gap-2 text-sm text-p-error bg-p-error/10 border border-p-error/30 rounded-lg p-3"
-                      >
-                        <AlertCircle className="w-4 h-4 shrink-0" />
-                        {sheetError}
-                      </motion.div>
-                    )}
-
-                    {pendingQuestions.length > 0 && isDau && (
-                      <div className="flex items-start gap-2 text-sm text-p-warning bg-p-warning/10 border border-p-warning/30 rounded-lg p-3">
-                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                        <div className="space-y-1">
-                          <p>
-                            Este .dau tiene variables fuera de la plantilla conocida (NBS_UNAID*), por lo que
-                            no se pueden clasificar como Marcas o Razones automáticamente. Contacta a
-                            ingeniería para clasificarlas antes de continuar la importación:
-                          </p>
-                          <ul className="text-xs font-mono space-y-0.5 pl-1">
-                            {pendingQuestions.map((questionKey) => (
-                              <li key={questionKey} className="truncate">{questionKey}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      </div>
-                    )}
-
-                    {pendingQuestions.length > 0 && !isDau && (
-                      <div className="space-y-3 rounded-lg border border-p-warning/40 bg-p-warning/10 p-3">
-                        <div className="text-sm font-semibold text-p-text">Clasifica las variables nuevas</div>
-                        <p className="text-xs text-p-text-muted">
-                          Cada variable se envía a {activeCodingTypes.map((t) => CODING_LABELS[t]).join(" o ")} antes de reintentar la importación.
-                        </p>
-                        {pendingQuestions.map((questionKey) => (
-                          <div key={questionKey} className="grid grid-cols-[1fr_150px] gap-2 items-center">
-                            <code className="truncate text-xs text-p-text">{questionKey}</code>
-                            {activeCodingTypes.length === 1 ? (
-                              <span className="text-sm font-medium text-p-text text-right">
-                                {CODING_LABELS[activeCodingTypes[0]!]}
-                              </span>
-                            ) : (
-                              <select
-                                className="input text-sm"
-                                aria-label={`Tipo de ${questionKey}`}
-                                value={questionTypes[questionKey] ?? activeCodingTypes[0] ?? "brands"}
-                                onChange={(event) => setQuestionTypes((current) => ({
-                                  ...current,
-                                  [questionKey]: event.target.value as CodingType,
-                                }))}
-                              >
-                                {activeCodingTypes.map((codingType) => (
-                                  <option key={codingType} value={codingType}>
-                                    {CODING_LABELS[codingType]}
-                                  </option>
-                                ))}
-                              </select>
-                            )}
-                          </div>
-                        ))}
-                        <button
-                          type="button"
+                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="pt-1">
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
                           className="btn-primary text-sm py-2 w-full justify-center"
-                          disabled={submitting}
-                          onClick={handleClassifyQuestions}
+                          onClick={() => goToStep("fields")}
                         >
-                          Clasificar y continuar
-                        </button>
-                      </div>
-                    )}
-
-                    {!batchRunning && !batchDone && pendingQuestions.length === 0 && (
-                      <motion.div className="flex gap-1.5 pt-1">
-                        <motion.button
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                          disabled={!canImport || submitting}
-                          className="btn-primary text-sm py-2 flex-1 justify-center"
-                          onClick={handleImport}
-                        >
-                          {submitting ? (
-                            <>
-                              <motion.span
-                                animate={{ rotate: 360 }}
-                                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                                className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
-                              />
-                              Importando...
-                            </>
-                          ) : batchItems.length > 0 ? (
-                            `Importar (+${batchItems.length} ronda${batchItems.length > 1 ? "s" : ""})`
-                          ) : (
-                            "Importar"
-                          )}
+                          Continuar · revisar campos ({fieldPreviews.length})
                         </motion.button>
-                        <motion.button
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                          className="btn-ghost text-sm py-2 px-3"
-                          onClick={() => { setUploaded(null); setColumnMap({}); setSheetError(null); setBatchItems([]); }}
-                        >
-                          Cambiar archivo{batchItems.length > 0 ? "s" : ""}
-                        </motion.button>
-                      </motion.div>
-                    )}
-
-                    {batchItems.length > 0 && (batchRunning || batchDone) && (
-                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-2 pt-1">
-                        <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                          Rondas adicionales
-                        </div>
-                        {batchItems.map((item, idx) => (
-                          <div
-                            key={idx}
-                            className="flex items-center gap-2 text-xs bg-p-bg-subtle rounded-lg p-2"
-                          >
-                            {item.status === "done" ? (
-                              <Check className="w-3.5 h-3.5 shrink-0 text-p-success" />
-                            ) : item.status === "error" ? (
-                              <AlertCircle className="w-3.5 h-3.5 shrink-0 text-p-error" />
-                            ) : item.status === "pending" ? (
-                              <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-p-text-faint" />
-                            ) : (
-                              <motion.span
-                                animate={{ rotate: 360 }}
-                                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                                className="w-3 h-3 shrink-0 border-2 border-p-accent/30 border-t-p-accent rounded-full"
-                              />
-                            )}
-                            <span className="flex-1 truncate text-p-text">
-                              {item.roundName ?? item.file.name}
-                            </span>
-                            <span className="text-p-text-faint shrink-0">
-                              {item.error ?? (item.status === "pending" ? "En espera" : item.status === "uploading" ? "Subiendo..." : item.status === "importing" ? "Importando..." : "Listo")}
-                            </span>
-                          </div>
-                        ))}
-
-                        {batchDone && (
-                          <motion.button
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                            className="btn-primary text-sm py-2 w-full justify-center mt-1"
-                            onClick={goToStudy}
-                          >
-                            Ir al estudio
-                          </motion.button>
-                        )}
                       </motion.div>
                     )}
                   </motion.div>
+                </motion.div>
+              )}
+            </div>
+          )}
+
+          {/* Step 4: Campos — revisión de la selección de campos, en su propio
+              paso porque con .dau (20+ campos) necesita más ancho que el
+              resto del wizard para no quedar apretada (ver stepContentWidth). */}
+          {step === "fields" && project && (
+            <div className="space-y-3">
+              <motion.button
+                onClick={() => goToStep("round")}
+                whileHover={{ x: -2 }}
+                whileTap={{ scale: 0.98 }}
+                className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" /> {uploaded?.original_filename ?? project.name}
+              </motion.button>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                  {isDau ? "Campos a clasificar" : "Muestra de valores"}
+                </label>
+                <FieldSelectionTable
+                  fields={fieldPreviews}
+                  value={fieldSelections}
+                  onChange={setFieldSelections}
+                  showCodingType={codingScope === "both"}
+                  readOnly={!isDau}
+                />
+              </div>
+
+              {sheetError && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex items-center gap-2 text-sm text-p-error bg-p-error/10 border border-p-error/30 rounded-lg p-3"
+                >
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  {sheetError}
+                </motion.div>
+              )}
+
+              {pendingQuestions.length > 0 && isDau && (
+                <div className="flex items-start gap-2 text-sm text-p-warning bg-p-warning/10 border border-p-warning/30 rounded-lg p-3">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p>
+                      Este .dau tiene variables fuera de la plantilla conocida (NBS_UNAID*), por lo que
+                      no se pueden clasificar como Marcas o Razones automáticamente. Contacta a
+                      ingeniería para clasificarlas antes de continuar la importación:
+                    </p>
+                    <ul className="text-xs font-mono space-y-0.5 pl-1">
+                      {pendingQuestions.map((questionKey) => (
+                        <li key={questionKey} className="truncate">{questionKey}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {pendingQuestions.length > 0 && !isDau && (
+                <div className="space-y-3 rounded-lg border border-p-warning/40 bg-p-warning/10 p-3">
+                  <div className="text-sm font-semibold text-p-text">Clasifica las variables nuevas</div>
+                  <p className="text-xs text-p-text-muted">
+                    Cada variable se envía a {activeCodingTypes.map((t) => CODING_LABELS[t]).join(" o ")} antes de reintentar la importación.
+                  </p>
+                  {pendingQuestions.map((questionKey) => (
+                    <div key={questionKey} className="grid grid-cols-[1fr_150px] gap-2 items-center">
+                      <code className="truncate text-xs text-p-text">{questionKey}</code>
+                      {activeCodingTypes.length === 1 ? (
+                        <span className="text-sm font-medium text-p-text text-right">
+                          {CODING_LABELS[activeCodingTypes[0]!]}
+                        </span>
+                      ) : (
+                        <select
+                          className="input text-sm"
+                          aria-label={`Tipo de ${questionKey}`}
+                          value={questionTypes[questionKey] ?? activeCodingTypes[0] ?? "brands"}
+                          onChange={(event) => setQuestionTypes((current) => ({
+                            ...current,
+                            [questionKey]: event.target.value as CodingType,
+                          }))}
+                        >
+                          {activeCodingTypes.map((codingType) => (
+                            <option key={codingType} value={codingType}>
+                              {CODING_LABELS[codingType]}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="btn-primary text-sm py-2 w-full justify-center"
+                    disabled={submitting}
+                    onClick={handleClassifyQuestions}
+                  >
+                    Clasificar y continuar
+                  </button>
+                </div>
+              )}
+
+              {!batchRunning && !batchDone && pendingQuestions.length === 0 && (
+                <motion.div className="flex gap-1.5 pt-1">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    disabled={!canImport || submitting}
+                    className="btn-primary text-sm py-2 flex-1 justify-center"
+                    onClick={handleImport}
+                  >
+                    {submitting ? (
+                      <>
+                        <motion.span
+                          animate={{ rotate: 360 }}
+                          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                          className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
+                        />
+                        Importando...
+                      </>
+                    ) : batchItems.length > 0 ? (
+                      `Importar (+${batchItems.length} ronda${batchItems.length > 1 ? "s" : ""})`
+                    ) : (
+                      "Importar"
+                    )}
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    className="btn-ghost text-sm py-2 px-3"
+                    onClick={() => {
+                      setUploaded(null);
+                      setColumnMap({});
+                      setSheetError(null);
+                      setBatchItems([]);
+                      goToStep("round");
+                    }}
+                  >
+                    Cambiar archivo{batchItems.length > 0 ? "s" : ""}
+                  </motion.button>
+                </motion.div>
+              )}
+
+              {batchItems.length > 0 && (batchRunning || batchDone) && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-2 pt-1">
+                  <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                    Rondas adicionales
+                  </div>
+                  {batchItems.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center gap-2 text-xs bg-p-bg-subtle rounded-lg p-2"
+                    >
+                      {item.status === "done" ? (
+                        <Check className="w-3.5 h-3.5 shrink-0 text-p-success" />
+                      ) : item.status === "error" ? (
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 text-p-error" />
+                      ) : item.status === "pending" ? (
+                        <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-p-text-faint" />
+                      ) : (
+                        <motion.span
+                          animate={{ rotate: 360 }}
+                          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                          className="w-3 h-3 shrink-0 border-2 border-p-accent/30 border-t-p-accent rounded-full"
+                        />
+                      )}
+                      <span className="flex-1 truncate text-p-text">
+                        {item.roundName ?? item.file.name}
+                      </span>
+                      <span className="text-p-text-faint shrink-0">
+                        {item.error ?? (item.status === "pending" ? "En espera" : item.status === "uploading" ? "Subiendo..." : item.status === "importing" ? "Importando..." : "Listo")}
+                      </span>
+                    </div>
+                  ))}
+
+                  {batchDone && (
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      className="btn-primary text-sm py-2 w-full justify-center mt-1"
+                      onClick={goToStudy}
+                    >
+                      Ir al estudio
+                    </motion.button>
+                  )}
                 </motion.div>
               )}
             </div>
