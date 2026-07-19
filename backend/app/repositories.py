@@ -17,6 +17,154 @@ SYSTEM_CODES = [
 ]
 
 
+# ── Notificaciones ────────────────────────────────────────────────────
+
+def create_notifications(
+    db: Session,
+    user_ids: list[uuid.UUID],
+    notification_type: str,
+    title: str,
+    body: str,
+    related_entity_id: uuid.UUID | None,
+    sender_id: uuid.UUID | None,
+) -> int:
+    """Inserta una audiencia completa en una sola sentencia PostgreSQL."""
+    recipients = list(set(user_ids))
+    if not recipients:
+        return 0
+    result = db.execute(
+        text("""
+            insert into notifications (id, user_id, type, title, body, related_entity_id, sender_id)
+            select gen_random_uuid(), recipient_id, :type, :title, :body, :related_entity_id, :sender_id
+            from unnest(cast(:user_ids as uuid[])) as recipient_id
+        """),
+        {
+            "user_ids": recipients,
+            "type": notification_type,
+            "title": title,
+            "body": body,
+            "related_entity_id": related_entity_id,
+            "sender_id": sender_id,
+        },
+    )
+    return result.rowcount or len(recipients)
+
+
+def list_notifications(
+    db: Session, user_id: uuid.UUID, limit: int, offset: int, only_unread: bool = False
+) -> tuple[list[dict], int]:
+    where = "where n.user_id = :user_id and n.is_read = false" if only_unread else "where n.user_id = :user_id"
+    rows = db.execute(
+        text(f"""
+            select n.id, n.type, n.title, n.body, n.related_entity_id, n.sender_id,
+                   coalesce(nullif(btrim(sender.name), ''), sender.email) as sender_name,
+                   n.is_read, n.created_at, n.last_reminded_at, n.reminder_count,
+                   count(*) over() as total
+            from notifications n
+            left join users sender on sender.id = n.sender_id
+            {where}
+            order by n.created_at desc
+            limit :limit offset :offset
+        """),
+        {"user_id": user_id, "limit": limit, "offset": offset},
+    ).mappings().all()
+    if rows:
+        return [dict(row) for row in rows], int(rows[0]["total"])
+    # Una página fuera del rango sigue reportando el total correcto para que la
+    # UI pueda recuperar su paginación después de lecturas concurrentes.
+    total = db.execute(
+        text(f"select count(*) from notifications n {where}"), {"user_id": user_id}
+    ).scalar()
+    return [], int(total or 0)
+
+
+def notification_stream_state(db: Session, user_id: uuid.UUID) -> tuple[int, int]:
+    row = db.execute(
+        text("""
+            select count(*) filter (where not is_read) as unread_count,
+                   coalesce(
+                     (extract(epoch from max(greatest(created_at, coalesce(last_reminded_at, created_at)))
+                       filter (where not is_read)) * 1000)::bigint,
+                     0
+                   ) as signal
+            from notifications where user_id = :user_id
+        """),
+        {"user_id": user_id},
+    ).mappings().one()
+    return int(row["unread_count"] or 0), int(row["signal"] or 0)
+
+
+def notification_preview(db: Session, user_id: uuid.UUID) -> dict | None:
+    row = db.execute(
+        text("""
+            select n.id, n.type, n.title, n.body, n.related_entity_id, n.sender_id,
+                   coalesce(nullif(btrim(sender.name), ''), sender.email) as sender_name,
+                   n.is_read, n.created_at, n.last_reminded_at, n.reminder_count
+            from notifications n
+            left join users sender on sender.id = n.sender_id
+            where n.user_id = :user_id and n.is_read = false
+            order by greatest(n.created_at, coalesce(n.last_reminded_at, n.created_at)) desc, n.created_at desc
+            limit 1
+        """),
+        {"user_id": user_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def mark_notification_read(db: Session, user_id: uuid.UUID, notification_id: uuid.UUID) -> bool:
+    return bool(db.execute(
+        text("""
+            update notifications set is_read = true
+            where id = :notification_id and user_id = :user_id and is_read = false
+            returning id
+        """),
+        {"notification_id": notification_id, "user_id": user_id},
+    ).scalar())
+
+
+def mark_all_notifications_read(db: Session, user_id: uuid.UUID) -> int:
+    result = db.execute(
+        text("update notifications set is_read = true where user_id = :user_id and is_read = false"),
+        {"user_id": user_id},
+    )
+    return result.rowcount or 0
+
+
+def sweep_reminders(db: Session, max_reminders: int, window_seconds: int) -> list[dict]:
+    """Hace un bump atómico; la cláusula WHERE lo vuelve seguro entre workers."""
+    rows = db.execute(
+        text("""
+            update notifications
+            set last_reminded_at = now(), reminder_count = reminder_count + 1
+            where is_read = false
+              and reminder_count < :max_reminders
+              and now() - greatest(created_at, coalesce(last_reminded_at, created_at))
+                    >= make_interval(secs => :window_seconds)
+            returning id, user_id
+        """),
+        {"max_reminders": max_reminders, "window_seconds": window_seconds},
+    ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def project_supervisor_ids(db: Session, project_id: uuid.UUID) -> list[uuid.UUID]:
+    return list(db.execute(
+        text("""
+            select distinct a.user_id
+            from assignments a join user_roles ur on ur.user_id = a.user_id
+            where a.project_id = :project_id and a.status = 'active' and a.revoked_at is null
+              and ur.role_code = 'supervisor'
+        """),
+        {"project_id": project_id},
+    ).scalars().all())
+
+
+def global_admin_ids(db: Session) -> list[uuid.UUID]:
+    return list(db.execute(
+        text("select distinct user_id from user_roles where role_code = 'admin'"),
+    ).scalars().all())
+
+
 def create_codebook(
     db: Session, project_id: uuid.UUID, coding_type: str, parent_codebook_id=None
 ) -> uuid.UUID:

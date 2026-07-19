@@ -3,6 +3,7 @@ de la visibilidad por rol (sección 2.1/2.9 del documento v8): cubre
 automáticamente todas las categorías/rondas/subproyectos presentes y futuros
 de ese Estudio, sin reasignar por ronda. Solo un admin puede asignar/revocar."""
 import uuid
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -12,6 +13,9 @@ from sqlalchemy.orm import Session
 from app.core.access import require_admin, require_project
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
+from app.services.notifications import emit
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/assignments", tags=["assignments"])
 
@@ -44,6 +48,23 @@ def create_assignment(
         {"id": aid, "p": project_id, "u": payload.user_id, "ctx": payload.role_context, "by": user["id"]},
     )
     db.commit()
+    # Es deliberadamente no-crítica: la asignación ya fue confirmada aunque el
+    # canal de notificaciones falle.
+    if payload.user_id != user["id"]:
+        try:
+            emit(
+                db,
+                notification_type="project_assigned",
+                title="Nuevo proyecto asignado",
+                body="Te asignaron a un proyecto. Ya puedes revisar su trabajo pendiente.",
+                related_entity_id=project_id,
+                user_ids=[payload.user_id],
+                sender_id=user["id"],
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("No se pudo emitir la notificación de asignación")
     return {"project_id": str(project_id), "user_id": str(payload.user_id), "role_context": payload.role_context}
 
 
