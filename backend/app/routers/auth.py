@@ -21,6 +21,7 @@ from app.core.security import (
     sha256,
     verify_password,
 )
+from app.repositories import reset_user_presence_on_login
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 ROLE_CODES = ("admin", "codificador", "supervisor")
@@ -108,6 +109,7 @@ def login(payload: CredentialsIn, db: Session = Depends(get_db)):
         raise HTTPException(401, "Correo o contraseña incorrectos")
     if row["account_status"] == "suspended":
         raise HTTPException(403, "Cuenta suspendida")
+    reset_user_presence_on_login(db, row["id"])
     return _session_response(db, row)
 
 
@@ -129,7 +131,7 @@ def logout(
 def get_me(user: CurrentUser = Depends(session_user), db: Session = Depends(get_db)):
     row = db.execute(
         text("""
-            select id, email, name, account_status, created_at
+            select id, email, name, account_status, presence_status, presence_changed_at, created_at
             from users where id = :id
         """),
         {"id": user["id"]},
@@ -143,6 +145,8 @@ def get_me(user: CurrentUser = Depends(session_user), db: Session = Depends(get_
         "id": str(row["id"]), "email": row["email"], "name": row["name"],
         "roles": roles, "capabilities": capabilities,
         "account_status": row["account_status"],
+        "presence_status": row["presence_status"],
+        "presence_changed_at": row["presence_changed_at"],
         "assignments_count": assignments_count,
         "created_at": row["created_at"],
     }

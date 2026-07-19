@@ -81,7 +81,7 @@ def list_users(
 ):
     require_admin(db, user["id"])
     rows = db.execute(text("""
-        select u.id, u.email, u.name, u.account_status, u.created_at,
+        select u.id, u.email, u.name, u.account_status, u.presence_status, u.presence_changed_at, u.created_at,
                coalesce(array_agg(distinct ur.role_code) filter (where ur.role_code is not null), '{}') roles,
                count(distinct a.project_id) filter (where a.status = 'active' and a.revoked_at is null) assignments_count,
                coalesce(array_agg(distinct a.project_id) filter (

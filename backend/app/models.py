@@ -32,6 +32,8 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     session_status = Column(String, nullable=False, default="offline")  # active | away | offline (REQ-16)
     last_activity_at = Column(DateTime(timezone=True), nullable=True)  # REQ-16
+    presence_status = Column(String, nullable=False, default="disponible")
+    presence_changed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -549,3 +551,15 @@ class TimeTrackingEvent(Base):
     subject_id = Column(UUID(as_uuid=True), nullable=True)
     event_type = Column(String, nullable=False)  # assigned | opened | last_activity | completed | export_downloaded
     occurred_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+
+
+class UserStatusEvent(Base):
+    """Insumo para la futura feature de tiempos, hermano de TimeTrackingEvent (REQ-15)."""
+
+    __tablename__ = "user_status_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    status = Column(String, nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    ended_at = Column(DateTime(timezone=True), nullable=True)

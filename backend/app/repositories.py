@@ -18,6 +18,51 @@ SYSTEM_CODES = [
 ]
 
 
+# ── Presencia declarada ──────────────────────────────────────────────
+
+def set_user_presence(db: Session, user_id: uuid.UUID, status: str):
+    """Cambia el estado declarado y conserva un único evento abierto por usuario.
+
+    La transacción queda a cargo del router o del flujo de autenticación.
+    """
+    current = db.execute(
+        text("select presence_status from users where id = :id"),
+        {"id": user_id},
+    ).scalar()
+    if current == status:
+        return None
+
+    changed_at = db.execute(
+        text("""
+            update users
+            set presence_status = :status, presence_changed_at = now()
+            where id = :id
+            returning presence_changed_at
+        """),
+        {"id": user_id, "status": status},
+    ).scalar()
+    db.execute(
+        text("""
+            update user_status_events set ended_at = now()
+            where user_id = :id and ended_at is null
+        """),
+        {"id": user_id},
+    )
+    db.execute(
+        text("""
+            insert into user_status_events (user_id, status)
+            values (:id, :status)
+        """),
+        {"id": user_id, "status": status},
+    )
+    return changed_at
+
+
+def reset_user_presence_on_login(db: Session, user_id: uuid.UUID):
+    """Descarta el estado efímero de una sesión anterior al volver a entrar."""
+    return set_user_presence(db, user_id, "disponible")
+
+
 # ── Notificaciones ────────────────────────────────────────────────────
 
 def create_notifications(
