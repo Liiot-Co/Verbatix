@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     local_admin_name: str = "Administrador local"
     session_hours: int = 24
 
+    # Notificaciones: el barrido es idempotente incluso cuando uvicorn corre
+    # varios workers, por lo que estos valores se pueden ajustar por entorno.
+    notification_reminder_interval_seconds: int = 60
+    notification_reminder_window_seconds: int = 4 * 60 * 60
+    notification_max_reminders: int = 3
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 settings = Settings()

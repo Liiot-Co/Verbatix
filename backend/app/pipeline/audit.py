@@ -8,6 +8,7 @@ con expected_status e idempotencia ante doble-submit.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import random
 import uuid
@@ -42,6 +43,10 @@ from app.repositories import (
     set_verbatim_coding_status,
     update_audit_item_review,
 )
+from app.services.notifications import emit
+from app.repositories import global_admin_ids, project_supervisor_ids
+
+logger = logging.getLogger(__name__)
 
 
 class AuditConflict(Exception):
@@ -151,6 +156,10 @@ def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resam
         for item in items:
             create_audit_item(db, review_id, item["verbatim_id"], item["codes"])
 
+    round_state = db.execute(
+        text("select status, project_id from rounds where id = :id"), {"id": round_id}
+    ).mappings().first()
+    previous_round_status = round_state["status"] if round_state else None
     set_round_status(db, round_id, "audit_pending")
     log_action(
         db, user_id, round_id, "audit_session", uuid.UUID(session_id), "audit:start",
@@ -161,6 +170,25 @@ def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resam
         },
     )
     db.commit()
+    if previous_round_status != "audit_pending" and round_state:
+        try:
+            recipients = project_supervisor_ids(db, round_state["project_id"])
+            if not recipients:
+                recipients = global_admin_ids(db)
+            recipients = [recipient for recipient in set(recipients) if recipient != user_id]
+            emit(
+                db,
+                notification_type="ready_for_audit",
+                title="Ronda lista para auditar",
+                body="Un subproyecto ya está listo para su revisión de auditoría.",
+                related_entity_id=round_id,
+                user_ids=recipients,
+                sender_id=user_id,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("No se pudo emitir la notificación de auditoría pendiente")
     return get_audit_summary(db, subproject_id)
 
 
@@ -336,8 +364,14 @@ def approve_session(db: Session, subproject_id: uuid.UUID, *, user_id) -> dict:
         )
 
     ctx = _subproject_context(db, subproject_id)
+    previous_round_status = db.execute(
+        text("select status from rounds where id = :id"), {"id": ctx["round_id"]}
+    ).scalar()
     finalize_audit_session(db, session["id"], user_id)
     set_round_status(db, ctx["round_id"], "audit_approved")
+    current_round_status = db.execute(
+        text("select status from rounds where id = :id"), {"id": ctx["round_id"]}
+    ).scalar()
     approve_scratch_codebooks_for_round(db, ctx["round_id"], user_id)
     log_action(
         db, user_id, ctx["round_id"], "audit_session", uuid.UUID(session["id"]), "audit:approve",
@@ -346,4 +380,20 @@ def approve_session(db: Session, subproject_id: uuid.UUID, *, user_id) -> dict:
                    "total_items": session["total_items"]},
     )
     db.commit()
+    if previous_round_status != "audit_approved" and current_round_status == "audit_approved":
+        try:
+            recipients = [recipient for recipient in set(global_admin_ids(db)) if recipient != user_id]
+            emit(
+                db,
+                notification_type="audit_approved",
+                title="Auditoría de ronda aprobada",
+                body="La auditoría completa de una ronda fue aprobada.",
+                related_entity_id=ctx["round_id"],
+                user_ids=recipients,
+                sender_id=user_id,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("No se pudo emitir la notificación de auditoría aprobada")
     return {**get_audit_summary(db, subproject_id), "already_approved": False}

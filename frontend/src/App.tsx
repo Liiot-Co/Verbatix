@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AppShell from "@/components/AppShell";
 import AuthGuard from "@/components/AuthGuard";
@@ -16,8 +17,13 @@ import AuditView from "@/components/AuditView";
 import ReportView from "@/components/ReportView";
 import ToastStack from "@/components/ToastStack";
 import { CommandPalette } from "@/components/CommandPalette";
+import NotificationsInbox from "@/components/NotificationsInbox";
+import NotificationToast from "@/components/NotificationToast";
+import { prepareNotificationSound } from "@/lib/sound";
 
 export default function App() {
+  useEffect(() => prepareNotificationSound(), []);
+
   return (
     <>
       <Routes>
@@ -39,6 +45,7 @@ export default function App() {
                     <Route path="/projects/:projectId" element={<ProjectDetail />} />
                     <Route path="/wizard" element={<CapabilityGuard capability="projects.manage"><CreationWizard /></CapabilityGuard>} />
                     <Route path="/team" element={<CapabilityGuard capability="users.manage"><TeamAdminPage /></CapabilityGuard>} />
+                    <Route path="/notifications" element={<NotificationsInbox />} />
                     <Route path="/rounds/:roundId/add-load" element={<CapabilityGuard capability="rounds.manage"><AddLoadView /></CapabilityGuard>} />
                     <Route path="/rounds/:roundId" element={<UnifiedStudioView />} />
                     <Route path="/rounds/:roundId/preliminary" element={<UnifiedStudioView />} />
@@ -55,6 +62,7 @@ export default function App() {
         />
       </Routes>
       <ToastStack />
+      <NotificationToast />
     </>
   );
 }

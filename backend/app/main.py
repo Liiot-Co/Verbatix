@@ -7,8 +7,8 @@ from app.core.auth import CurrentUser, session_user
 from app.core.config import settings
 from app.core.database import SessionLocal, check_db, get_db
 from app.core.security import bootstrap_local_admin
-from app.core import scheduler
-from app.routers import admin, assignments, audit, auth, categories, projects, proyectos, report, resolution, studios
+from app.core import reminders, scheduler
+from app.routers import admin, assignments, audit, auth, categories, notifications, projects, proyectos, report, resolution, studios
 from app.routers.auth import get_me
 
 
@@ -18,7 +18,9 @@ async def lifespan(app: FastAPI):
     with SessionLocal() as db:
         bootstrap_local_admin(db)
     scheduler.start()
+    reminders.start()
     yield
+    reminders.stop()
     scheduler.stop()
 
 
@@ -46,6 +48,7 @@ app.include_router(studios.router)
 app.include_router(resolution.router)
 app.include_router(audit.router)
 app.include_router(report.router)
+app.include_router(notifications.router)
 
 
 @app.get("/health")
