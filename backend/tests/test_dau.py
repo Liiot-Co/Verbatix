@@ -52,3 +52,16 @@ def test_parse_records_rejects_missing_bom():
 def test_parse_records_rejects_empty():
     with pytest.raises(dau.DauFormatError):
         dau.parse_records(b"\xff\xfe")
+
+
+def test_guess_coding_type_known_patterns():
+    assert dau.guess_coding_type("NBS_UNAIDBlock[{_1}].NBS_UNAID") == "reasons"
+    assert dau.guess_coding_type("NBS_UNAID_FUPBlock[{_1}].NBS_UNAID_FUP") == "brands"
+    assert dau.guess_coding_type("NBS_UNAID_FUP_ADD[{_4}].Slice") == "brands"
+    assert dau.guess_coding_type("VYK[1].Slice") == "brands"
+    assert dau.guess_coding_type("CUST_BE1[1].Slice") is None
+
+
+def test_other_fields_are_infrastructure_not_verbatims():
+    assert "VXY.Other" in dau._NON_RESPONSE_FIELDS
+    assert "VYH.Other" in dau._NON_RESPONSE_FIELDS
