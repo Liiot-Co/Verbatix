@@ -74,6 +74,11 @@ export interface RoundSubproject {
   id: string;
   coding_type: CodingType;
   codebook_id: string | null;
+  status?: string;
+  origin_mode?: OriginMode;
+  source_subproject_id?: string | null;
+  min_mentions_threshold?: number;
+  audit_percentage?: number;
   inherited_codes?: number;
   inherited_aliases?: number;
   counters?: RoundCounters;

@@ -207,10 +207,6 @@ export async function deleteRound(roundId: string): Promise<void> {
 export interface CreateRoundInput {
   name: string;
   round_number: number;
-  min_mentions_threshold: number;
-  audit_percentage: number;
-  origin_mode: "from_scratch" | "homologated";
-  source_round_id?: string | null | undefined;
 }
 
 export async function createRound(projectId: string, input: CreateRoundInput): Promise<Round> {
@@ -220,6 +216,7 @@ export async function createRound(projectId: string, input: CreateRoundInput): P
     body: JSON.stringify(input),
   });
 }
+
 
 /* ── Rondas: archivos, import, proceso (Fase 1 + Fase 2) ── */
 
@@ -233,22 +230,32 @@ export async function uploadFile(roundId: string, file: File): Promise<UploadedF
   return request<UploadedFile>(`/rounds/${roundId}/files`, { method: "POST", body: form });
 }
 
+export interface ImportSettings {
+  codebookSheet?: string | undefined;
+  codebookCodingType?: "brands" | "reasons" | undefined;
+  // Capturados al soltar el archivo — solo se usan si esta importación crea un
+  // subproyecto nuevo. No editables después (ver UpdateSubprojectInput).
+  minMentionsThreshold?: number | undefined;
+  auditPercentage?: number | undefined;
+}
+
 export async function importFile(
   roundId: string,
   fileId: string,
   verbatimsSheet: string,
   columnMap: ColumnMap,
-  codebookSheet?: string,
-  codebookCodingType?: "brands" | "reasons"
+  settings: ImportSettings = {}
 ): Promise<ImportResult> {
   return request<ImportResult>(`/rounds/${roundId}/files/${fileId}/import`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({
       verbatims_sheet: verbatimsSheet,
-      codebook_sheet: codebookSheet ?? null,
-      codebook_coding_type: codebookSheet ? codebookCodingType : null,
+      codebook_sheet: settings.codebookSheet ?? null,
+      codebook_coding_type: settings.codebookSheet ? settings.codebookCodingType : null,
       column_map: columnMap,
+      min_mentions_threshold: settings.minMentionsThreshold ?? null,
+      audit_percentage: settings.auditPercentage ?? null,
     }),
   });
 }
