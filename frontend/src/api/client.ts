@@ -249,7 +249,8 @@ export interface CreateRoundInput {
   audit_percentage: number;
   origin_mode: "from_scratch" | "homologated";
   source_round_id?: string | null | undefined;
-  catalog_origins: Record<"brands" | "reasons", CatalogOriginSelection>;
+  /** Solo los tipos elegidos (Marcas, Razones o ambos). El origen es obligatorio por tipo. */
+  catalog_origins: Partial<Record<"brands" | "reasons", CatalogOriginSelection>>;
   reuse_catalogs_from_round_id?: string | null;
 }
 

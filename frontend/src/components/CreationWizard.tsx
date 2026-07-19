@@ -53,6 +53,19 @@ const CODING_LABELS: Record<CodingType, string> = {
   reasons: "Razones",
 };
 
+type CodingScope = "brands" | "reasons" | "both";
+
+const SCOPE_OPTIONS: { value: CodingScope; label: string; hint: string }[] = [
+  { value: "brands", label: "Solo Marcas", hint: "Respuestas de marcas conocidas / mencionadas" },
+  { value: "reasons", label: "Solo Razones", hint: "Respuestas de motivos o atributos" },
+  { value: "both", label: "Ambas", hint: "Marcas y razones en la misma ronda" },
+];
+
+function codingTypesForScope(scope: CodingScope): CodingType[] {
+  if (scope === "both") return ["brands", "reasons"];
+  return [scope];
+}
+
 const ORIGIN_OPTIONS: {
   value: CatalogOriginSelection["origin"];
   label: string;
@@ -108,13 +121,11 @@ export default function CreationWizard() {
   const [newExternalCode, setNewExternalCode] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
 
-  // REQ-07: cada subproyecto elige obligatoriamente su origen de catálogo, y
-  // la ronda crea sus subproyectos (Marcas/Razones) de inmediato con ese
-  // origen. newStudyCodingType solo se usa para decirle al backend a qué
-  // subproyecto pertenece una hoja de libro de códigos Excel (no hay forma de
-  // inferirlo de la hoja misma).
+  // REQ-07: la persona elige qué tipos codifica (Marcas / Razones / Ambas) y,
+  // de forma obligatoria, el origen del libro de cada tipo elegido.
   const [round, setRound] = useState<Round | null>(null);
-  const newStudyCodingType: CodingType = "brands";
+  const [codingScope, setCodingScope] = useState<CodingScope>("both");
+  const activeCodingTypes = codingTypesForScope(codingScope);
   const [catalogOrigins, setCatalogOrigins] = useState<Record<CodingType, CatalogOriginSelection>>({
     brands: { origin: "scratch", source_subproject_id: null },
     reasons: { origin: "scratch", source_subproject_id: null },
@@ -127,9 +138,9 @@ export default function CreationWizard() {
   const [catalogSheets, setCatalogSheets] = useState<Partial<Record<CodingType, string>>>({});
   const [catalogPreviews, setCatalogPreviews] = useState<Partial<Record<CodingType, CatalogPreview>>>({});
   const [catalogConfirmed, setCatalogConfirmed] = useState<Partial<Record<CodingType, boolean>>>({});
-  // Acordeón del paso Configuración: solo una sección (Marcas/Razones) abierta
-  // a la vez para que la pantalla no se alargue.
-  const [expandedCodingType, setExpandedCodingType] = useState<CodingType | null>("brands");
+  // Acordeón del paso Configuración: arranca cerrado para que la pantalla
+  // no se vea larga; la persona abre el tipo que quiera configurar.
+  const [expandedCodingType, setExpandedCodingType] = useState<CodingType | null>(null);
 
   // Step 2: ronda (wave de datos dentro del estudio) + Excel. min_mentions/
   // % auditoría se capturan acá, al soltar el archivo, y viajan con el import
@@ -189,6 +200,14 @@ export default function CreationWizard() {
     ]).then(([brands, reasons]) => setCodebookSources({ brands, reasons }));
   }, [step, project]);
 
+  // Si el alcance deja fuera el tipo que estaba abierto, cierra el acordeón
+  // (no abre otro solo: la persona lo despliega cuando quiera).
+  useEffect(() => {
+    if (expandedCodingType && !activeCodingTypes.includes(expandedCodingType)) {
+      setExpandedCodingType(null);
+    }
+  }, [activeCodingTypes, expandedCodingType]);
+
   const goToStep = (next: WizardStep) => {
     const nextIndex = STEPS.findIndex((s) => s.key === next);
     setDirection(nextIndex >= prevStepIndexRef.current ? 1 : -1);
@@ -224,7 +243,7 @@ export default function CreationWizard() {
   };
 
   const handleContinueFromStudio = () => {
-    const missingSource = (["brands", "reasons"] as CodingType[]).find(
+    const missingSource = activeCodingTypes.find(
       (codingType) =>
         catalogOrigins[codingType].origin === "inherited_round"
         && !catalogOrigins[codingType].source_subproject_id
@@ -243,16 +262,20 @@ export default function CreationWizard() {
     goToStep("round");
   };
 
-  // La ronda se crea directamente dentro del Estudio (`projects` en schema v8),
-  // con sus subproyectos (Marcas/Razones) y el origen de catálogo elegido en
-  // el paso "studio" (ver docstring de newStudyCodingType arriba).
+  // La ronda se crea con SOLO los tipos elegidos (Marcas / Razones / ambas)
+  // y el origen de catálogo obligatorio de cada uno.
   const ensureRound = async (): Promise<Round | null> => {
     if (round) return round;
     if (!project || !rName.trim()) return null;
     try {
-      const reasonsSource = codebookSources.reasons.find(
-        (source) => source.source_subproject_id === catalogOrigins.reasons.source_subproject_id
-      );
+      const selectedOrigins = Object.fromEntries(
+        activeCodingTypes.map((codingType) => [codingType, catalogOrigins[codingType]])
+      ) as Partial<Record<CodingType, CatalogOriginSelection>>;
+      const reasonsSource = activeCodingTypes.includes("reasons")
+        ? codebookSources.reasons.find(
+          (source) => source.source_subproject_id === catalogOrigins.reasons.source_subproject_id
+        )
+        : undefined;
       const created = await createRound(project.id, {
         name: rName.trim(),
         round_number: rRoundNumber,
@@ -260,7 +283,7 @@ export default function CreationWizard() {
         audit_percentage: rAudit,
         origin_mode: reasonsSource ? "homologated" : "from_scratch",
         source_round_id: reasonsSource?.round_id ?? null,
-        catalog_origins: catalogOrigins,
+        catalog_origins: selectedOrigins,
       });
       setRound(created);
       const inheritedCodes = created.subprojects.reduce((sum, subproject) => sum + (subproject.inherited_codes ?? 0), 0);
@@ -312,7 +335,7 @@ export default function CreationWizard() {
   // dau._NON_RESPONSE_FIELDS / dau.parse_verbatims.
   const isDau = uploaded?.file_type === "dau";
 
-  const importedCatalogTypes = (["brands", "reasons"] as CodingType[]).filter(
+  const importedCatalogTypes = activeCodingTypes.filter(
     (codingType) => catalogOrigins[codingType].origin === "imported_client_catalog"
   );
   const catalogsReady = importedCatalogTypes.every((codingType) => catalogConfirmed[codingType]);
@@ -392,10 +415,9 @@ export default function CreationWizard() {
           audit_percentage: rAudit,
           origin_mode: "from_scratch",
           source_round_id: null,
-          catalog_origins: {
-            brands: { origin: "scratch", source_subproject_id: null },
-            reasons: { origin: "scratch", source_subproject_id: null },
-          },
+          catalog_origins: Object.fromEntries(
+            activeCodingTypes.map((codingType) => [codingType, catalogOrigins[codingType]])
+          ),
           reuse_catalogs_from_round_id: round?.id ?? null,
         });
         const uploadedBatch = await uploadFile(newRound.id, item.file);
@@ -434,8 +456,9 @@ export default function CreationWizard() {
         columnMap as ColumnMap
       );
       if (result.pending_questions.length > 0) {
+        const defaultType = activeCodingTypes[0] ?? "brands";
         setPendingQuestions(result.pending_questions);
-        setQuestionTypes(Object.fromEntries(result.pending_questions.map((question) => [question, newStudyCodingType])));
+        setQuestionTypes(Object.fromEntries(result.pending_questions.map((question) => [question, defaultType])));
         showToast(
           isDau
             ? "Este .dau tiene variables fuera de la plantilla conocida — revisa el detalle antes de continuar."
@@ -443,6 +466,9 @@ export default function CreationWizard() {
           "info"
         );
         return;
+      }
+      for (const warning of result.warnings ?? []) {
+        showToast(warning, "info");
       }
       showToast(
         `Importados ${result.imported.verbatims} verbatims${result.imported.codes ? ` y ${result.imported.codes} códigos` : ""} · codificando en el motor...`,
@@ -470,7 +496,7 @@ export default function CreationWizard() {
         pendingQuestions.map((questionKey) =>
           classifyQuestion(project.id, {
             question_key: questionKey,
-            coding_type: questionTypes[questionKey] ?? "brands",
+            coding_type: questionTypes[questionKey] ?? activeCodingTypes[0] ?? "brands",
           })
         )
       );
@@ -671,12 +697,50 @@ export default function CreationWizard() {
 
               <motion.div className="space-y-3">
                 <div>
-                  <h2 className="text-sm font-semibold text-p-text">Origen del libro de códigos</h2>
+                  <h2 className="text-sm font-semibold text-p-text">¿Qué vas a codificar?</h2>
                   <p className="text-xs text-p-text-muted mt-0.5">
-                    Define de dónde parte el libro de códigos de cada tipo. Los números de código existentes nunca se reordenan.
+                    Elige Marcas, Razones o ambas. Luego defines el origen del libro solo para lo seleccionado.
                   </p>
                 </div>
-                {(["brands", "reasons"] as CodingType[]).map((codingType) => {
+                <div role="radiogroup" aria-label="Alcance de la ronda" className="grid grid-cols-3 gap-1.5">
+                  {SCOPE_OPTIONS.map((option) => {
+                    const active = codingScope === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        disabled={!!round}
+                        onClick={() => {
+                          setCodingScope(option.value);
+                          playTick();
+                        }}
+                        className={[
+                          "rounded-lg border px-2 py-2.5 text-center transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
+                          active
+                            ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
+                            : "border-p-border hover:bg-p-bg-subtle",
+                        ].join(" ")}
+                      >
+                        <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
+                          {option.label}
+                        </span>
+                        <span className="block text-[11px] text-p-text-muted mt-0.5 leading-snug">
+                          {option.hint}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="pt-1">
+                  <h2 className="text-sm font-semibold text-p-text">Origen del libro de códigos</h2>
+                  <p className="text-xs text-p-text-muted mt-0.5">
+                    Obligatorio para cada tipo elegido. Los números de código existentes nunca se reordenan.
+                  </p>
+                </div>
+                {activeCodingTypes.map((codingType) => {
                   const selection = catalogOrigins[codingType];
                   const expanded = expandedCodingType === codingType;
                   const selectedOption = ORIGIN_OPTIONS.find((option) => option.value === selection.origin);
@@ -1167,22 +1231,32 @@ export default function CreationWizard() {
                       <div className="space-y-3 rounded-lg border border-p-warning/40 bg-p-warning/10 p-3">
                         <div className="text-sm font-semibold text-p-text">Clasifica las variables nuevas</div>
                         <p className="text-xs text-p-text-muted">
-                          Cada variable se envía al subproyecto de Marcas o Razones antes de reintentar la importación.
+                          Cada variable se envía a {activeCodingTypes.map((t) => CODING_LABELS[t]).join(" o ")} antes de reintentar la importación.
                         </p>
                         {pendingQuestions.map((questionKey) => (
                           <div key={questionKey} className="grid grid-cols-[1fr_150px] gap-2 items-center">
                             <code className="truncate text-xs text-p-text">{questionKey}</code>
-                            <select
-                              className="input text-sm"
-                              value={questionTypes[questionKey] ?? "brands"}
-                              onChange={(event) => setQuestionTypes((current) => ({
-                                ...current,
-                                [questionKey]: event.target.value as CodingType,
-                              }))}
-                            >
-                              <option value="brands">Marcas</option>
-                              <option value="reasons">Razones</option>
-                            </select>
+                            {activeCodingTypes.length === 1 ? (
+                              <span className="text-sm font-medium text-p-text text-right">
+                                {CODING_LABELS[activeCodingTypes[0]!]}
+                              </span>
+                            ) : (
+                              <select
+                                className="input text-sm"
+                                aria-label={`Tipo de ${questionKey}`}
+                                value={questionTypes[questionKey] ?? activeCodingTypes[0] ?? "brands"}
+                                onChange={(event) => setQuestionTypes((current) => ({
+                                  ...current,
+                                  [questionKey]: event.target.value as CodingType,
+                                }))}
+                              >
+                                {activeCodingTypes.map((codingType) => (
+                                  <option key={codingType} value={codingType}>
+                                    {CODING_LABELS[codingType]}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
                           </div>
                         ))}
                         <button

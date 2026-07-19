@@ -500,20 +500,23 @@ def insert_verbatims(
     rows: list[dict],
     min_mentions_threshold: int | None = None,
     audit_percentage: float | None = None,
-) -> tuple[int, pl.DataFrame, list[str]]:
+) -> tuple[int, pl.DataFrame, list[str], dict[str, int]]:
     """Normaliza, inserta verbatims y devuelve (n_inserted, DF slim para fuzzy,
-    question_keys nuevas sin clasificar). Cada fila se reparte al subproject_id que le
+    question_keys nuevas sin clasificar, filas omitidas por coding_type no
+    configurado en la ronda). Cada fila se reparte al subproject_id que le
     corresponde según `questions.coding_type` de su variable de origen (sección 2.5) —
     no según un coding_type fijo. Filas cuya question_key no tiene fila en `questions`
     todavía se excluyen (no fallan) y se listan en el 3er valor de retorno para que el
     caller dispare el flujo de clasificación de variable nueva (Tarea 9) — salvo que
-    `guess_coding_type` reconozca la plantilla NBS_UNAID* (sección 2.5b), en cuyo caso
-    se auto-clasifica sin pedirle al analista. El subproyecto destino se crea de forma
-    perezosa (`get_or_create_subproject`) la primera vez que aparece su coding_type en
-    esta ronda — una ronda ya no nace con Marcas y Razones fijos, solo tiene los
-    subproyectos que sus archivos importados realmente traen. `min_mentions_threshold`/
-    `audit_percentage` (capturados en el wizard al soltar el archivo) solo se usan si
-    hay que crear un subproyecto nuevo — uno ya existente conserva su config original."""
+    `guess_coding_type` reconozca la plantilla NBS_UNAID* (sección 2.5b) Y ese tipo
+    exista en la ronda, en cuyo caso se auto-clasifica sin pedirle al analista.
+
+    No se crean subproyectos nuevos aquí: la ronda ya declaró Marcas / Razones /
+    ambos al crearse (con origen de catálogo obligatorio). Si el archivo trae un
+    tipo que la ronda no configuró, esas filas se omiten y se reportan en el 4º
+    valor. `min_mentions_threshold`/`audit_percentage` se conservan en la firma
+    por compatibilidad con callers viejos, pero ya no se usan para crear
+    subproyectos."""
     subproject_by_coding_type = {
         r["coding_type"]: r["id"]
         for r in db.execute(
@@ -521,6 +524,7 @@ def insert_verbatims(
             {"round": round_id},
         ).mappings().all()
     }
+    configured_types = set(subproject_by_coding_type)
 
     # Pre-load all questions + aliases for this project (elimina per-row SELECTs)
     questions_by_key: dict[str, dict] = {}
@@ -544,6 +548,7 @@ def insert_verbatims(
             questions_by_key[a["alias_key"]] = a
 
     pending: set[str] = set()
+    skipped_by_type: dict[str, int] = {}
     rows_by_coding_type: dict[str, list[dict]] = {"brands": [], "reasons": []}
     question_id_by_key: dict[str | None, uuid.UUID | None] = {}
 
@@ -556,7 +561,10 @@ def insert_verbatims(
 
         if qk and q_info is None:
             guessed = guess_coding_type(qk)
-            if guessed is None:
+            # Solo auto-clasifica si el tipo adivinado existe en esta ronda;
+            # si no, queda pendiente para que el analista elija entre los tipos
+            # configurados (nunca se inventa un subproyecto a ciegas).
+            if guessed is None or guessed not in configured_types:
                 pending.add(qk)
                 continue
             qid = classify_question(db, project_id, qk, guessed)
@@ -566,8 +574,13 @@ def insert_verbatims(
         if q_info is None:
             continue
 
+        coding_type = q_info["coding_type"]
+        if coding_type not in configured_types:
+            skipped_by_type[coding_type] = skipped_by_type.get(coding_type, 0) + 1
+            continue
+
         question_id_by_key[qk] = q_info["id"]
-        rows_by_coding_type.setdefault(q_info["coding_type"], []).append(row)
+        rows_by_coding_type.setdefault(coding_type, []).append(row)
 
     n = 0
     df_parts = []
@@ -576,12 +589,8 @@ def insert_verbatims(
             continue
         subproject_id = subproject_by_coding_type.get(coding_type)
         if not subproject_id:
-            subproject_id = get_or_create_subproject(
-                db, round_id, project_id, coding_type,
-                min_mentions_threshold=min_mentions_threshold,
-                audit_percentage=audit_percentage,
-            )
-            subproject_by_coding_type[coding_type] = subproject_id
+            skipped_by_type[coding_type] = skipped_by_type.get(coding_type, 0) + len(ct_rows)
+            continue
 
         df = rows_to_normalized_df(ct_rows, coding_type)
         df_parts.append(df)
@@ -664,7 +673,7 @@ def insert_verbatims(
             n += len(verbatim_params)
 
     combined_df = pl.concat(df_parts) if df_parts else rows_to_normalized_df([], "brands")
-    return n, combined_df, sorted(pending)
+    return n, combined_df, sorted(pending), skipped_by_type
 
 
 def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:

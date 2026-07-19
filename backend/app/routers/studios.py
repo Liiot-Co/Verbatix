@@ -147,8 +147,8 @@ def create_round(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Crea la ronda y sus subproyectos de inmediato, uno por coding_type,
-    cada uno con el origen de catálogo elegido en `catalog_origins` (REQ-07:
+    """Crea la ronda y solo los subproyectos pedidos en `catalog_origins`
+    (Marcas, Razones o ambos). Cada uno lleva su origen de catálogo (REQ-07:
     `scratch` / `inherited_round` / `imported_client_catalog`)."""
     require_project(db, project_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
@@ -157,8 +157,12 @@ def create_round(
         coding_type: CatalogOriginIn(origin="scratch")
         for coding_type in CODING_TYPES
     }
-    if set(selections) != set(CODING_TYPES):
-        raise HTTPException(400, "Debes elegir el origen de los catálogos de Marcas y Razones")
+    selected_types = [ct for ct in CODING_TYPES if ct in selections]
+    unknown = set(selections) - set(CODING_TYPES)
+    if unknown:
+        raise HTTPException(400, f"coding_type inválido: {', '.join(sorted(unknown))}")
+    if not selected_types:
+        raise HTTPException(400, "Elige al menos Marcas, Razones o ambas")
     reasons_source_round_id = None
     reused_catalogs: dict[str, dict] = {}
     if payload.reuse_catalogs_from_round_id:
@@ -176,8 +180,12 @@ def create_round(
             },
         ).mappings().all()
         reused_catalogs = {row["coding_type"]: dict(row) for row in rows}
-        if set(reused_catalogs) != set(CODING_TYPES):
-            raise HTTPException(400, "La ronda origen no tiene ambos catálogos")
+        missing = [ct for ct in selected_types if ct not in reused_catalogs]
+        if missing:
+            raise HTTPException(
+                400,
+                "La ronda origen no tiene catálogo para: " + ", ".join(missing),
+            )
 
     round_id = uuid.uuid4()
     db.execute(
@@ -202,7 +210,7 @@ def create_round(
     )
 
     subprojects = {}
-    for coding_type in CODING_TYPES:
+    for coding_type in selected_types:
         selection = selections[coding_type]
         if reused_catalogs:
             cb_id = reused_catalogs[coding_type]["codebook_id"]
@@ -901,11 +909,43 @@ def import_file(
             + ", ".join(pending_catalogs),
         )
 
-    n_inserted, df, pending_questions = insert_verbatims(
+    n_inserted, df, pending_questions, skipped_by_type = insert_verbatims(
         db, round_id, project_id, file_id, rows,
         min_mentions_threshold=payload.min_mentions_threshold,
         audit_percentage=payload.audit_percentage,
     )
+
+    configured_types = db.execute(
+        text("select coding_type from subprojects where round_id = :round"),
+        {"round": round_id},
+    ).scalars().all()
+    type_counts = {
+        row["coding_type"]: row["n"]
+        for row in db.execute(
+            text("""
+                select sp.coding_type, count(v.id) as n
+                  from subprojects sp
+                  left join verbatims v
+                    on v.subproject_id = sp.id and v.imported_file_id = :file
+                 where sp.round_id = :round
+                 group by sp.coding_type
+            """),
+            {"round": round_id, "file": file_id},
+        ).mappings().all()
+    }
+    warnings: list[str] = []
+    labels = {"brands": "Marcas", "reasons": "Razones"}
+    for coding_type in configured_types:
+        if type_counts.get(coding_type, 0) == 0 and not pending_questions:
+            warnings.append(
+                f"No encontramos preguntas de {labels.get(coding_type, coding_type)}; "
+                f"no se procesará ese libro en esta carga."
+            )
+    for coding_type, count in skipped_by_type.items():
+        warnings.append(
+            f"Se omitieron {count} respuestas de {labels.get(coding_type, coding_type)} "
+            f"porque esta ronda no está configurada para ese tipo."
+        )
 
     subproject_ids = db.execute(
         text("select id from subprojects where round_id = :round"),
@@ -969,7 +1009,7 @@ def import_file(
         },
         "pending_questions": pending_questions,
         "processing": {"status": processing_status},
-        "warnings": [],
+        "warnings": warnings,
         "is_additional_load": is_additional_load,
         "review": {**review, "pending_flags": pending_duplicates},
         "round_status": db.execute(

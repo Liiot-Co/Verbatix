@@ -3,6 +3,32 @@ export type OriginMode = "from_scratch" | "homologated";
 export type CatalogOrigin = "scratch" | "inherited_round" | "imported_client_catalog";
 export type CodingStatus = "pending" | "auto_coded" | "needs_review" | "manually_coded" | "unknown";
 
+export interface CatalogOriginSelection {
+  origin: CatalogOrigin;
+  source_subproject_id: string | null;
+}
+
+export interface CodebookSource {
+  source_subproject_id: string;
+  round_id: string;
+  codebook_id: string;
+  version: number;
+  project_id: string;
+  project_name: string;
+  round_name: string;
+  round_number: number;
+  codes: number;
+  aliases: number;
+  nets: number;
+}
+
+export interface CatalogPreview {
+  codes: number;
+  aliases: number;
+  nets: number;
+  system_codes_overflow: boolean;
+}
+
 export type NotificationType = "project_assigned" | "ready_for_audit" | "audit_approved";
 
 export interface Notification {

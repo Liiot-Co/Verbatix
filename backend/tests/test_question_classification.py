@@ -110,7 +110,7 @@ def _sample_rows():
 
 def test_unclassified_question_key_is_pending_not_a_failure():
     db = FakeSession()
-    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, _sample_rows())
+    n_inserted, _, pending, _skipped = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, _sample_rows())
 
     assert n_inserted == 0
     assert pending == [QUESTION_KEY]
@@ -123,7 +123,7 @@ def test_classifying_then_retrying_inserts_the_verbatim():
 
     classify_question(db, PROJECT_ID, QUESTION_KEY, "brands")
 
-    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, _sample_rows())
+    n_inserted, _, pending, _skipped = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, _sample_rows())
 
     assert pending == []
     assert n_inserted == 1
@@ -147,7 +147,7 @@ def test_known_nbs_unaid_pattern_auto_classifies_as_reasons_without_pending():
         "original_text": "el precio",
     }]
 
-    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+    n_inserted, _, pending, _skipped = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
 
     assert pending == []
     assert n_inserted == 1
@@ -162,7 +162,7 @@ def test_known_nbs_unaid_fup_pattern_auto_classifies_as_brands_without_pending()
         "original_text": "pura vida",
     }]
 
-    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+    n_inserted, _, pending, _skipped = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
 
     assert pending == []
     assert n_inserted == 1
@@ -177,7 +177,7 @@ def test_known_vyk_pattern_auto_classifies_as_brands_without_pending():
         "original_text": "gloria",
     }]
 
-    n_inserted, _, pending = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
+    n_inserted, _, pending, _skipped = insert_verbatims(db, ROUND_ID, PROJECT_ID, FILE_ID, rows)
 
     assert pending == []
     assert n_inserted == 1
