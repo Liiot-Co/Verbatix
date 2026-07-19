@@ -1,21 +1,27 @@
-"""Fase 2 — "el motor propone". Cada Ronda tiene 2 Subproyectos (Marcas y Razones,
-sección 2.5 del documento v8) y cada uno se procesa por separado, dispatchando por su
-propio coding_type:
+"""Fase 2 — "el motor propone". Una Ronda tiene 1 o 2 Subproyectos (Marcas y/o
+Razones, según qué coding_type trajeron sus archivos importados — sección 2.5 del
+documento v8, actualizada: ya no se crean los 2 a ciegas) y cada uno se procesa por
+separado, dispatchando por su propio coding_type:
 
   brands  -> fuzzy contra el catálogo de aliases (pipeline.fuzzy)
   reasons -> LLM structured output (pipeline.llm.classify_round)
 
-Marcas primero: es fuzzy puro, determinista, y es lo que mejor se ve en demo
-(ver Plan de Acción, Fase 2).
+Cuando una ronda tiene los 2 subproyectos, se procesan en paralelo (thread por
+subproyecto, sesión de DB propia cada uno — mismo patrón que core/scheduler.py ya
+usa para paralelizar rondas completas): son independientes entre sí (fuzzy vs LLM,
+sin filas compartidas) y el LLM de razones es la parte lenta, así que no tiene
+sentido esperar a que termine marcas antes de arrancarlo.
 """
 from __future__ import annotations
 
+import threading
 import uuid
 
 import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.database import SessionLocal
 from app.pipeline.fuzzy import (
     discover_catalog_from_frequency,
     load_catalog_aliases,
@@ -24,6 +30,7 @@ from app.pipeline.fuzzy import (
 from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD, SYSTEM_ALIAS_VARIANTS
 from app.pipeline.llm import classify_round
 from app.pipeline.semantic import cache as semantic_cache
+from app.pipeline.semantic.cluster import discover_reason_catalog
 
 
 def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> dict:
@@ -41,12 +48,10 @@ def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> 
     catalog = load_catalog_aliases(db, subproject_id)
     min_mentions = None
     if not catalog:
+        # subprojects.min_mentions_threshold, no rounds — se captura en el
+        # wizard al importar y vive por subproyecto (ver get_or_create_subproject).
         min_mentions = db.execute(
-            text("""
-                select r.min_mentions_threshold from rounds r
-                join subprojects sp on sp.round_id = r.id
-                where sp.id = :sp
-            """),
+            text("select min_mentions_threshold from subprojects where id = :sp"),
             {"sp": subproject_id},
         ).scalar()
         catalog = discover_catalog_from_frequency(db, subproject_id, min_mentions, threshold)
@@ -332,6 +337,16 @@ def _process_subproject(db: Session, subproject_id: uuid.UUID, coding_type: str,
         # van directo al caché semántico + LLM, nunca al catálogo fuzzy.
         fuzzy_result = _process_brands(db, subproject_id, threshold)
     else:
+        # Si el codebook de razones arranca vacío (from_scratch), poblarlo con
+        # categorías reales antes del LLM — si no, classify_round solo tiene los
+        # 5 códigos de sistema para elegir y casi todo cae en 97 "Otras
+        # menciones" (bug real reportado en producción). Idempotente: no hace
+        # nada si el codebook ya tiene contenido propio.
+        min_mentions = db.execute(
+            text("select min_mentions_threshold from subprojects where id = :sp"),
+            {"sp": subproject_id},
+        ).scalar()
+        discover_reason_catalog(db, subproject_id, min_mentions or 3)
         fuzzy_result = {"run_id": None, "groups_classified": 0, "anomalies": 0, "total": 0}
 
     cache_result = _apply_semantic_cache(db, subproject_id, coding_type)
@@ -350,11 +365,29 @@ def _process_subproject(db: Session, subproject_id: uuid.UUID, coding_type: str,
     }
 
 
+def _process_subproject_worker(
+    sp_id: uuid.UUID, coding_type: str, threshold: float,
+    results: dict[uuid.UUID, dict], errors: dict[uuid.UUID, BaseException],
+) -> None:
+    """Un subproyecto de punta a punta con su propia sesión de DB (no la del
+    caller) — para que dos subproyectos de la misma ronda puedan correr en threads
+    distintos sin pisarse la conexión (SQLAlchemy Session no es thread-safe)."""
+    db = SessionLocal()
+    try:
+        results[sp_id] = _process_subproject(db, sp_id, coding_type, threshold)
+        db.commit()
+    except BaseException as exc:  # noqa: BLE001 - se re-lanza en el hilo principal
+        db.rollback()
+        errors[sp_id] = exc
+    finally:
+        db.close()
+
+
 def process_round(db: Session, round_id: uuid.UUID, threshold: float = SCORE_THRESHOLD) -> dict:
-    """Resuelve los 2 subproyectos de la ronda (Marcas + Razones) y corre la
-    clasificación en cada uno por separado, sumando sus estadísticas (sección
-    2.5 del documento v8: la unidad de procesamiento es el Subproyecto, no la
-    Ronda). Mantiene la firma por round_id para minimizar cambios en callers."""
+    """Resuelve los subproyectos de la ronda (Marcas y/o Razones, los que existan)
+    y corre la clasificación de cada uno en paralelo, sumando sus estadísticas
+    (sección 2.5 del documento v8: la unidad de procesamiento es el Subproyecto, no
+    la Ronda). Mantiene la firma por round_id para minimizar cambios en callers."""
     subprojects = db.execute(
         text("select id, coding_type from subprojects where round_id = :round"),
         {"round": round_id},
@@ -362,17 +395,33 @@ def process_round(db: Session, round_id: uuid.UUID, threshold: float = SCORE_THR
     if not subprojects:
         raise LookupError(f"Ronda no encontrada o sin subproyectos: {round_id}")
 
-    results = [
-        _process_subproject(db, sp["id"], sp["coding_type"], threshold)
+    results: dict[uuid.UUID, dict] = {}
+    errors: dict[uuid.UUID, BaseException] = {}
+    workers = [
+        threading.Thread(
+            target=_process_subproject_worker,
+            args=(sp["id"], sp["coding_type"], threshold, results, errors),
+        )
         for sp in subprojects
     ]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
 
+    if errors:
+        # Sección 2.5: cualquier subproyecto que falle debe tumbar toda la ronda
+        # (mismo comportamiento que la versión secuencial) — se relanza la
+        # primera excepción encontrada, scheduler._mark_round_failed la captura.
+        raise next(iter(errors.values()))
+
+    ordered = [results[sp["id"]] for sp in subprojects]
     result = {
-        "run_id": results[0]["run_id"],
-        "llm_run_id": results[0]["llm_run_id"],
-        "groups_classified": sum(r["groups_classified"] for r in results),
-        "anomalies": sum(r["anomalies"] for r in results),
-        "total": sum(r["total"] for r in results),
+        "run_id": ordered[0]["run_id"],
+        "llm_run_id": ordered[0]["llm_run_id"],
+        "groups_classified": sum(r["groups_classified"] for r in ordered),
+        "anomalies": sum(r["anomalies"] for r in ordered),
+        "total": sum(r["total"] for r in ordered),
     }
 
     db.execute(

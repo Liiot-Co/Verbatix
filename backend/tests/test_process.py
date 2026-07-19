@@ -51,8 +51,14 @@ class FakeSession:
     def commit(self):
         pass
 
+    def rollback(self):
+        pass
 
-def test_process_round_dispatches_both_subprojects_and_sums_stats():
+    def close(self):
+        pass
+
+
+def test_process_round_dispatches_both_subprojects_in_parallel_and_sums_stats():
     subproject_results = {
         SUBPROJECT_BRANDS: {"run_id": "brands-run", "llm_run_id": "brands-llm", "groups_classified": 3, "anomalies": 1, "total": 5},
         SUBPROJECT_REASONS: {"run_id": "reasons-run", "llm_run_id": "reasons-llm", "groups_classified": 2, "anomalies": 0, "total": 2},
@@ -69,16 +75,50 @@ def test_process_round_dispatches_both_subprojects_and_sums_stats():
 
     db = FakeSession(execute=fake_execute)
 
-    with patch(
-        "app.pipeline.process._process_subproject",
-        side_effect=lambda db, sp_id, coding_type, threshold: subproject_results[sp_id],
-    ) as process_mock:
+    with (
+        patch("app.pipeline.process.SessionLocal", side_effect=lambda: FakeSession(execute=fake_execute)),
+        patch(
+            "app.pipeline.process._process_subproject",
+            side_effect=lambda db, sp_id, coding_type, threshold: subproject_results[sp_id],
+        ) as process_mock,
+    ):
         result = process_round(db, ROUND_ID)
 
     assert process_mock.call_count == 2
     assert result["groups_classified"] == 5  # 3 + 2
     assert result["anomalies"] == 1
     assert result["total"] == 7
+
+
+def test_process_round_raises_when_one_subproject_fails():
+    """Section 2.5: a failing subproject must still fail the whole round (same
+    contract as the old sequential version) — the exception propagates instead
+    of being silently swallowed by the worker thread."""
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "id, coding_type from subprojects where round_id" in sql:
+            return FakeResult(mapping_rows=[
+                {"id": SUBPROJECT_BRANDS, "coding_type": "brands"},
+                {"id": SUBPROJECT_REASONS, "coding_type": "reasons"},
+            ])
+        return FakeResult()
+
+    db = FakeSession(execute=fake_execute)
+
+    def fake_process_subproject(db, sp_id, coding_type, threshold):
+        if sp_id == SUBPROJECT_REASONS:
+            raise RuntimeError("llm boom")
+        return {"run_id": "r1", "llm_run_id": "l1", "groups_classified": 1, "anomalies": 0, "total": 1}
+
+    with (
+        patch("app.pipeline.process.SessionLocal", side_effect=lambda: FakeSession(execute=fake_execute)),
+        patch("app.pipeline.process._process_subproject", side_effect=fake_process_subproject),
+    ):
+        try:
+            process_round(db, ROUND_ID)
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert str(exc) == "llm boom"
 
 
 def test_process_round_raises_when_round_has_no_subprojects():
@@ -111,12 +151,14 @@ def test_process_subproject_skips_fuzzy_for_reasons():
     with (
         patch("app.pipeline.process._prefilter_garbage"),
         patch("app.pipeline.process._process_brands") as fuzzy_mock,
+        patch("app.pipeline.process.discover_reason_catalog") as discover_mock,
         patch("app.pipeline.process._apply_semantic_cache", return_value={"groups_classified": 0}),
         patch("app.pipeline.process.classify_round", return_value={"run_id": "llm1", "groups_classified": 2, "anomalies": 0, "total": 2}),
     ):
         result = _process_subproject(FakeSession(), SUBPROJECT_REASONS, "reasons", 90.0)
 
     fuzzy_mock.assert_not_called()
+    discover_mock.assert_called_once()
     assert result["groups_classified"] == 2
 
 
