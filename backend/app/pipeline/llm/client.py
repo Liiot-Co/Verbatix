@@ -113,3 +113,54 @@ def classify_batch(codebook: list[dict], verbatims: list[dict], coding_type: str
         return json.loads(content)["results"]
     except json.JSONDecodeError as e:
         raise ValueError(f"DeepSeek returned non-JSON content: {content!r}") from e
+
+
+def _build_naming_prompt(representative_texts: list[str]) -> str:
+    lines = "\n".join(f"{i}: {t}" for i, t in enumerate(representative_texts))
+    return (
+        "Eres un analista armando el libro de códigos de una encuesta de marketing. "
+        "Cada línea de abajo es el texto más representativo de un grupo de razones de "
+        "compra parecidas entre sí (ya agrupadas por similitud semántica). Para cada "
+        "grupo, ponle un nombre de categoría corto (2-5 palabras, en español, con "
+        "mayúscula inicial) que describa la idea general — no repitas el texto literal, "
+        "generaliza (ej. 'Rico', 'Buen sabor', 'Delicioso' -> 'Buen sabor'). Un nombre por "
+        "grupo, en el mismo orden.\n\n"
+        f"Grupos:\n{lines}\n\n"
+        'Responde ÚNICAMENTE con JSON: {"results": [{"index": <int>, "label": "<nombre>"}, ...]}, '
+        "un objeto por cada índice de arriba, en cualquier orden."
+    )
+
+
+def name_clusters(representative_texts: list[str]) -> list[str]:
+    """Un llamado LLM: le pone nombre de categoría a cada texto representativo
+    de un cluster (ver pipeline/semantic/cluster.py). Devuelve las labels en el
+    mismo orden que `representative_texts`; si el LLM omite un índice, cae al
+    texto original capitalizado en vez de fallar todo el bootstrap."""
+    if not representative_texts:
+        return []
+    prompt = _build_naming_prompt(representative_texts)
+    response = requests.post(
+        f"{settings.llm_base_url}/chat/completions",
+        headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+        json={
+            "model": settings.llm_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.0,
+            "stream": False,
+        },
+        timeout=300,
+    )
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"]
+    try:
+        results = json.loads(content)["results"]
+    except json.JSONDecodeError as e:
+        raise ValueError(f"DeepSeek returned non-JSON content: {content!r}") from e
+
+    labels = [t.strip().capitalize() for t in representative_texts]
+    for r in results:
+        idx = r.get("index")
+        if isinstance(idx, int) and 0 <= idx < len(labels) and r.get("label"):
+            labels[idx] = r["label"]
+    return labels
