@@ -54,6 +54,21 @@ def _header_of(head_rows, *keywords) -> list:
     return []
 
 
+def read_rows(content: bytes, sheet: str) -> tuple[list[str], list[dict[str, object]]]:
+    """Primera fila como encabezado, resto como filas dict{columna: valor} —
+    lectura genérica de una hoja para el preview de selección de campos
+    (a diferencia de `parse_verbatims`, no asume una columna 'Verbatim')."""
+    wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    ws = wb[sheet]
+    raw_rows = list(ws.iter_rows(values_only=True))
+    if not raw_rows:
+        return [], []
+    header = [str(c).strip() if c else "" for c in raw_rows[0]]
+    columns = [c for c in header if c]
+    rows = [dict(zip(header, r)) for r in raw_rows[1:]]
+    return columns, rows
+
+
 def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | None = None) -> list[dict]:
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     ws = wb[sheet]

@@ -709,6 +709,48 @@ def upload_file(
     }
 
 
+class PreviewFieldsIn(BaseModel):
+    sheet: str | None = None
+
+
+@router.post("/rounds/{round_id}/files/{file_id}/preview-fields")
+def preview_fields(
+    round_id: uuid.UUID,
+    file_id: uuid.UUID,
+    payload: PreviewFieldsIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Metadata por campo/columna del archivo ya subido (sugerencia, razón,
+    muestra de valores) para que el analista elija qué procesar antes de
+    importar — no inserta nada, se puede llamar N veces (patrón catalog-preview)."""
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    meta = db.execute(
+        text("select storage_path, file_type from imported_files where id = :id and round_id = :round"),
+        {"id": file_id, "round": round_id},
+    ).mappings().first()
+    if not meta:
+        raise HTTPException(404, "Archivo no encontrado")
+
+    bucket, _, path = meta["storage_path"].partition("/")
+    content = storage.download(bucket, path)
+
+    if meta["file_type"] == "dau":
+        records = dau.parse_records(content)
+        fields = load_review.field_metadata_for_dau(records)
+    else:
+        if not payload.sheet:
+            raise HTTPException(400, "sheet es obligatorio para archivos Excel")
+        try:
+            columns, rows = excel.read_rows(content, payload.sheet)
+        except KeyError as exc:
+            raise HTTPException(404, f"Hoja no encontrada: {exc}") from exc
+        fields = load_review.field_metadata_for_excel(rows, columns)
+
+    return {"fields": fields}
+
+
 class ImportIn(BaseModel):
     verbatims_sheet: str
     codebook_sheet: str | None = None

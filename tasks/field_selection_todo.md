@@ -80,14 +80,16 @@ archivo ya subido (mismo storage/checksum que usa `catalog-preview`,
 persistir nada.
 
 **Acceptance criteria:**
-- [ ] `.dau`: devuelve un item por `question_key` no-infraestructura, con sugerencia cuando aplica
-- [ ] Excel: devuelve un item por columna de la hoja indicada, sin sugerencia
-- [ ] No inserta filas ni crea `Question`/`Subproject` — idempotente, se puede llamar N veces
-- [ ] 404/400 apropiados si `file_id` no existe o `sheet` no existe en el archivo
+- [x] `.dau`: devuelve un item por `question_key` no-infraestructura, con sugerencia cuando aplica
+- [x] Excel: devuelve un item por columna de la hoja indicada, sin sugerencia
+- [x] No inserta filas ni crea `Question`/`Subproject` — idempotente, se puede llamar N veces
+- [x] 404/400 apropiados si `file_id` no existe o `sheet` no existe en el archivo
 
 **Verification:**
-- [ ] Tests: `pytest backend/tests/test_studios_routes.py -v -k preview_fields` (o archivo equivalente de rutas)
-- [ ] Manual: `curl` contra un `.dau` y un `.xlsx` de prueba, verificar shape de respuesta
+- [x] No existe patrón `TestClient`/HTTP en este repo (confirmado: 0 matches en `backend/tests/`) — la lógica nueva
+      (`excel.read_rows`) queda cubierta a nivel unitario en `test_excel_column_map.py`; el endpoint es glue delgado
+      sobre `field_metadata_for_dau/excel` (ya cubiertas en Task 2). Suite completa: 181 passed.
+- [ ] Manual: `curl` contra un `.dau` y un `.xlsx` de prueba, verificar shape de respuesta (pendiente, requiere server corriendo)
 
 **Dependencies:** Task 2
 

@@ -18,6 +18,26 @@ def _make_xlsx(header, data_rows):
     return buf.getvalue()
 
 
+def test_read_rows_returns_columns_and_dict_rows():
+    content = _make_xlsx(
+        ["Marca", "Razon"],
+        [["coca cola", "sabor"], ["pepsi", "precio"]],
+    )
+    columns, rows = excel.read_rows(content, "Sheet")
+    assert columns == ["Marca", "Razon"]
+    assert rows == [
+        {"Marca": "coca cola", "Razon": "sabor"},
+        {"Marca": "pepsi", "Razon": "precio"},
+    ]
+
+
+def test_read_rows_empty_sheet():
+    content = _make_xlsx([], [])
+    columns, rows = excel.read_rows(content, "Sheet")
+    assert columns == []
+    assert rows == []
+
+
 def test_parse_verbatims_without_column_map_unchanged():
     content = _make_xlsx(
         ["Respondent ID", "Question ID", "Verbatim"],
