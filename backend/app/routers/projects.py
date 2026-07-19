@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.access import require_project, visible_project_ids
@@ -25,20 +26,26 @@ def create_project(
     user: CurrentUser = Depends(current_user),
 ):
     pid = uuid.uuid4()
-    db.execute(
-        text("""
-            insert into projects (id, external_code, name, proyecto_id, created_by)
-            values (:id, :code, :name, :proyecto, :u)
-        """),
-        {
-            "id": pid,
-            "code": payload.external_code,
-            "name": payload.name,
-            "proyecto": payload.proyecto_id,
-            "u": user["id"],
-        },
-    )
-    db.commit()
+    try:
+        db.execute(
+            text("""
+                insert into projects (id, external_code, name, proyecto_id, created_by)
+                values (:id, :code, :name, :proyecto, :u)
+            """),
+            {
+                "id": pid,
+                "code": payload.external_code,
+                "name": payload.name,
+                "proyecto": payload.proyecto_id,
+                "u": user["id"],
+            },
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            409, f"Ya existe un proyecto con el código '{payload.external_code}'"
+        ) from exc
     return {
         "id": str(pid),
         "external_code": payload.external_code,
