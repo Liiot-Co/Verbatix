@@ -244,8 +244,9 @@ def _get_or_create_respondent(
     """v9 (REQ-03): la unicidad del Serial es por (ronda, carga, Serial) — el mismo
     Serial puede venir legítimamente de dos cargas distintas (Dimension/Enfield
     numeran cada una desde 1) y ambos se conservan. `realid` identifica a la
-    persona real; mientras el parser no lo separe del Serial, cae al propio
-    respondent_external_id para no dejar la columna vacía."""
+    persona real (el parser .dau ya lo separa del Serial); cuando la fuente no
+    trae un realid aparte (Excel), cae al propio respondent_external_id — REQ-03
+    trata Serial/realid como sinónimos si no hay campo separado."""
     return db.execute(
         text("""
             insert into respondents (id, round_id, imported_file_id, respondent_external_id, realid)
@@ -406,6 +407,84 @@ def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
         text("select count(*) from mention_groups where subproject_id = :sp"),
         {"sp": subproject_id},
     ).scalar()
+
+
+def propagate_group_codes_to_pending(db: Session, subproject_id: uuid.UUID) -> int:
+    """REQ-03: un verbatim de una carga nueva cuyo texto normalizado calza con un
+    mention_group YA resuelto/auto-codificado se cuelga de ese grupo (UNIQUE por
+    subproject+normalized_text), pero el motor solo mira grupos 'pending_review' —
+    sin esto quedaría 'pending' para siempre. Se le copian los códigos activos de
+    un hermano del grupo (la resolución asigna el mismo set a todo el grupo) sin
+    reabrir ni tocar el grupo histórico. Devuelve cuántos verbatims se actualizaron."""
+    pending = db.execute(
+        text("""
+            select v.id as verbatim_id, g.id as group_id, g.status as group_status
+            from verbatims v
+            join mention_groups g on g.id = v.mention_group_id
+            where g.subproject_id = :sp
+              and g.status in ('auto_coded', 'resolved')
+              and v.coding_status = 'pending'
+            order by g.id
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+    if not pending:
+        return 0
+
+    codes_by_group: dict = {}
+    updated = 0
+    for row in pending:
+        gid = row["group_id"]
+        if gid not in codes_by_group:
+            # Códigos de referencia: los del hermano más antiguo con asignación activa.
+            sibling = db.execute(
+                text("""
+                    select v2.id from verbatims v2
+                    where v2.mention_group_id = :gid and v2.coding_status <> 'pending'
+                      and exists (
+                        select 1 from verbatim_codes vc
+                        where vc.verbatim_id = v2.id and vc.is_active
+                      )
+                    order by v2.created_at
+                    limit 1
+                """),
+                {"gid": gid},
+            ).scalar()
+            codes_by_group[gid] = db.execute(
+                text("""
+                    select code_id, output_index, source, confidence_score, matched_alias
+                    from verbatim_codes
+                    where verbatim_id = :vid and is_active
+                    order by output_index
+                """),
+                {"vid": sibling},
+            ).mappings().all() if sibling else []
+
+        for code in codes_by_group[gid]:
+            db.execute(
+                text("""
+                    insert into verbatim_codes (id, verbatim_id, code_id, output_index,
+                                                source, confidence_score, matched_alias)
+                    values (:id, :vid, :code, :idx, :src, :score, :alias)
+                    on conflict (verbatim_id, code_id) do nothing
+                """),
+                {
+                    "id": uuid.uuid4(), "vid": row["verbatim_id"], "code": code["code_id"],
+                    "idx": code["output_index"], "src": code["source"],
+                    "score": code["confidence_score"], "alias": code["matched_alias"],
+                },
+            )
+        # Aun sin códigos (grupo resuelto por descarte puro) el estado acompaña
+        # al del grupo: no puede quedar 'pending' un verbatim de un grupo cerrado.
+        db.execute(
+            text("update verbatims set coding_status = :st where id = :vid"),
+            {
+                "st": "manually_coded" if row["group_status"] == "resolved" else "auto_coded",
+                "vid": row["verbatim_id"],
+            },
+        )
+        updated += 1
+    return updated
 
 
 # =====================================================================

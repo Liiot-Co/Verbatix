@@ -44,6 +44,25 @@ def test_parse_verbatims_excludes_infrastructure_fields():
     assert keys.isdisjoint(dau._NON_RESPONSE_FIELDS)
 
 
+def test_serial_comes_from_recstart_and_realid_stays_separate():
+    """REQ-03: respondent_external_id es el N de '##recstart N' (el Serial que usa
+    OnNextCase.txt en 'Select Case Respondent.Serial') y realid queda aparte —
+    validado contra el fixture real: el registro 2 tiene realid TESTJUN23."""
+    rows = dau.parse_verbatims(_content())
+    record_2 = [r for r in rows if r["realid"] == "TESTJUN23"]
+    assert record_2, "el fixture trae el registro TESTJUN23 con respuestas abiertas"
+    assert all(r["respondent_external_id"] == "2" for r in record_2)
+    # Serial y realid nunca colapsan al mismo valor cuando la fuente trae ambos.
+    assert all(r["respondent_external_id"] != r["realid"] for r in record_2)
+
+
+def test_serial_is_never_a_question_key():
+    rows = dau.parse_verbatims(_content())
+    assert all(not r["question_key"].startswith("##") for r in rows)
+    sheets = dau.detect_sheets(_content())
+    assert all(not c.startswith("##") for c in sheets[0]["columns"])
+
+
 def test_parse_records_rejects_missing_bom():
     with pytest.raises(dau.DauFormatError):
         dau.parse_records(b"not a dau file")

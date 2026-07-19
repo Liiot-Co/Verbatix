@@ -124,6 +124,15 @@ export interface UploadedFile {
   detected_sheets: DetectedSheet[];
   status: string;
   file_type: string;
+  // REQ-03: etiqueta sugerida de la carga (filename limpio) y aviso si el
+  // mismo archivo (checksum) ya se subió en esta ronda — nunca se duplica en silencio.
+  suggested_source_label: string;
+  duplicate_of: {
+    file_id: string;
+    original_filename: string;
+    source_label: string | null;
+    status: string;
+  } | null;
 }
 
 export interface ColumnMap {
@@ -139,6 +148,31 @@ export interface ProcessResult {
   round_id: string;
 }
 
+// REQ-03: un posible duplicado real (mismo realid en otra carga de la ronda),
+// insertado y pendiente de decisión humana.
+export interface DuplicateFlag {
+  flag_id: string;
+  status: "pending" | "approved_keep" | "approved_remove" | "edited" | "resolved";
+  serial: string | null;
+  realid: string | null;
+  matches: { serial: string | null; source_label: string }[];
+}
+
+// Aviso informativo (no bloqueante): mismo Serial en dos cargas, personas distintas.
+export interface SerialCollision {
+  serial: string | null;
+  new_realid: string | null;
+  previous_realid: string | null;
+  previous_source_label: string;
+}
+
+export interface LoadReviewState {
+  duplicates: DuplicateFlag[];
+  serial_collisions: SerialCollision[];
+  pending_flags: number;
+  requires_review: boolean;
+}
+
 export interface ImportResult {
   imported: {
     verbatims: number;
@@ -150,9 +184,34 @@ export interface ImportResult {
   // minutes, so the response doesn't wait for it. Poll GET /rounds/{id} for
   // status: 'processing' (still working) -> 'preliminary_ready' (done).
   pending_questions: string[];
-  processing: { status: "queued" | "blocked_on_classification" };
+  processing: { status: "queued" | "blocked_on_classification" | "blocked_on_review" };
   warnings: string[];
+  // REQ-03: presente cuando la ronda ya tenía otra carga validada.
+  is_additional_load: boolean;
+  review: { duplicates: DuplicateFlag[]; serial_collisions: SerialCollision[]; pending_flags: number };
   round_status: string;
+}
+
+// GET /rounds/{id}/loads — las cargas de verbatims de la ronda (REQ-03).
+export interface RoundLoad {
+  file_id: string;
+  source_label: string;
+  original_filename: string;
+  file_type: string;
+  status: string;
+  respondents_count: number;
+  verbatims_count: number;
+  pending_flags: number;
+  created_at: string | null;
+}
+
+export interface ResolveFlagResult {
+  flag_id: string;
+  status: DuplicateFlag["status"];
+  already_resolved: boolean;
+  removed_verbatims?: number;
+  pending_flags: number;
+  processing: { status: "queued" | "blocked_on_review" };
 }
 
 // GET /rounds/{id}/preliminary
@@ -184,6 +243,8 @@ export interface Verbatim {
   normalized_text: string | null;
   coding_status: CodingStatus;
   mention_group_id: string | null;
+  // REQ-03: carga de origen; null = "Carga original / sin registrar".
+  source_label: string | null;
   codes: VerbatimCode[];
 }
 

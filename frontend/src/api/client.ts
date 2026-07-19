@@ -11,6 +11,7 @@ import type {
   BulkResolveResult,
   ColumnMap,
   ImportResult,
+  LoadReviewState,
   LoginPayload,
   LoginResponse,
   MentionGroupDetail,
@@ -23,8 +24,10 @@ import type {
   ResolutionQueue,
   ResolutionSummary,
   ResolveDecision,
+  ResolveFlagResult,
   ResolveResult,
   Round,
+  RoundLoad,
   RoundCode,
   RoundReport,
   RoundStatus,
@@ -239,7 +242,8 @@ export async function importFile(
   verbatimsSheet: string,
   columnMap: ColumnMap,
   codebookSheet?: string,
-  codebookCodingType?: "brands" | "reasons"
+  codebookCodingType?: "brands" | "reasons",
+  sourceLabel?: string
 ): Promise<ImportResult> {
   return request<ImportResult>(`/rounds/${roundId}/files/${fileId}/import`, {
     method: "POST",
@@ -249,7 +253,30 @@ export async function importFile(
       codebook_sheet: codebookSheet ?? null,
       codebook_coding_type: codebookSheet ? codebookCodingType : null,
       column_map: columnMap,
+      source_label: sourceLabel ?? null,
     }),
+  });
+}
+
+/* ── REQ-03: cargas múltiples ── */
+
+export async function getRoundLoads(roundId: string): Promise<RoundLoad[]> {
+  return request<RoundLoad[]>(`/rounds/${roundId}/loads`);
+}
+
+export async function getLoadReview(roundId: string, fileId: string): Promise<LoadReviewState> {
+  return request<LoadReviewState>(`/rounds/${roundId}/files/${fileId}/review`);
+}
+
+export async function resolveImportFlag(
+  flagId: string,
+  action: "keep" | "remove" | "edit",
+  note?: string
+): Promise<ResolveFlagResult> {
+  return request<ResolveFlagResult>(`/import-review/${flagId}/resolve`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ action, note: note ?? null }),
   });
 }
 

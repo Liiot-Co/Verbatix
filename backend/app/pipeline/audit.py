@@ -102,8 +102,12 @@ def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resam
         {"key": str(subproject_id)},
     )
 
+    # REQ-03: una sesión APROBADA pero desactualizada (llegó una carga nueva y el
+    # motor volvió a correr) también admite re-muestreo — la sesión aprobada queda
+    # como constancia histórica (superada) y la nueva muestrea el conjunto
+    # combinado (viejo + nuevo). Sin resample, la sesión existente se reanuda.
     existing = get_audit_summary(db, subproject_id)
-    if existing and not (resample and existing["is_stale"] and existing["status"] != "approved"):
+    if existing and not (resample and existing["is_stale"]):
         return existing
 
     summary = get_resolution_summary(db, subproject_id)

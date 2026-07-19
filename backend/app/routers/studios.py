@@ -15,6 +15,7 @@ from app.core.access import has_capability, require_capability, require_project,
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.core import scheduler, storage
+from app.pipeline import imports as load_review
 from app.pipeline.ingest import dau, excel
 from app.repositories import (
     _current_codebook_id,
@@ -26,6 +27,7 @@ from app.repositories import (
     get_pending_summary,
     insert_codebook_from_excel,
     insert_verbatims,
+    propagate_group_codes_to_pending,
     seed_system_codes,
 )
 
@@ -299,6 +301,7 @@ def list_verbatims(
         text("""
             select v.id, resp.respondent_external_id, v.source_question_key, v.original_text,
                    v.normalized_text, v.coding_status, v.mention_group_id,
+                   coalesce(f.source_label, f.original_filename) as source_label,
                    coalesce(
                      jsonb_agg(
                        jsonb_build_object(
@@ -314,12 +317,13 @@ def list_verbatims(
                    ) as codes
             from verbatims v
             left join respondents resp on resp.id = v.respondent_id
+            left join imported_files f on f.id = resp.imported_file_id
             left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             left join codes c on c.id = vc.code_id
             left join net_codes nc on nc.code_id = c.id
             left join nets n on n.id = nc.net_id
             where v.subproject_id = :id and (:status is null or v.coding_status = :status)
-            group by v.id, resp.respondent_external_id
+            group by v.id, resp.respondent_external_id, f.source_label, f.original_filename
             order by v.created_at
             limit :lim offset :off
         """),
@@ -345,6 +349,9 @@ def list_verbatims(
                 "normalized_text": r["normalized_text"],
                 "coding_status": r["coding_status"],
                 "mention_group_id": str(r["mention_group_id"]) if r["mention_group_id"] else None,
+                # REQ-03: de qué carga vino; NULL = importado antes de v9 sin
+                # trazabilidad ("Carga original / sin registrar" en la UI).
+                "source_label": r["source_label"],
                 "codes": r["codes"],
             }
             for r in rows
@@ -388,19 +395,27 @@ def upload_file(
     detected_sheets = dau.detect_sheets(content) if file_type == "dau" else excel.detect_sheets(content)
     total_rows = sum(s["rows"] for s in detected_sheets)
 
+    # REQ-03: subir dos veces el mismo archivo no debe duplicar en silencio —
+    # se avisa (la UI muestra la advertencia antes de confirmar el import).
+    duplicate_file = load_review.find_checksum_duplicate(db, round_id, checksum)
+
     file_id = uuid.uuid4()
     path = f"{round_id}/{file_id}/{file.filename}"
     storage.upload("uploads", path, content)
 
+    # source_label editable en la confirmación; por defecto, filename limpio.
+    suggested_label = load_review.suggest_source_label(file.filename)
+
     db.execute(
         text("""
-            insert into imported_files (id, round_id, file_type, original_filename,
+            insert into imported_files (id, round_id, file_type, source_label, original_filename,
                                         storage_path, checksum, total_rows, status, uploaded_by)
-            values (:id, :round, :file_type, :name, :path, :sum, :rows, 'uploaded', :user)
+            values (:id, :round, :file_type, :label, :name, :path, :sum, :rows, 'uploaded', :user)
         """),
         {
-            "id": file_id, "round": round_id, "file_type": file_type, "name": file.filename,
-            "path": f"uploads/{path}", "sum": checksum, "rows": total_rows, "user": user["id"],
+            "id": file_id, "round": round_id, "file_type": file_type, "label": suggested_label,
+            "name": file.filename, "path": f"uploads/{path}", "sum": checksum,
+            "rows": total_rows, "user": user["id"],
         },
     )
     db.commit()
@@ -412,6 +427,8 @@ def upload_file(
         "detected_sheets": detected_sheets,
         "status": "uploaded",
         "file_type": file_type,
+        "suggested_source_label": suggested_label,
+        "duplicate_of": duplicate_file,
     }
 
 
@@ -423,6 +440,9 @@ class ImportIn(BaseModel):
     # a diferencia de los verbatims, que se reparten solos por questions.coding_type.
     codebook_coding_type: str | None = None
     column_map: dict[str, str] | None = None
+    # REQ-03: etiqueta de la carga ('Dimension Parte 1'), confirmada/editada por
+    # el analista antes de importar. None conserva la sugerida en el upload.
+    source_label: str | None = None
 
 
 @router.post("/rounds/{round_id}/files/{file_id}/import")
@@ -459,6 +479,10 @@ def import_file(
         # KeyError: la hoja no existe en el workbook; ValueError: no es de verbatims.
         raise HTTPException(400, f"Hoja de verbatims inválida: {exc}") from exc
 
+    # REQ-03: ¿es la primera carga de la ronda o una carga adicional? Se decide
+    # ANTES de insertar (después, esta misma carga ya contaría como previa).
+    is_additional_load = load_review.round_has_previous_load(db, round_id, file_id)
+
     n_inserted, df, pending_questions = insert_verbatims(db, round_id, project_id, file_id, rows)
 
     n_codes = n_aliases = 0
@@ -474,6 +498,22 @@ def import_file(
     ).scalars().all()
     for sp_id in subproject_ids:
         build_mention_groups(db, sp_id)
+        # Texto ya resuelto en una corrida anterior: el verbatim nuevo hereda los
+        # códigos del grupo cerrado sin reabrirlo (REQ-03, carga incremental).
+        propagate_group_codes_to_pending(db, sp_id)
+
+    if payload.source_label is not None and payload.source_label.strip():
+        db.execute(
+            text("update imported_files set source_label = :label where id = :id"),
+            {"label": payload.source_label.strip(), "id": file_id},
+        )
+
+    # Comparación contra las cargas previas: duplicados reales por realid quedan
+    # insertados Y marcados en import_review_flags ('pending'); los Serial
+    # repetidos con realid distinto son solo informativos.
+    review = {"duplicates": [], "serial_collisions": []}
+    if is_additional_load:
+        review = load_review.analyze_new_load(db, round_id, file_id)
 
     db.execute(
         text("update imported_files set status = 'validated' where id = :id"),
@@ -494,7 +534,15 @@ def import_file(
     # Si hay preguntas pendientes de clasificar, NO se procesa todavía — el
     # analista debe responder Marcas/Razones primero (Tarea 9), y el caller
     # reintenta el import (mismo archivo) una vez resueltas.
-    if not pending_questions:
+    # REQ-03: con duplicados pendientes de decisión humana tampoco — el motor se
+    # dispara al resolver el último flag (POST /import-review/{id}/resolve).
+    pending_duplicates = sum(1 for d in review["duplicates"] if d["status"] == "pending")
+    if pending_questions:
+        processing_status = "blocked_on_classification"
+    elif pending_duplicates:
+        processing_status = "blocked_on_review"
+    else:
+        processing_status = "queued"
         scheduler.submit(round_id)
 
     return {
@@ -505,12 +553,137 @@ def import_file(
             "skipped_rows": len(rows) - df.height,
         },
         "pending_questions": pending_questions,
-        "processing": {"status": "queued" if not pending_questions else "blocked_on_classification"},
+        "processing": {"status": processing_status},
         "warnings": [],
+        "is_additional_load": is_additional_load,
+        "review": {**review, "pending_flags": pending_duplicates},
         "round_status": db.execute(
             text("select status from rounds where id = :id"), {"id": round_id}
         ).scalar(),
     }
+
+
+@router.get("/rounds/{round_id}/loads")
+def list_loads(
+    round_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """REQ-03: las cargas de verbatims de la ronda, con su etiqueta y contadores —
+    lo que la UI usa para desambiguar 'Serial 1 — Carga: Parte 1'."""
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    rows = db.execute(
+        text("""
+            select f.id, f.source_label, f.original_filename, f.file_type, f.status,
+                   f.created_at,
+                   (select count(*) from respondents r where r.imported_file_id = f.id) as respondents_count,
+                   (select count(*) from verbatims v where v.imported_file_id = f.id) as verbatims_count,
+                   (select count(*) from import_review_flags irf
+                     where irf.imported_file_id = f.id and irf.status = 'pending') as pending_flags
+            from imported_files f
+            where f.round_id = :round
+              and f.file_type in ('verbatims_xlsx', 'combined_xlsx', 'dau')
+            order by f.created_at
+        """),
+        {"round": round_id},
+    ).mappings().all()
+    return [
+        {
+            "file_id": str(r["id"]),
+            "source_label": r["source_label"] or r["original_filename"],
+            "original_filename": r["original_filename"],
+            "file_type": r["file_type"],
+            "status": r["status"],
+            "respondents_count": r["respondents_count"],
+            "verbatims_count": r["verbatims_count"],
+            "pending_flags": r["pending_flags"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/rounds/{round_id}/files/{file_id}/review")
+def load_review_state(
+    round_id: uuid.UUID,
+    file_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """REQ-03: las 3 secciones de revisión de una carga adicional — duplicados
+    reales (con flag y estado), avisos de Serial repetido (informativos) y las
+    columnas sin calzar viven en pending_questions del propio import."""
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    exists = db.execute(
+        text("select 1 from imported_files where id = :id and round_id = :round"),
+        {"id": file_id, "round": round_id},
+    ).scalar()
+    if not exists:
+        raise HTTPException(404, "Archivo no encontrado")
+    return load_review.get_load_review(db, round_id, file_id)
+
+
+class ResolveFlagIn(BaseModel):
+    action: str  # 'keep' | 'remove' | 'edit'
+    note: str | None = None
+
+
+@router.post("/import-review/{flag_id}/resolve")
+def resolve_import_flag(
+    flag_id: uuid.UUID,
+    payload: ResolveFlagIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Decisión humana sobre un posible duplicado (REQ-03). Al resolver el
+    ÚLTIMO flag pendiente de la carga se dispara el motor sobre la ronda —
+    el mismo disparador de siempre: los verbatims nuevos están 'pending' y los
+    ya codificados no se tocan."""
+    flag_round = db.execute(
+        text("""
+            select i.round_id, i.id as file_id from import_review_flags f
+            join imported_files i on i.id = f.imported_file_id
+            where f.id = :id
+        """),
+        {"id": flag_id},
+    ).mappings().first()
+    if not flag_round:
+        raise HTTPException(404, "Flag de revisión no encontrado")
+    require_round(db, flag_round["round_id"], user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+
+    try:
+        result = load_review.resolve_flag(
+            db, flag_id, payload.action, user_id=user["id"], note=payload.note
+        )
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+
+    processing_status = "blocked_on_review"
+    if result["pending_flags"] == 0 and not result.get("already_resolved"):
+        round_id = flag_round["round_id"]
+        # Los 'remove' pudieron dejar grupos pendientes vacíos y frecuencias
+        # desactualizadas: se limpia y recalcula antes de disparar el motor.
+        load_review.cleanup_orphan_groups(db, round_id)
+        subproject_ids = db.execute(
+            text("select id from subprojects where round_id = :round"),
+            {"round": round_id},
+        ).scalars().all()
+        for sp_id in subproject_ids:
+            build_mention_groups(db, sp_id)
+        db.commit()
+        scheduler.submit(round_id)
+        processing_status = "queued"
+    elif result["pending_flags"] == 0:
+        processing_status = "queued"
+
+    return {**result, "processing": {"status": processing_status}}
 
 
 class ClassifyQuestionIn(BaseModel):
