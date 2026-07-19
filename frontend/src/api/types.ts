@@ -2,6 +2,37 @@ export type CodingType = "brands" | "reasons";
 export type OriginMode = "from_scratch" | "homologated";
 export type CodingStatus = "pending" | "auto_coded" | "needs_review" | "manually_coded" | "unknown";
 
+export type NotificationType = "project_assigned" | "ready_for_audit" | "audit_approved";
+
+export interface Notification {
+  id: string;
+  type: NotificationType;
+  title: string | null;
+  body: string | null;
+  related_entity_id: string | null;
+  sender_id: string | null;
+  sender_name: string | null;
+  is_read: boolean;
+  created_at: string;
+  last_reminded_at: string | null;
+  reminder_count: number;
+}
+
+export type NotificationPreview = Notification;
+
+export interface NotificationStream {
+  unread_count: number;
+  signal: number;
+  preview: NotificationPreview | null;
+}
+
+export interface NotificationList {
+  items: Notification[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 // GET /projects/{id}: each persisted `project` is an Estudio in schema v8.
 // A round contains its two coding subprojects (brands and reasons).
 export interface RoundSummary {

@@ -37,6 +37,8 @@ import type {
   ProjectMember,
   VerbatimList,
   VerbatimSummary,
+  NotificationList,
+  NotificationStream,
 } from "./types";
 import { readAuthToken, writeAuthToken } from "@/lib/tokenStorage";
 
@@ -137,6 +139,36 @@ export async function getMe(): Promise<UserProfile> {
 
 export async function logoutSession(): Promise<void> {
   await authRequest<void>("/logout", { method: "POST" });
+}
+
+/* ── Notificaciones ── */
+
+export async function streamNotifications(sinceSignal: number, signal?: AbortSignal): Promise<NotificationStream> {
+  return request<NotificationStream>(
+    `/notifications/stream?since_signal=${sinceSignal}`,
+    signal ? { signal, cache: "no-store" } : { cache: "no-store" },
+  );
+}
+
+export async function getNotifications(
+  limit = 20,
+  offset = 0,
+  onlyUnread = false,
+): Promise<NotificationList> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset), only_unread: String(onlyUnread) });
+  return request<NotificationList>(`/notifications?${params.toString()}`);
+}
+
+export async function getUnreadCount(): Promise<{ unread_count: number; signal: number }> {
+  return request<{ unread_count: number; signal: number }>("/notifications/unread-count");
+}
+
+export async function markNotificationRead(notificationId: string): Promise<{ updated: boolean }> {
+  return request<{ updated: boolean }>(`/notifications/${notificationId}/read`, { method: "POST" });
+}
+
+export async function markAllNotificationsRead(): Promise<{ updated: number }> {
+  return request<{ updated: number }>("/notifications/read-all", { method: "POST" });
 }
 
 export async function recoverAccount(payload: { email: string; recovery_code: string; password: string }): Promise<SignupResponse> {
