@@ -32,7 +32,7 @@ export default function App() {
         <Route path="/forgot-password" element={<RecoverAccountPage intro />} />
         <Route path="/recover-account" element={<RecoverAccountPage />} />
         <Route path="/pending-approval" element={<AuthGuard><AccountStatePage state="pending" /></AuthGuard>} />
-        <Route path="/no-assignments" element={<AuthGuard><AccountStatePage state="unassigned" /></AuthGuard>} />
+        <Route path="/no-assignments" element={<Navigate to="/" replace />} />
         <Route path="/account-suspended" element={<AuthGuard><AccountStatePage state="suspended" /></AuthGuard>} />
         <Route
           path="/*"

@@ -6,7 +6,8 @@ import { decodeStoredToken } from "../src/lib/tokenStorage";
 
 const user = (roles: UserProfile["roles"], capabilities: UserProfile["capabilities"]): UserProfile => ({
   id: "1", email: "person@example.test", name: "Person", roles, capabilities,
-  account_status: "active", assignments_count: 1, created_at: "2026-07-18T00:00:00Z",
+  account_status: "active", presence_status: "disponible", presence_changed_at: null,
+  assignments_count: 1, created_at: "2026-07-18T00:00:00Z",
 });
 
 describe("account state guard", () => {
@@ -15,8 +16,11 @@ describe("account state guard", () => {
     expect(accountStateDestination({ ...user([], []), account_status: "suspended", assignments_count: 0 }, "/")).toBe("/account-suspended");
   });
 
-  test("routes active members without assignments but not admins", () => {
-    expect(accountStateDestination({ ...user(["codificador"], []), assignments_count: 0 }, "/")).toBe("/no-assignments");
+  test("lets active members without assignments use home and inbox", () => {
+    expect(accountStateDestination({ ...user(["codificador"], []), assignments_count: 0 }, "/")).toBeNull();
+    expect(accountStateDestination({ ...user(["codificador"], []), assignments_count: 0 }, "/notifications")).toBeNull();
+    expect(accountStateDestination({ ...user(["codificador"], []), assignments_count: 0 }, "/projects/abc")).toBe("/");
+    expect(accountStateDestination({ ...user(["codificador"], []), assignments_count: 0 }, "/no-assignments")).toBe("/");
     expect(accountStateDestination({ ...user(["admin"], []), assignments_count: 0 }, "/")).toBeNull();
   });
 

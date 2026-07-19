@@ -7,8 +7,10 @@ import type { ProjectListItem } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts, type PageShortcut } from "@/hooks/useKeyboardShortcuts";
 import GlowCard, { GlowCardGrid, glowVariantForIndex } from "@/components/GlowCard";
 import AvatarStack from "@/components/AvatarStack";
+import WaitingAssignmentsHome from "@/components/WaitingAssignmentsHome";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { can } from "@/lib/capabilities";
+import { isWaitingForAssignments } from "@/lib/sessionRouting";
 import MascotAvatar from "@/components/mascot/MascotAvatar";
 import StatusPicker from "@/components/mascot/StatusPicker";
 import { PRESENCE_CATALOG, type PresenceStatus } from "@/lib/presence";
@@ -54,10 +56,14 @@ export default function ProjectDashboard() {
   const presenceStatus: PresenceStatus = user?.presence_status ?? "disponible";
 
   useEffect(() => {
+    if (user && isWaitingForAssignments(user)) {
+      setLoading(false);
+      return;
+    }
     getProjects()
       .then(setProjects)
       .finally(() => setLoading(false));
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     setPage(1);
@@ -117,6 +123,10 @@ export default function ProjectDashboard() {
   }, [canManageProjects, navigate]);
 
   useKeyboardShortcuts("dashboard");
+
+  if (user && isWaitingForAssignments(user)) {
+    return <WaitingAssignmentsHome />;
+  }
 
   return (
     <div className="max-w-4xl mx-auto py-4 space-y-5">
