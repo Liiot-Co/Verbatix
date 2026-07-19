@@ -4,6 +4,7 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
+    SmallInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -520,7 +521,7 @@ class ProfileEntry(Base):
 
 
 class Notification(Base):
-    """REQ-11: notificaciones de asignación."""
+    """Notificaciones in-app y estado de sus recordatorios."""
 
     __tablename__ = "notifications"
 
@@ -530,8 +531,11 @@ class Notification(Base):
     title = Column(String, nullable=True)
     body = Column(Text, nullable=True)
     related_entity_id = Column(UUID(as_uuid=True), nullable=True)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     is_read = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    last_reminded_at = Column(DateTime(timezone=True), nullable=True)
+    reminder_count = Column(SmallInteger, nullable=False, default=0)
 
 
 class TimeTrackingEvent(Base):
