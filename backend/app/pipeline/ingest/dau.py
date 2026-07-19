@@ -4,6 +4,7 @@ Formato: UTF-16LE con BOM, CRLF, registros delimitados por
 ``##recstart N`` / ``##v 'campo' = 'valor'`` / ``##end N``. Portado de
 parse_dau.py (prototipo standalone probado contra el .dau real del cliente).
 """
+import random
 import re
 
 _FIELD_RE = re.compile(r"^##v '(.+?)' = '(.*)'$")
@@ -90,6 +91,16 @@ def guess_coding_type(question_key: str) -> str | None:
         if pattern.match(question_key):
             return coding_type
     return None
+
+
+def sample_values(records: list[dict[str, str]], field: str, n: int = 5) -> list[str]:
+    """Hasta `n` valores no vacíos y distintos de `field`, elegidos al azar."""
+    seen: list[str] = []
+    for r in records:
+        v = r.get(field)
+        if v and v not in seen:
+            seen.append(v)
+    return seen if len(seen) <= n else random.sample(seen, n)
 
 
 class DauFormatError(ValueError):

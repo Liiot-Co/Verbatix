@@ -1,10 +1,24 @@
 """Parser del Excel real del cliente (Gloria Queso y similares)."""
 import io
+import random
 import re
 
 from openpyxl import load_workbook
 
 _ALIAS_COUNT = re.compile(r"\((\d+)\)\s*$")
+
+
+def sample_values(rows: list[dict[str, object]], column: str, n: int = 5) -> list[str]:
+    """Hasta `n` valores no vacíos y distintos de `column`, elegidos al azar."""
+    seen: list[str] = []
+    for r in rows:
+        v = r.get(column)
+        if v is None or v == "":
+            continue
+        s = str(v).strip()
+        if s and s not in seen:
+            seen.append(s)
+    return seen if len(seen) <= n else random.sample(seen, n)
 
 
 def _row_values(ws, limit=8):

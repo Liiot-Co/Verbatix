@@ -27,6 +27,24 @@ def test_detect_sheets():
     assert "NBS_UNAIDBlock[{_1}].NBS_UNAID" in sheet["columns"]
 
 
+def test_sample_values_returns_distinct_non_empty():
+    records = [
+        {"campo": "a"},
+        {"campo": "a"},
+        {"campo": "b"},
+        {"campo": ""},
+        {"campo_otro": "c"},
+    ]
+    assert set(dau.sample_values(records, "campo")) == {"a", "b"}
+
+
+def test_sample_values_caps_at_n():
+    records = [{"campo": str(i)} for i in range(10)]
+    result = dau.sample_values(records, "campo", n=3)
+    assert len(result) == 3
+    assert len(set(result)) == 3
+
+
 def test_parse_verbatims_includes_open_response_fields():
     rows = dau.parse_verbatims(_content())
     keys = {row["question_key"] for row in rows}
