@@ -220,13 +220,15 @@ viene poblado, mostrando `reason` como texto de ayuda/tooltip.
 `FieldSelectionTable`, y al confirmar enviar `field_selections` en `importFile`.
 
 **Acceptance criteria:**
-- [ ] Flujo completo `.dau`: file-drop → sugerencia+razón+muestra → importar respeta selección
-- [ ] Flujo completo Excel: file-drop → muestra (sin sugerencia) → importar respeta selección
-- [ ] Scope único (`brands`/`reasons`) → tabla sin segmentado, import funciona igual
+- [x] Flujo completo `.dau`: file-drop → sugerencia+razón+muestra → importar respeta selección (`fieldSelections` enviado a `importFile`)
+- [x] Flujo completo Excel: file-drop + hoja elegida → muestra (sin sugerencia), tabla en modo `readOnly` (decisión del usuario: Excel es
+      solo-muestra en este incremento — sus filas usan `question_key` de la columna "Question ID" del sheet, no el nombre de columna, así
+      que field_selections no correspondería a nada real ahí; import de Excel sigue el flujo `columnMap` de siempre, sin tocar)
+- [x] Scope único (`brands`/`reasons`) → `showCodingType=false`, tabla sin segmentado, import funciona igual
 
 **Verification:**
-- [ ] `bunx tsc --noEmit` limpio
-- [ ] Manual en navegador: `cd frontend && bun run dev`, probar ambos formatos y ambos scopes
+- [x] `bunx tsc --noEmit` limpio; `bun run build` limpio
+- [ ] Manual en navegador: `cd frontend && bun run dev`, probar ambos formatos y ambos scopes (pendiente, requiere backend corriendo + archivos reales)
 
 **Dependencies:** Task 7
 

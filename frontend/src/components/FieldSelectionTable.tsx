@@ -13,9 +13,16 @@ interface FieldSelectionTableProps {
   // true solo cuando el codingScope de la ronda es "both" — con scope único,
   // el campo hereda el tipo de la ronda sin preguntar (sin segmentado).
   showCodingType: boolean;
+  // Excel: sus filas ya traen question_key desde la columna "Question ID"
+  // del sheet, no desde el nombre de columna — un checkbox/segmentado por
+  // columna no correspondería a nada real en el import. Solo se muestra la
+  // muestra de valores, sin controles.
+  readOnly?: boolean;
 }
 
-export default function FieldSelectionTable({ fields, value, onChange, showCodingType }: FieldSelectionTableProps) {
+export default function FieldSelectionTable({
+  fields, value, onChange, showCodingType, readOnly = false,
+}: FieldSelectionTableProps) {
   const byField = new Map(value.map((fs) => [fs.field, fs]));
 
   const update = (field: string, patch: Partial<FieldSelection>) => {
@@ -26,20 +33,22 @@ export default function FieldSelectionTable({ fields, value, onChange, showCodin
     <div className="rounded-xl border border-p-border divide-y divide-p-border overflow-hidden">
       {fields.map((preview) => {
         const selection = byField.get(preview.field);
-        if (!selection) return null;
+        if (!readOnly && !selection) return null;
         return (
           <div key={preview.field} className="flex items-start gap-3 px-3 py-2.5">
-            <input
-              type="checkbox"
-              checked={selection.included}
-              onChange={(e) => update(preview.field, { included: e.target.checked })}
-              className="mt-1 h-4 w-4 rounded border-p-border-mid accent-p-accent"
-              aria-label={`Incluir campo ${preview.field}`}
-            />
+            {!readOnly && selection && (
+              <input
+                type="checkbox"
+                checked={selection.included}
+                onChange={(e) => update(preview.field, { included: e.target.checked })}
+                className="mt-1 h-4 w-4 rounded border-p-border-mid accent-p-accent"
+                aria-label={`Incluir campo ${preview.field}`}
+              />
+            )}
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-medium text-p-text truncate">{preview.field}</span>
-                {showCodingType && selection.included && (
+                {!readOnly && selection && showCodingType && selection.included && (
                   <SegmentedControl
                     name={`coding-type-${preview.field}`}
                     options={CODING_OPTIONS}

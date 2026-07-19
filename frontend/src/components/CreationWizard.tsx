@@ -6,6 +6,7 @@ import { Check, ChevronDown, ChevronLeft, FileSpreadsheet, UploadCloud, AlertCir
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb, { type Crumb } from "./Breadcrumb";
+import FieldSelectionTable, { initialFieldSelections } from "./FieldSelectionTable";
 import {
   createProject,
   createRound,
@@ -15,6 +16,7 @@ import {
   importFile,
   importClientCatalog,
   previewClientCatalog,
+  previewFields,
   uploadFile,
 } from "@/api/client";
 import type {
@@ -24,6 +26,8 @@ import type {
   ColumnMap,
   CodingType,
   DetectedSheet,
+  FieldPreview,
+  FieldSelection,
   ProjectDetail,
   Round,
   UploadedFile,
@@ -155,6 +159,8 @@ export default function CreationWizard() {
   const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
   const [verbatimsSheet, setVerbatimsSheet] = useState("");
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
+  const [fieldPreviews, setFieldPreviews] = useState<FieldPreview[]>([]);
+  const [fieldSelections, setFieldSelections] = useState<FieldSelection[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const [pendingQuestions, setPendingQuestions] = useState<string[]>([]);
@@ -335,6 +341,26 @@ export default function CreationWizard() {
   // dau._NON_RESPONSE_FIELDS / dau.parse_verbatims.
   const isDau = uploaded?.file_type === "dau";
 
+  // Selección de campos: para .dau se dispara apenas se sube el archivo (no
+  // depende de elegir hoja); para Excel espera a que haya una hoja elegida.
+  useEffect(() => {
+    if (!round || !uploaded) {
+      setFieldPreviews([]);
+      setFieldSelections([]);
+      return;
+    }
+    if (!isDau && !verbatimsSheet) return;
+    let cancelled = false;
+    void previewFields(round.id, uploaded.file_id, isDau ? undefined : verbatimsSheet).then(({ fields }) => {
+      if (cancelled) return;
+      setFieldPreviews(fields);
+      setFieldSelections(initialFieldSelections(fields));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [round, uploaded, verbatimsSheet, isDau]);
+
   const importedCatalogTypes = activeCodingTypes.filter(
     (codingType) => catalogOrigins[codingType].origin === "imported_client_catalog"
   );
@@ -453,7 +479,12 @@ export default function CreationWizard() {
         round.id,
         uploaded.file_id,
         verbatimsSheet,
-        columnMap as ColumnMap
+        columnMap as ColumnMap,
+        // El wizard de selección de campos solo controla el import para .dau
+        // (ver Task 8): en Excel, "field" es la columna del sheet, que no
+        // corresponde al question_key real de cada fila (viene de la columna
+        // "Question ID"), así que field_selections no aplicaría a nada real.
+        isDau ? { fieldSelections } : {}
       );
       if (result.pending_questions.length > 0) {
         const defaultType = activeCodingTypes[0] ?? "brands";
@@ -1195,6 +1226,21 @@ export default function CreationWizard() {
                             ))}
                           </motion.select>
                         </div>
+                      </motion.div>
+                    )}
+
+                    {fieldPreviews.length > 0 && (
+                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-1.5 pt-1">
+                        <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                          {isDau ? "Campos a clasificar" : "Muestra de valores"}
+                        </motion.label>
+                        <FieldSelectionTable
+                          fields={fieldPreviews}
+                          value={fieldSelections}
+                          onChange={setFieldSelections}
+                          showCodingType={codingScope === "both"}
+                          readOnly={!isDau}
+                        />
                       </motion.div>
                     )}
 
