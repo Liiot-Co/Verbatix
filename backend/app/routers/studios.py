@@ -1,8 +1,11 @@
 """CRUD de Ronda (ola de datos de un Estudio: su propio Excel, verbatims,
-codebook heredado, procesamiento) y sus 2 Subproyectos (Marcas/Razones, v8).
+codebook heredado, procesamiento) y sus Subproyectos (Marcas/Razones, v8).
 
 No hay "crear Estudio" aquí — el Estudio (`projects`) se crea vía
-routers/projects.py. Crear una Ronda crea automáticamente sus 2 subprojects."""
+routers/projects.py. Crear una Ronda ya NO crea subproyectos: cada uno se crea
+perezosamente (`get_or_create_subproject`) cuando el import de un archivo trae
+filas de ese coding_type — una ronda con un archivo de solo marcas termina con
+un único subproyecto, no con Marcas y Razones fijos."""
 import hashlib
 import uuid
 
@@ -21,28 +24,16 @@ from app.repositories import (
     build_mention_groups,
     classify_question,
     clone_codebook,
-    create_codebook,
     get_coded_summary,
+    get_or_create_subproject,
     get_pending_summary,
     insert_codebook_from_excel,
     insert_verbatims,
-    seed_system_codes,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["rounds & subprojects"])
 
 CODING_TYPES = ("brands", "reasons")
-
-
-def _get_or_create_codebook(db: Session, project_id: uuid.UUID, coding_type: str) -> tuple[uuid.UUID, dict]:
-    """El codebook es compartido por project_id+coding_type (Tarea 3): una Ronda 2
-    reutiliza el mismo libro sin reprocesarlo, en vez de crear uno nuevo."""
-    existing = _current_codebook_id(db, project_id, coding_type)
-    if existing:
-        return existing, {"codes": 0, "aliases": 0, "nets": 0, "reused": True}
-    cb_id = create_codebook(db, project_id, coding_type)
-    seed_system_codes(db, cb_id)
-    return cb_id, {"codes": 0, "aliases": 0, "nets": 0, "reused": False}
 
 
 class RoundIn(BaseModel):
@@ -62,13 +53,16 @@ def create_round(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
+    """Crea solo la fila de `rounds`. Ya no crea Marcas/Razones a ciegas — los
+    subproyectos se crean perezosamente (`get_or_create_subproject`, ver
+    repositories.py) recién cuando el import de un archivo trae filas de ese
+    coding_type, así una ronda con un .dau de solo marcas termina con un único
+    subproyecto en vez de uno vacío."""
     require_project(db, project_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
 
-    source_round_project_id = None
     if payload.origin_mode == "homologated" and payload.source_round_id:
-        source_round = require_round(db, payload.source_round_id, user["id"])
-        source_round_project_id = source_round["project_id"]
+        require_round(db, payload.source_round_id, user["id"])
 
     round_id = uuid.uuid4()
     db.execute(
@@ -91,35 +85,6 @@ def create_round(
             "u": user["id"],
         },
     )
-
-    subprojects = {}
-    for coding_type in CODING_TYPES:
-        cb_id, inherited = _get_or_create_codebook(db, project_id, coding_type)
-
-        # Homologación cross-estudio: si este Estudio no tenía codebook propio
-        # todavía para este coding_type (recién creado) y la ronda origen
-        # pertenece a OTRO Estudio, clona su libro — dentro del mismo Estudio
-        # el codebook ya se comparte automáticamente, no hace falta clonar.
-        if (
-            not inherited["reused"]
-            and source_round_project_id
-            and source_round_project_id != project_id
-        ):
-            inherited = {**inherited, **clone_codebook(db, source_round_project_id, coding_type, cb_id)}
-
-        sp_id = uuid.uuid4()
-        db.execute(
-            text("""
-                insert into subprojects (id, round_id, codebook_id, coding_type)
-                values (:id, :round, :cb, :ct)
-            """),
-            {"id": sp_id, "round": round_id, "cb": cb_id, "ct": coding_type},
-        )
-        subprojects[coding_type] = {
-            "id": str(sp_id), "coding_type": coding_type, "codebook_id": str(cb_id),
-            "inherited_codes": inherited["codes"], "inherited_aliases": inherited["aliases"],
-        }
-
     db.commit()
 
     return {
@@ -127,7 +92,7 @@ def create_round(
         "project_id": str(project_id),
         **payload.model_dump(mode="json"),
         "status": "created",
-        "subprojects": list(subprojects.values()),
+        "subprojects": [],
     }
 
 
@@ -172,7 +137,8 @@ def get_round(
 
     subproject_rows = db.execute(
         text("""
-            select sp.id, sp.coding_type, sp.codebook_id,
+            select sp.id, sp.coding_type, sp.codebook_id, sp.status, sp.origin_mode,
+                   sp.source_subproject_id, sp.min_mentions_threshold, sp.audit_percentage,
                    (select count(*) from verbatims where subproject_id = sp.id) as verbatims_total,
                    (select count(*) from mention_groups where subproject_id = sp.id) as mention_groups,
                    (select count(*) from codes where codebook_id = sp.codebook_id) as codes_total,
@@ -204,6 +170,11 @@ def get_round(
             "id": str(sp["id"]),
             "coding_type": sp["coding_type"],
             "codebook_id": str(sp["codebook_id"]) if sp["codebook_id"] else None,
+            "status": sp["status"],
+            "origin_mode": sp["origin_mode"],
+            "source_subproject_id": str(sp["source_subproject_id"]) if sp["source_subproject_id"] else None,
+            "min_mentions_threshold": sp["min_mentions_threshold"],
+            "audit_percentage": float(sp["audit_percentage"]),
             "counters": {
                 "verbatims_total": sp["verbatims_total"],
                 "mention_groups": sp["mention_groups"],
@@ -250,6 +221,70 @@ def get_round(
         "audit": audit,
         "subprojects": subprojects,
     }
+
+
+class SubprojectUpdateIn(BaseModel):
+    # min_mentions_threshold/audit_percentage NO son editables acá a propósito:
+    # se fijan una sola vez, al importar el archivo que crea el subproyecto
+    # (ver ImportIn), porque cambiarlas mientras el motor ya procesó con el
+    # valor viejo deja el catálogo por frecuencia y el muestreo de auditoría
+    # inconsistentes (bug real reportado en producción).
+    origin_mode: str | None = None
+    source_round_id: uuid.UUID | None = None  # solo con origin_mode='homologated'
+
+
+@router.patch("/subprojects/{subproject_id}")
+def update_subproject(
+    subproject_id: uuid.UUID,
+    payload: SubprojectUpdateIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Homologación por subproyecto — lo único que sigue siendo editable después
+    de creado (min_mentions_threshold/audit_percentage ya no, ver SubprojectUpdateIn)."""
+    sp = require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+
+    updates: dict = {}
+    if payload.origin_mode is not None:
+        if sp["status"] != "created":
+            raise HTTPException(400, "No se puede cambiar el origen: el subproyecto ya empezó a procesar")
+        if payload.origin_mode not in ("from_scratch", "homologated"):
+            raise HTTPException(400, "origin_mode debe ser 'from_scratch' o 'homologated'")
+        if payload.origin_mode == "homologated" and sp["source_subproject_id"]:
+            raise HTTPException(400, "El subproyecto ya está homologado; no se puede volver a cambiar el origen")
+
+        updates["origin_mode"] = payload.origin_mode
+        if payload.origin_mode == "homologated" and payload.source_round_id:
+            source_round = require_round(db, payload.source_round_id, user["id"])
+            source_sp_id = db.execute(
+                text("select id from subprojects where round_id = :round and coding_type = :ct"),
+                {"round": payload.source_round_id, "ct": sp["coding_type"]},
+            ).scalar()
+            if source_sp_id:
+                updates["source_subproject_id"] = source_sp_id
+                # Solo clona si este codebook es nuevo (nada más que los códigos
+                # de sistema) — mismo criterio que create_round tenía antes de
+                # que la homologación se moviera acá (evita duplicar códigos si
+                # ya tenía contenido propio).
+                has_own_codes = db.execute(
+                    text("select exists(select 1 from codes where codebook_id = :cb and not is_system)"),
+                    {"cb": sp["codebook_id"]},
+                ).scalar()
+                if not has_own_codes and source_round["project_id"] != sp["project_id"]:
+                    clone_codebook(db, source_round["project_id"], sp["coding_type"], sp["codebook_id"])
+
+    if not updates:
+        raise HTTPException(400, "Nada que actualizar")
+
+    set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+    db.execute(
+        text(f"update subprojects set {set_clause}, updated_at = now() where id = :id"),
+        {**updates, "id": subproject_id},
+    )
+    db.commit()
+
+    return {"id": str(subproject_id), **updates}
 
 
 @router.get("/subprojects/{subproject_id}/mention-groups")
@@ -423,6 +458,12 @@ class ImportIn(BaseModel):
     # a diferencia de los verbatims, que se reparten solos por questions.coding_type.
     codebook_coding_type: str | None = None
     column_map: dict[str, str] | None = None
+    # Capturados en el wizard al soltar el archivo (antes de importar/procesar) —
+    # solo se usan si esta importación crea un subproyecto nuevo. No hay forma de
+    # cambiarlos después: hacerlo mientras el motor ya procesó con el valor viejo
+    # deja el catálogo por frecuencia y el muestreo de auditoría inconsistentes.
+    min_mentions_threshold: int | None = None
+    audit_percentage: float | None = None
 
 
 @router.post("/rounds/{round_id}/files/{file_id}/import")
@@ -459,10 +500,22 @@ def import_file(
         # KeyError: la hoja no existe en el workbook; ValueError: no es de verbatims.
         raise HTTPException(400, f"Hoja de verbatims inválida: {exc}") from exc
 
-    n_inserted, df, pending_questions = insert_verbatims(db, round_id, project_id, file_id, rows)
+    n_inserted, df, pending_questions = insert_verbatims(
+        db, round_id, project_id, file_id, rows,
+        min_mentions_threshold=payload.min_mentions_threshold,
+        audit_percentage=payload.audit_percentage,
+    )
 
     n_codes = n_aliases = 0
     if payload.codebook_sheet:
+        # El subproject de este coding_type puede no existir todavía (ronda nueva
+        # sin verbatims de este tipo aún) — se crea igual que insert_verbatims lo
+        # hace para los verbatims, así el libro de códigos siempre tiene dónde vivir.
+        get_or_create_subproject(
+            db, round_id, project_id, payload.codebook_coding_type,
+            min_mentions_threshold=payload.min_mentions_threshold,
+            audit_percentage=payload.audit_percentage,
+        )
         codebook_id = _current_codebook_id(db, project_id, payload.codebook_coding_type)
         parsed = excel.parse_codebook(content, payload.codebook_sheet)
         imported = insert_codebook_from_excel(db, codebook_id, parsed)
