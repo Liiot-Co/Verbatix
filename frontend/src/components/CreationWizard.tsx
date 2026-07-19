@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useDropzone } from "react-dropzone";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronLeft, FileSpreadsheet, UploadCloud, AlertCircle, Files } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, FileSpreadsheet, UploadCloud, AlertCircle, Files } from "lucide-react";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb, { type Crumb } from "./Breadcrumb";
@@ -10,18 +10,22 @@ import {
   createProject,
   createRound,
   classifyQuestion,
+  getCodebookSources,
   getProject,
   importFile,
+  importClientCatalog,
+  previewClientCatalog,
   uploadFile,
 } from "@/api/client";
 import type {
+  CatalogOriginSelection,
+  CatalogPreview,
+  CodebookSource,
   ColumnMap,
   CodingType,
   DetectedSheet,
-  OriginMode,
   ProjectDetail,
   Round,
-  RoundSummary,
   UploadedFile,
 } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -40,51 +44,36 @@ interface BatchItem {
 
 const STEPS: { key: WizardStep; label: string; icon: string }[] = [
   { key: "project", label: "Proyecto", icon: "📁" },
-  { key: "studio", label: "Configuración", icon: "🏷️" },
+  { key: "studio", label: "Libro de códigos", icon: "📚" },
   { key: "round", label: "Ronda y Excel", icon: "🔄" },
 ];
 
-function ToggleGroup<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: { value: T; label: string }[];
-  value: T;
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div role="radiogroup" className="grid grid-cols-2 gap-1.5">
-      {options.map((opt) => (
-        <motion.button
-          key={opt.value}
-          type="button"
-          role="radio"
-          aria-checked={value === opt.value}
-          onClick={() => {
-            onChange(opt.value);
-            playTick();
-          }}
-          whileHover={{ scale: 1.01 }}
-          whileTap={{ scale: 0.98 }}
-          className={[
-            "relative text-sm font-medium py-2 rounded-lg border transition-all duration-150 ease-out-expo",
-            value === opt.value
-              ? "border-p-accent/50 bg-p-accent-soft text-p-accent shadow-sm"
-              : "border-p-border text-p-text-muted hover:bg-p-bg-subtle hover:text-p-text",
-          ].join(" ")}
-        >
-          {opt.label}
-          <motion.div
-            layoutId="toggle-indicator"
-            className="absolute inset-0 rounded-lg bg-p-accent/10"
-            transition={{ type: "spring", stiffness: 300, damping: 25 }}
-          />
-        </motion.button>
-      ))}
-    </div>
-  );
-}
+const CODING_LABELS: Record<CodingType, string> = {
+  brands: "Marcas",
+  reasons: "Razones",
+};
+
+const ORIGIN_OPTIONS: {
+  value: CatalogOriginSelection["origin"];
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "scratch",
+    label: "Crear desde cero",
+    description: "Los códigos se crean durante la codificación. El libro queda oficial al cerrar la ronda.",
+  },
+  {
+    value: "inherited_round",
+    label: "Heredar libro del proyecto",
+    description: "Reusa un libro oficial de una ronda anterior o de otro estudio del mismo cliente.",
+  },
+  {
+    value: "imported_client_catalog",
+    label: "Homologar libro de códigos",
+    description: "Sube el libro oficial del cliente. Cada número de código se respeta tal cual viene.",
+  },
+];
 
 function useEnterToSubmit(onSubmit: () => void) {
   return (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -119,16 +108,34 @@ export default function CreationWizard() {
   const [newExternalCode, setNewExternalCode] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
 
-  // Schema v8 creates both subprojects (Marcas y Razones) for every ronda.
-  // This step only configures the optional source used for homologation.
+  // REQ-07: cada subproyecto elige obligatoriamente su origen de catálogo, y
+  // la ronda crea sus subproyectos (Marcas/Razones) de inmediato con ese
+  // origen. newStudyCodingType solo se usa para decirle al backend a qué
+  // subproyecto pertenece una hoja de libro de códigos Excel (no hay forma de
+  // inferirlo de la hoja misma).
   const [round, setRound] = useState<Round | null>(null);
-  const [newStudyCodingType, setNewStudyCodingType] = useState<CodingType>("brands");
-  const [sOriginMode, setSOriginMode] = useState<OriginMode>("from_scratch");
-  const [sSourceId, setSSourceId] = useState<string>("");
+  const newStudyCodingType: CodingType = "brands";
+  const [catalogOrigins, setCatalogOrigins] = useState<Record<CodingType, CatalogOriginSelection>>({
+    brands: { origin: "scratch", source_subproject_id: null },
+    reasons: { origin: "scratch", source_subproject_id: null },
+  });
+  const [codebookSources, setCodebookSources] = useState<Record<CodingType, CodebookSource[]>>({
+    brands: [],
+    reasons: [],
+  });
+  const [catalogUploads, setCatalogUploads] = useState<Partial<Record<CodingType, UploadedFile>>>({});
+  const [catalogSheets, setCatalogSheets] = useState<Partial<Record<CodingType, string>>>({});
+  const [catalogPreviews, setCatalogPreviews] = useState<Partial<Record<CodingType, CatalogPreview>>>({});
+  const [catalogConfirmed, setCatalogConfirmed] = useState<Partial<Record<CodingType, boolean>>>({});
+  // Acordeón del paso Configuración: solo una sección (Marcas/Razones) abierta
+  // a la vez para que la pantalla no se alargue.
+  const [expandedCodingType, setExpandedCodingType] = useState<CodingType | null>("brands");
 
-  // Step 3: ronda (wave de datos dentro del estudio) + Excel — umbrales de
-  // clasificación se configuran por ronda, no por estudio: todos los estudios
-  // de una misma ola comparten el mismo mínimo de menciones y % de auditoría.
+  // Step 2: ronda (wave de datos dentro del estudio) + Excel. min_mentions/
+  // % auditoría se capturan acá, al soltar el archivo, y viajan con el import
+  // — no se pueden editar después: cambiarlas mientras el motor ya procesó con
+  // el valor viejo deja el catálogo por frecuencia y el muestreo de auditoría
+  // inconsistentes (bug real reportado en producción).
   const [rName, setRName] = useState("Ronda 1 - 2026");
   const [rRoundNumber, setRRoundNumber] = useState(1);
   const [rThreshold, setRThreshold] = useState(3);
@@ -136,7 +143,6 @@ export default function CreationWizard() {
 
   const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
   const [verbatimsSheet, setVerbatimsSheet] = useState("");
-  const [codebookSheet, setCodebookSheet] = useState("");
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
   const [submitting, setSubmitting] = useState(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
@@ -164,29 +170,24 @@ export default function CreationWizard() {
       setNewExternalCode(detail.external_code);
       setNewProjectName(detail.name);
 
+      const nextNum = nextRoundNumber(detail.rounds ?? []);
+      setRRoundNumber(nextNum);
+      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
       goToStep("studio");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Estudios del mismo coding_type en el proyecto: sus rondas se ofrecen como
-  // fuente de homologación. Refetched al llegar al paso de estudio/ronda, ya
-  // que necesita el árbol completo del proyecto (no solo WizardProject).
-  interface HomologationCandidate extends RoundSummary {
-    studyName: string;
-  }
-  const [homologationCandidates, setHomologationCandidates] = useState<HomologationCandidate[]>([]);
-
   useEffect(() => {
-    if (step !== "studio" && step !== "round" || !project) return;
+    if ((step !== "studio" && step !== "round") || !project) return;
     getProject(project.id).then((detail) => {
       setProjectDetail(detail);
-      const candidates = detail.rounds
-        .filter((r) => r.subprojects.some((sp) => sp.coding_type === newStudyCodingType))
-        .map((r) => ({ ...r, studyName: detail.name }));
-      setHomologationCandidates(candidates);
     });
-  }, [step, project, newStudyCodingType]);
+    Promise.all([
+      getCodebookSources(project.id, "brands"),
+      getCodebookSources(project.id, "reasons"),
+    ]).then(([brands, reasons]) => setCodebookSources({ brands, reasons }));
+  }, [step, project]);
 
   const goToStep = (next: WizardStep) => {
     const nextIndex = STEPS.findIndex((s) => s.key === next);
@@ -198,17 +199,23 @@ export default function CreationWizard() {
   const handleCreateProject = async () => {
     if (!newExternalCode.trim() || !newProjectName.trim()) return;
     try {
+      let detail = projectDetail;
       if (!project) {
         const created = await createProject(newExternalCode.trim(), newProjectName.trim());
         setProject(created);
         setActiveProjectId(created.id);
-        setProjectDetail({
+        detail = {
           ...created,
           rounds: [],
           categories: [],
+          proyecto_id: created.proyecto_id ?? null,
           created_at: new Date().toISOString(),
-        });
+        };
+        setProjectDetail(detail);
       }
+      const nextNum = nextRoundNumber(detail?.rounds ?? []);
+      setRRoundNumber(nextNum);
+      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
       playSuccess();
       goToStep("studio");
     } catch {
@@ -217,6 +224,16 @@ export default function CreationWizard() {
   };
 
   const handleContinueFromStudio = () => {
+    const missingSource = (["brands", "reasons"] as CodingType[]).find(
+      (codingType) =>
+        catalogOrigins[codingType].origin === "inherited_round"
+        && !catalogOrigins[codingType].source_subproject_id
+    );
+    if (missingSource) {
+      setExpandedCodingType(missingSource);
+      showToast(`Elige el libro a heredar para ${CODING_LABELS[missingSource]}`, "error");
+      return;
+    }
     if (projectDetail) {
       const nextNum = nextRoundNumber(projectDetail.rounds ?? []);
       setRRoundNumber(nextNum);
@@ -226,24 +243,31 @@ export default function CreationWizard() {
     goToStep("round");
   };
 
-  // La ronda se crea directamente dentro del Estudio (`projects` en schema v8).
+  // La ronda se crea directamente dentro del Estudio (`projects` en schema v8),
+  // con sus subproyectos (Marcas/Razones) y el origen de catálogo elegido en
+  // el paso "studio" (ver docstring de newStudyCodingType arriba).
   const ensureRound = async (): Promise<Round | null> => {
     if (round) return round;
     if (!project || !rName.trim()) return null;
     try {
+      const reasonsSource = codebookSources.reasons.find(
+        (source) => source.source_subproject_id === catalogOrigins.reasons.source_subproject_id
+      );
       const created = await createRound(project.id, {
         name: rName.trim(),
         round_number: rRoundNumber,
         min_mentions_threshold: rThreshold,
         audit_percentage: rAudit,
-        origin_mode: sOriginMode,
-        source_round_id: sOriginMode === "homologated" && sSourceId ? sSourceId : null,
+        origin_mode: reasonsSource ? "homologated" : "from_scratch",
+        source_round_id: reasonsSource?.round_id ?? null,
+        catalog_origins: catalogOrigins,
       });
       setRound(created);
       const inheritedCodes = created.subprojects.reduce((sum, subproject) => sum + (subproject.inherited_codes ?? 0), 0);
       const inheritedAliases = created.subprojects.reduce((sum, subproject) => sum + (subproject.inherited_aliases ?? 0), 0);
       if (inheritedCodes > 0) {
-        showToast(`Se heredaron ${inheritedCodes} códigos y ${inheritedAliases} alias`, "success");
+        const inheritedNets = created.subprojects.reduce((sum, subproject) => sum + (subproject.inherited_nets ?? 0), 0);
+        showToast(`Se heredaron ${inheritedCodes} códigos, ${inheritedAliases} alias y ${inheritedNets} netos`, "success");
       }
       playSuccess();
       return created;
@@ -263,14 +287,12 @@ export default function CreationWizard() {
       const result = await uploadFile(r.id, file);
       setUploaded(result);
       const verbatimGuess = result.detected_sheets.find((s) => s.guessed_as === "verbatims");
-      const codebookGuess = result.detected_sheets.find((s) => s.guessed_as === "codebook");
       setVerbatimsSheet(verbatimGuess?.name ?? result.detected_sheets[0]?.name ?? "");
-      setCodebookSheet(codebookGuess?.name ?? "");
       setBatchItems(rest.map((f) => ({ file: f, status: "pending" as const })));
       playTick();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [round, project, rName, rRoundNumber, rThreshold, rAudit, sOriginMode, sSourceId]
+    [round, project, rName, rRoundNumber, rThreshold, rAudit, catalogOrigins]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -290,7 +312,64 @@ export default function CreationWizard() {
   // dau._NON_RESPONSE_FIELDS / dau.parse_verbatims.
   const isDau = uploaded?.file_type === "dau";
 
-  const canImport = !!(round && uploaded && verbatimsSheet && (isDau || columnMap.verbatim));
+  const importedCatalogTypes = (["brands", "reasons"] as CodingType[]).filter(
+    (codingType) => catalogOrigins[codingType].origin === "imported_client_catalog"
+  );
+  const catalogsReady = importedCatalogTypes.every((codingType) => catalogConfirmed[codingType]);
+  const canImport = !!(
+    round
+    && uploaded
+    && verbatimsSheet
+    && (isDau || columnMap.verbatim)
+    && catalogsReady
+  );
+
+  const loadCatalogPreview = async (
+    codingType: CodingType,
+    catalogFile: UploadedFile,
+    sheet: string
+  ) => {
+    if (!round || !sheet) return;
+    const preview = await previewClientCatalog(round.id, catalogFile.file_id, sheet, codingType);
+    setCatalogSheets((current) => ({ ...current, [codingType]: sheet }));
+    setCatalogPreviews((current) => ({ ...current, [codingType]: preview }));
+    setCatalogConfirmed((current) => ({ ...current, [codingType]: false }));
+  };
+
+  const handleCatalogUpload = async (codingType: CodingType, file: File) => {
+    const targetRound = await ensureRound();
+    if (!targetRound) return;
+    try {
+      const result = await uploadFile(targetRound.id, file);
+      setCatalogUploads((current) => ({ ...current, [codingType]: result }));
+      const guessed = result.detected_sheets.find((sheet) => sheet.guessed_as === "codebook")
+        ?? result.detected_sheets[0];
+      if (!guessed) throw new Error("El archivo no contiene hojas");
+      const preview = await previewClientCatalog(
+        targetRound.id, result.file_id, guessed.name, codingType
+      );
+      setCatalogSheets((current) => ({ ...current, [codingType]: guessed.name }));
+      setCatalogPreviews((current) => ({ ...current, [codingType]: preview }));
+    } catch {
+      showToast("No se pudo leer el libro de códigos del cliente", "error");
+    }
+  };
+
+  const handleConfirmCatalog = async (codingType: CodingType) => {
+    const catalogFile = catalogUploads[codingType];
+    const sheet = catalogSheets[codingType];
+    if (!round || !catalogFile || !sheet) return;
+    setSubmitting(true);
+    try {
+      await importClientCatalog(round.id, catalogFile.file_id, sheet, codingType);
+      setCatalogConfirmed((current) => ({ ...current, [codingType]: true }));
+      showToast(`Libro de códigos de ${CODING_LABELS[codingType]} homologado`, "success");
+    } catch {
+      showToast("No se pudo homologar el libro de códigos", "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   // Cada archivo adicional del lote se convierte en su propia ronda nueva del
   // mismo estudio: crea la ronda, sube el archivo, adivina sus hojas (mismo
@@ -313,6 +392,11 @@ export default function CreationWizard() {
           audit_percentage: rAudit,
           origin_mode: "from_scratch",
           source_round_id: null,
+          catalog_origins: {
+            brands: { origin: "scratch", source_subproject_id: null },
+            reasons: { origin: "scratch", source_subproject_id: null },
+          },
+          reuse_catalogs_from_round_id: round?.id ?? null,
         });
         const uploadedBatch = await uploadFile(newRound.id, item.file);
         setBatchItems((items) =>
@@ -323,15 +407,11 @@ export default function CreationWizard() {
         if (!verbatimGuess) {
           throw new Error("No se detectó una hoja de verbatims en este archivo");
         }
-        const codebookGuess = uploadedBatch.detected_sheets.find((s) => s.guessed_as === "codebook");
-
         await importFile(
           newRound.id,
           uploadedBatch.file_id,
           verbatimGuess.name,
-          columnMap as ColumnMap,
-          codebookGuess?.name,
-          codebookGuess ? newStudyCodingType : undefined
+          columnMap as ColumnMap
         );
         setBatchItems((items) => items.map((it, idx) => (idx === i ? { ...it, status: "done" } : it)));
       } catch (err) {
@@ -351,14 +431,17 @@ export default function CreationWizard() {
         round.id,
         uploaded.file_id,
         verbatimsSheet,
-        columnMap as ColumnMap,
-        codebookSheet || undefined,
-        codebookSheet ? newStudyCodingType : undefined
+        columnMap as ColumnMap
       );
       if (result.pending_questions.length > 0) {
         setPendingQuestions(result.pending_questions);
         setQuestionTypes(Object.fromEntries(result.pending_questions.map((question) => [question, newStudyCodingType])));
-        showToast("Clasifica las nuevas variables antes de procesar la ronda.", "info");
+        showToast(
+          isDau
+            ? "Este .dau tiene variables fuera de la plantilla conocida — revisa el detalle antes de continuar."
+            : "Clasifica las nuevas variables antes de procesar la ronda.",
+          "info"
+        );
         return;
       }
       showToast(
@@ -424,8 +507,7 @@ export default function CreationWizard() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (step === "round") return goToStep("studio");
-      if (step === "studio") return goToStep("project");
+      if (step === "round" || step === "studio") return goToStep("project");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -587,51 +669,163 @@ export default function CreationWizard() {
                 <ChevronLeft className="w-3.5 h-3.5" /> {project.name}
               </motion.button>
 
-              <motion.div className="space-y-4">
+              <motion.div className="space-y-3">
                 <div>
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Tipo para codebook u homologación</motion.label>
-                  <ToggleGroup
-                    options={[
-                      { value: "brands" as CodingType, label: "Marcas" },
-                      { value: "reasons" as CodingType, label: "Razones" },
-                    ]}
-                    value={newStudyCodingType}
-                    onChange={setNewStudyCodingType}
-                  />
+                  <h2 className="text-sm font-semibold text-p-text">Origen del libro de códigos</h2>
+                  <p className="text-xs text-p-text-muted mt-0.5">
+                    Define de dónde parte el libro de códigos de cada tipo. Los números de código existentes nunca se reordenan.
+                  </p>
                 </div>
+                {(["brands", "reasons"] as CodingType[]).map((codingType) => {
+                  const selection = catalogOrigins[codingType];
+                  const expanded = expandedCodingType === codingType;
+                  const selectedOption = ORIGIN_OPTIONS.find((option) => option.value === selection.origin);
+                  const source = codebookSources[codingType].find(
+                    (candidate) => candidate.source_subproject_id === selection.source_subproject_id
+                  );
+                  const needsSource = selection.origin === "inherited_round" && !selection.source_subproject_id;
+                  return (
+                    <div key={codingType} className="rounded-xl border border-p-border overflow-hidden">
+                      <button
+                        type="button"
+                        aria-expanded={expanded}
+                        onClick={() => {
+                          setExpandedCodingType(expanded ? null : codingType);
+                          playTick();
+                        }}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-p-bg-subtle transition-colors"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-semibold text-p-text">{CODING_LABELS[codingType]}</span>
+                          <span
+                            className={[
+                              "text-[11px] font-medium px-2 py-0.5 rounded-full truncate",
+                              needsSource
+                                ? "bg-p-warning/15 text-p-text-muted"
+                                : "bg-p-accent-soft text-p-accent",
+                            ].join(" ")}
+                          >
+                            {needsSource
+                              ? "Heredar · falta elegir el libro"
+                              : selection.origin === "inherited_round" && source
+                                ? `Heredar · ${source.project_name} R${source.round_number}`
+                                : selectedOption?.label}
+                          </span>
+                        </div>
+                        <ChevronDown
+                          className={[
+                            "w-4 h-4 shrink-0 text-p-text-muted transition-transform duration-200",
+                            expanded ? "rotate-180" : "",
+                          ].join(" ")}
+                        />
+                      </button>
+                      <AnimatePresence initial={false}>
+                        {expanded && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: [0.19, 1, 0.22, 1] as const }}
+                          >
+                            <div role="radiogroup" className="px-3 pb-3 pt-1 space-y-1.5">
+                              {ORIGIN_OPTIONS.map((option) => {
+                                const active = selection.origin === option.value;
+                                return (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    role="radio"
+                                    aria-checked={active}
+                                    disabled={!!round}
+                                    onClick={() => {
+                                      setCatalogOrigins((current) => ({
+                                        ...current,
+                                        [codingType]: { origin: option.value, source_subproject_id: null },
+                                      }));
+                                      playTick();
+                                    }}
+                                    className={[
+                                      "w-full flex items-start gap-2.5 text-left rounded-lg border p-2.5 transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
+                                      active
+                                        ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
+                                        : "border-p-border hover:bg-p-bg-subtle",
+                                    ].join(" ")}
+                                  >
+                                    <span
+                                      className={[
+                                        "mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full border flex items-center justify-center",
+                                        active ? "border-p-accent" : "border-p-border-mid",
+                                      ].join(" ")}
+                                    >
+                                      {active && <span className="w-2 h-2 rounded-full bg-p-accent" />}
+                                    </span>
+                                    <span className="min-w-0">
+                                      <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
+                                        {option.label}
+                                      </span>
+                                      <span className="block text-xs text-p-text-muted mt-0.5">
+                                        {option.description}
+                                      </span>
+                                    </span>
+                                  </button>
+                                );
+                              })}
 
-                <div>
-                  <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Origen</motion.label>
-                  <ToggleGroup
-                    options={[
-                      { value: "from_scratch" as OriginMode, label: "Desde cero" },
-                      { value: "homologated" as OriginMode, label: "Homologar" },
-                    ]}
-                    value={sOriginMode}
-                    onChange={setSOriginMode}
-                  />
-                </div>
-
-                {sOriginMode === "homologated" && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                  >
-                    <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Estudio origen</motion.label>
-                    <motion.select
-                      className="input w-full text-sm mt-1"
-                      value={sSourceId}
-                      onChange={(e) => setSSourceId(e.target.value)}
-                      whileFocus={{ scale: 1.002 }}
-                    >
-                      <option value="">Sin origen (libro de códigos externo)</option>
-                      {homologationCandidates.map((c) => (
-                        <option key={c.id} value={c.id}>{c.studyName} · R{c.round_number} ({c.name})</option>
-                      ))}
-                    </motion.select>
-                  </motion.div>
-                )}
+                              {selection.origin === "inherited_round" && (
+                                <div className="pt-1.5">
+                                  <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                    Libro oficial a heredar
+                                  </label>
+                                  {codebookSources[codingType].length === 0 ? (
+                                    <p className="mt-1.5 text-xs text-p-text-muted rounded-lg bg-p-bg-subtle p-2.5">
+                                      Aún no hay libros oficiales de {CODING_LABELS[codingType]} disponibles.
+                                      Un libro queda oficial cuando su ronda cierra la auditoría, o cuando se homologa
+                                      el libro de códigos del cliente.
+                                    </p>
+                                  ) : (
+                                    <select
+                                      className="input w-full text-sm mt-1"
+                                      aria-label={`Libro oficial a heredar para ${CODING_LABELS[codingType]}`}
+                                      value={selection.source_subproject_id ?? ""}
+                                      disabled={!!round}
+                                      onChange={(event) => setCatalogOrigins((current) => ({
+                                        ...current,
+                                        [codingType]: {
+                                          origin: "inherited_round",
+                                          source_subproject_id: event.target.value || null,
+                                        },
+                                      }))}
+                                    >
+                                      <option value="">Elegir libro...</option>
+                                      {codebookSources[codingType].map((candidate) => (
+                                        <option
+                                          key={candidate.source_subproject_id}
+                                          value={candidate.source_subproject_id}
+                                        >
+                                          {candidate.project_name} · R{candidate.round_number} ({candidate.round_name})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                  {source && (
+                                    <p className="mt-2 text-xs text-p-text-muted">
+                                      Vas a heredar {source.codes} códigos, {source.aliases} alias y {source.nets} netos.
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                              {selection.origin === "imported_client_catalog" && (
+                                <p className="text-xs text-p-text-muted pt-1">
+                                  En el siguiente paso subirás el archivo del cliente y revisarás códigos, alias y netos antes de confirmarlo.
+                                </p>
+                              )}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  );
+                })}
 
                 <motion.button
                   whileHover={{ scale: 1.02 }}
@@ -649,7 +843,7 @@ export default function CreationWizard() {
           {step === "round" && project && (
             <div className="space-y-3">
               <motion.button
-                onClick={() => goToStep("studio")}
+                onClick={() => goToStep("project")}
                 whileHover={{ x: -2 }}
                 whileTap={{ scale: 0.98 }}
                 className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
@@ -683,23 +877,21 @@ export default function CreationWizard() {
                   whileFocus={{ scale: 1.002 }}
                 />
 
-                <motion.div className={newStudyCodingType === "brands" ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
-                  {newStudyCodingType === "brands" && (
-                    <div>
-                      <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</motion.label>
-                      <motion.input
-                        type="number"
-                        min={1}
-                        disabled={!!round}
-                        className="input w-full text-sm mt-1"
-                        value={rThreshold}
-                        onChange={(e) => setRThreshold(Number(e.target.value))}
-                        whileFocus={{ scale: 1.002 }}
-                      />
-                    </div>
-                  )}
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">% de auditoría</motion.label>
+                    <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</div>
+                    <motion.input
+                      type="number"
+                      min={1}
+                      disabled={!!round}
+                      className="input w-full text-sm mt-1"
+                      value={rThreshold}
+                      onChange={(e) => setRThreshold(Number(e.target.value))}
+                      whileFocus={{ scale: 1.002 }}
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">% de auditoría</div>
                     <motion.input
                       type="number"
                       min={0}
@@ -711,34 +903,155 @@ export default function CreationWizard() {
                       whileFocus={{ scale: 1.002 }}
                     />
                   </div>
-                </motion.div>
+                </div>
+                <p className="text-xs text-p-text-faint">
+                  Se fijan al soltar el archivo — no se pueden cambiar después de importar.
+                </p>
               </div>
 
+              {importedCatalogTypes.length > 0 && (
+                <div className="card p-4 space-y-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-p-text">Homologación · Libro de códigos del cliente</h2>
+                    <p className="text-xs text-p-text-muted">
+                      Sube el libro del cliente, revisa el resumen y confírmalo antes de importar las respuestas.
+                    </p>
+                  </div>
+                  {!round && (
+                    <button
+                      type="button"
+                      className="btn-primary text-sm w-full justify-center"
+                      onClick={() => void ensureRound()}
+                    >
+                      Preparar ronda para cargar los libros
+                    </button>
+                  )}
+                  {round && importedCatalogTypes.map((codingType) => {
+                    const catalogFile = catalogUploads[codingType];
+                    const preview = catalogPreviews[codingType];
+                    const confirmed = catalogConfirmed[codingType];
+                    return (
+                      <div key={codingType} className="rounded-xl border border-p-border p-3 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-semibold text-p-text">
+                            {CODING_LABELS[codingType]}
+                          </span>
+                          {confirmed && (
+                            <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-p-success/10 text-p-success">
+                              <Check className="w-3 h-3" /> Homologado
+                            </span>
+                          )}
+                        </div>
+                        {!catalogFile ? (
+                          <label
+                            className={[
+                              "flex items-center justify-center gap-2 rounded-lg border border-dashed border-p-border-mid",
+                              "px-3 py-4 text-sm text-p-text-muted cursor-pointer",
+                              "hover:border-p-accent/50 hover:bg-p-accent-soft/50 hover:text-p-text",
+                              "transition-all duration-200",
+                            ].join(" ")}
+                          >
+                            <UploadCloud className="w-4 h-4 text-p-text-faint" />
+                            <span>
+                              Subir el libro de códigos{" "}
+                              <span className="text-p-text-faint">(.xlsx, .xls)</span>
+                            </span>
+                            <input
+                              type="file"
+                              accept=".xlsx,.xls"
+                              aria-label={`Libro de códigos de ${CODING_LABELS[codingType]}`}
+                              className="sr-only"
+                              onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                if (file) void handleCatalogUpload(codingType, file);
+                              }}
+                            />
+                          </label>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-2 text-sm font-medium text-p-text">
+                              <FileSpreadsheet className="w-4 h-4 shrink-0 text-p-accent" />
+                              <span className="truncate">{catalogFile.original_filename}</span>
+                            </div>
+                            <select
+                              className="input w-full text-sm"
+                              aria-label={`Hoja del libro de códigos de ${CODING_LABELS[codingType]}`}
+                              value={catalogSheets[codingType] ?? ""}
+                              disabled={confirmed}
+                              onChange={(event) => void loadCatalogPreview(
+                                codingType, catalogFile, event.target.value
+                              )}
+                            >
+                              {catalogFile.detected_sheets.map((sheet) => (
+                                <option key={sheet.name} value={sheet.name}>
+                                  {sheet.name} ({sheet.rows} filas)
+                                </option>
+                              ))}
+                            </select>
+                            {preview && (
+                              <div className="rounded-lg bg-p-bg-subtle p-2.5 text-xs text-p-text-muted">
+                                Vas a homologar {preview.codes} códigos, {preview.aliases} alias y {preview.nets} netos.
+                                {preview.system_codes_overflow && (
+                                  <span className="block mt-1">
+                                    El cliente ocupa 95–99: los códigos de sistema nacerán como 995–999.
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {!confirmed && (
+                              <button
+                                type="button"
+                                className="btn-primary text-sm py-2 w-full justify-center"
+                                disabled={!preview || submitting}
+                                onClick={() => void handleConfirmCatalog(codingType)}
+                              >
+                                Confirmar libro de códigos
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {!catalogsReady && (
+                <div className="rounded-lg border border-p-warning/40 bg-p-warning/10 p-3 text-xs text-p-text-muted">
+                  Confirma los libros de códigos del cliente para habilitar la importación de respuestas.
+                </div>
+              )}
+
               {!uploaded ? (
-                <div
-                  {...getRootProps()}
-                  className={[
-                    "dropzone",
-                    isDragActive ? "dropzone-active" : "hover:border-p-accent/40",
-                  ].join(" ")}
-                >
-                  <input {...getInputProps()} />
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={isDragActive ? { opacity: 1, scale: 1.05, rotate: [0, -2, 2, -2, 0] } : { opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.5 }}
-                    className="dropzone-icon"
+                <div className="space-y-1.5">
+                  <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                    Archivo de respuestas (verbatims)
+                  </div>
+                  <div
+                    {...getRootProps()}
+                    className={[
+                      "dropzone",
+                      isDragActive ? "dropzone-active" : "hover:border-p-accent/40",
+                    ].join(" ")}
                   >
-                    <UploadCloud />
-                  </motion.div>
-                  <motion.span
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="text-sm font-medium text-p-text"
-                  >
-                    Arrastra el Excel aquí, o haz clic para elegirlo
-                  </motion.span>
-                  <span className="text-xs text-p-text-faint">.xlsx, .xls o .dau</span>
+                    <input {...getInputProps()} />
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.98 }}
+                      animate={isDragActive ? { opacity: 1, scale: 1.05, rotate: [0, -2, 2, -2, 0] } : { opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.5 }}
+                      className="dropzone-icon"
+                    >
+                      <UploadCloud />
+                    </motion.div>
+                    <motion.span
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="text-sm font-medium text-p-text"
+                    >
+                      Arrastra aquí el archivo con las respuestas, o haz clic para elegirlo
+                    </motion.span>
+                    <span className="text-xs text-p-text-faint">.xlsx, .xls o .dau</span>
+                  </div>
                 </div>
               ) : (
                 <motion.div
@@ -774,7 +1087,7 @@ export default function CreationWizard() {
 
                   <motion.div className="space-y-3">
                     <div>
-                      <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de verbatims</motion.label>
+                      <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de respuestas (verbatims)</motion.label>
                       <motion.select
                         className="input w-full text-sm mt-1"
                         value={verbatimsSheet}
@@ -786,38 +1099,6 @@ export default function CreationWizard() {
                         ))}
                       </motion.select>
                     </div>
-
-                    {!isDau && (
-                      <div>
-                        <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de libro de códigos (opcional)</motion.label>
-                        <motion.select
-                          className="input w-full text-sm mt-1"
-                          value={codebookSheet}
-                          onChange={(e) => setCodebookSheet(e.target.value)}
-                          whileFocus={{ scale: 1.002 }}
-                        >
-                          <option value="">Ninguna</option>
-                          {uploaded.detected_sheets.map((s) => (
-                            <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
-                          ))}
-                        </motion.select>
-                        {codebookSheet && (
-                          <div className="mt-3">
-                            <motion.label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                              Tipo del libro de códigos
-                            </motion.label>
-                            <ToggleGroup
-                              options={[
-                                { value: "brands" as CodingType, label: "Marcas" },
-                                { value: "reasons" as CodingType, label: "Razones" },
-                              ]}
-                              value={newStudyCodingType}
-                              onChange={setNewStudyCodingType}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
 
                     {isDau && activeSheet && (
                       <motion.div
@@ -864,7 +1145,25 @@ export default function CreationWizard() {
                       </motion.div>
                     )}
 
-                    {pendingQuestions.length > 0 && (
+                    {pendingQuestions.length > 0 && isDau && (
+                      <div className="flex items-start gap-2 text-sm text-p-warning bg-p-warning/10 border border-p-warning/30 rounded-lg p-3">
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <p>
+                            Este .dau tiene variables fuera de la plantilla conocida (NBS_UNAID*), por lo que
+                            no se pueden clasificar como Marcas o Razones automáticamente. Contacta a
+                            ingeniería para clasificarlas antes de continuar la importación:
+                          </p>
+                          <ul className="text-xs font-mono space-y-0.5 pl-1">
+                            {pendingQuestions.map((questionKey) => (
+                              <li key={questionKey} className="truncate">{questionKey}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+
+                    {pendingQuestions.length > 0 && !isDau && (
                       <div className="space-y-3 rounded-lg border border-p-warning/40 bg-p-warning/10 p-3">
                         <div className="text-sm font-semibold text-p-text">Clasifica las variables nuevas</div>
                         <p className="text-xs text-p-text-muted">

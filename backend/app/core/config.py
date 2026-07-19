@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     # real data) — starts conservative since false positives here are worse than
     # in brands (semantic ambiguity).
     semantic_cache_similarity_threshold: float = 0.9
+    # Cosine similarity floor para agrupar dos razones como la "misma idea" al
+    # armar el codebook desde cero (pipeline/semantic/cluster.py). Más laxo que
+    # semantic_cache (0.9) a propósito: acá se agrupan distintas FORMAS de decir
+    # una misma idea para formar una categoría, no se busca un near-duplicado.
+    reason_cluster_similarity_threshold: float = 0.75
 
     # Resolution Center (Fase 4): grupo descartado -> este code_number del codebook.
     discard_code_number: int = 95

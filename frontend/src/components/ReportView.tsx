@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Download,
+  FilePlus2,
   FileSpreadsheet,
   Loader2,
   Sparkles,
@@ -23,6 +24,7 @@ import { downloadCodebookExport, getRound, getRoundReport } from "@/api/client";
 import type { CodingType, ReportCodeStat, RoundReport, RoundStatus } from "@/api/types";
 import { glowVariantForIndex } from "@/components/GlowCard";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
+import { can } from "@/lib/capabilities";
 import Breadcrumb from "./Breadcrumb";
 
 const AUDIT_BADGE: Record<
@@ -211,6 +213,8 @@ export default function ReportView() {
   const { roundId } = useParams<{ roundId: string }>();
   const navigate = useNavigate();
   const showToast = useVerbatixStore((s) => s.showToast);
+  const user = useVerbatixStore((s) => s.user);
+  const canAddLoad = can(user, "rounds.manage");
 
   const [studio, setStudio] = useState<RoundStatus | null>(null);
   const [report, setReport] = useState<RoundReport | null>(null);
@@ -307,27 +311,40 @@ export default function ReportView() {
           </p>
         </div>
 
-        <div className="glow-card glow-card-2 p-3 flex items-center gap-3 shrink-0 self-start">
-          <ClipboardCheck className="w-4 h-4 text-p-accent shrink-0" />
-          <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-p-text-faint">
-              Auditoría
-            </p>
-            <span className={AUDIT_BADGE[studio?.audit.status ?? "not_started"].className}>
-              {AUDIT_BADGE[studio?.audit.status ?? "not_started"].label}
-            </span>
-          </div>
-          {studio?.audit.status === "approved" ? (
-            <CheckCircle2 className="w-5 h-5 text-p-success shrink-0" />
-          ) : (
+        <div className="flex items-center gap-2 shrink-0 self-start">
+          {canAddLoad && (
             <button
               type="button"
-              className="btn-ghost-sm shrink-0"
-              onClick={() => navigate(`/rounds/${roundId}/audit`)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-sm font-semibold border border-p-border bg-p-surface text-p-text hover:bg-p-bg-subtle transition-colors"
+              title="REQ-03: suma otra carga a esta misma ronda sin tocar lo ya codificado ni el ID real del encuestado"
+              onClick={() => navigate(`/rounds/${roundId}/add-load`)}
             >
-              Auditar
+              <FilePlus2 className="w-4 h-4 text-p-accent" />
+              Agregar nueva carga
             </button>
           )}
+          <div className="glow-card glow-card-2 p-3 flex items-center gap-3">
+            <ClipboardCheck className="w-4 h-4 text-p-accent shrink-0" />
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-p-text-faint">
+                Auditoría
+              </p>
+              <span className={AUDIT_BADGE[studio?.audit.status ?? "not_started"].className}>
+                {AUDIT_BADGE[studio?.audit.status ?? "not_started"].label}
+              </span>
+            </div>
+            {studio?.audit.status === "approved" ? (
+              <CheckCircle2 className="w-5 h-5 text-p-success shrink-0" />
+            ) : (
+              <button
+                type="button"
+                className="btn-ghost-sm shrink-0"
+                onClick={() => navigate(`/rounds/${roundId}/audit`)}
+              >
+                Auditar
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

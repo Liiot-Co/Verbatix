@@ -6,6 +6,7 @@ import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.pipeline.ingest.dau import guess_coding_type
 from app.pipeline.normalize import normalize, rows_to_normalized_df
 
 SYSTEM_CODES = [
@@ -166,7 +167,13 @@ def global_admin_ids(db: Session) -> list[uuid.UUID]:
 
 
 def create_codebook(
-    db: Session, project_id: uuid.UUID, coding_type: str, parent_codebook_id=None
+    db: Session,
+    project_id: uuid.UUID,
+    coding_type: str,
+    parent_codebook_id=None,
+    *,
+    origin: str = "scratch",
+    status: str = "draft",
 ) -> uuid.UUID:
     """El codebook vive a nivel Estudio (project_id+coding_type), compartido entre
     categorías/rondas — una Ronda 2 puede heredar el mismo libro sin reprocesarlo."""
@@ -177,46 +184,70 @@ def create_codebook(
     ).scalar()
     db.execute(
         text("""
-            insert into codebooks (id, project_id, coding_type, version, parent_codebook_id, status)
-            values (:id, :project, :ct, :v, :parent, 'draft')
+            insert into codebooks (
+              id, project_id, coding_type, version, parent_codebook_id, origin, status
+            )
+            values (:id, :project, :ct, :v, :parent, :origin, :status)
         """),
-        {"id": cb_id, "project": project_id, "ct": coding_type, "v": version, "parent": parent_codebook_id},
+        {
+            "id": cb_id,
+            "project": project_id,
+            "ct": coding_type,
+            "v": version,
+            "parent": parent_codebook_id,
+            "origin": origin,
+            "status": status,
+        },
     )
     return cb_id
 
 
-def seed_system_codes(db: Session, codebook_id: uuid.UUID) -> None:
+def seed_system_codes(db: Session, codebook_id: uuid.UUID, *, overflow: bool = False) -> None:
+    """Crea códigos técnicos una sola vez.
+
+    Si el catálogo del cliente ocupa 95..99, los códigos Verbatix nacen
+    directamente en 995..999; nunca se renumera una fila ya persistida.
+    """
     for number, label, stype in SYSTEM_CODES:
+        persisted_number = number + 900 if overflow else number
         db.execute(
             text("""
-                insert into codes (id, codebook_id, code_number, label, origin, is_system, system_type)
-                values (:id, :cb, :n, :l, 'inherited', true, :st)
+                insert into codes (
+                  id, codebook_id, code_number, label, origin, is_system,
+                  system_type, is_system_overflow, overflow_base_system_type
+                )
+                values (
+                  :id, :cb, :n, :l, 'inherited', true,
+                  :st, :overflow, :overflow_type
+                )
                 on conflict (codebook_id, code_number) do nothing
             """),
-            {"id": uuid.uuid4(), "cb": codebook_id, "n": number, "l": label, "st": stype},
+            {
+                "id": uuid.uuid4(),
+                "cb": codebook_id,
+                "n": persisted_number,
+                "l": label,
+                "st": stype,
+                "overflow": overflow,
+                "overflow_type": stype if overflow else None,
+            },
         )
 
 
 def clone_codebook(
-    db: Session, source_project_id: uuid.UUID, source_coding_type: str, target_codebook_id: uuid.UUID
+    db: Session, source_codebook_id: uuid.UUID, target_codebook_id: uuid.UUID
 ) -> dict:
-    src = db.execute(
-        text("select id from codebooks where project_id = :project and coding_type = :ct order by version desc limit 1"),
-        {"project": source_project_id, "ct": source_coding_type},
-    ).scalar()
-    if not src:
-        return {"codes": 0, "aliases": 0, "nets": 0}
-
     codes = db.execute(
         text("""
             insert into codes (id, codebook_id, code_number, label, origin, is_system,
-                               system_type, inherited_from_code_id)
+                               system_type, inherited_from_code_id,
+                               is_system_overflow, overflow_base_system_type)
             select gen_random_uuid(), :cb, code_number, label, 'inherited', is_system,
-                   system_type, id
+                   system_type, id, is_system_overflow, overflow_base_system_type
             from codes where codebook_id = :src and is_active
             returning id
         """),
-        {"cb": target_codebook_id, "src": src},
+        {"cb": target_codebook_id, "src": source_codebook_id},
     ).rowcount
 
     aliases = db.execute(
@@ -230,7 +261,7 @@ def clone_codebook(
             join codes nc on nc.codebook_id = :cb and nc.inherited_from_code_id = oc.id
             where a.codebook_id = :src
         """),
-        {"cb": target_codebook_id, "src": src},
+        {"cb": target_codebook_id, "src": source_codebook_id},
     ).rowcount
 
     nets = db.execute(
@@ -249,13 +280,47 @@ def clone_codebook(
             join codes oc on oc.id = onc.code_id
             join codes nc on nc.codebook_id = :cb and nc.inherited_from_code_id = oc.id
         """),
-        {"cb": target_codebook_id, "src": src},
+        {"cb": target_codebook_id, "src": source_codebook_id},
     ).rowcount
 
     return {"codes": codes, "aliases": aliases, "nets": nets}
 
 
-def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict) -> dict:
+def insert_codebook_from_excel(
+    db: Session,
+    codebook_id: uuid.UUID,
+    parsed: dict,
+    *,
+    imported_from_file_id: uuid.UUID,
+    approved_by,
+) -> dict:
+    """Confirma un catálogo de cliente conservando sus números exactos."""
+    numbers = [code["code_number"] for code in parsed["codes"]]
+    if len(numbers) != len(set(numbers)):
+        raise ValueError("El catálogo contiene números de código repetidos")
+    if (
+        any(95 <= number <= 99 for number in numbers)
+        and any(995 <= number <= 999 for number in numbers)
+    ):
+        raise ValueError(
+            "El catálogo ocupa simultáneamente 95–99 y 995–999; "
+            "no hay un rango seguro para los códigos de sistema"
+        )
+
+    codebook = db.execute(
+        text("select origin, status from codebooks where id = :id for update"),
+        {"id": codebook_id},
+    ).mappings().first()
+    if not codebook or codebook["origin"] != "imported_client_catalog":
+        raise ValueError("El subproyecto no fue configurado para importar un catálogo")
+
+    existing_client_codes = db.execute(
+        text("select count(*) from codes where codebook_id = :cb and not is_system"),
+        {"cb": codebook_id},
+    ).scalar()
+    if existing_client_codes:
+        raise ValueError("El catálogo del cliente ya fue importado")
+
     net_ids, n_alias = {}, 0
     for i, name in enumerate(parsed["nets"]):
         nid = uuid.uuid4()
@@ -273,23 +338,17 @@ def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict
         db.execute(
             text("""
                 insert into codes (id, codebook_id, code_number, label, origin, is_system, system_type)
-                values (:id, :cb, :n, :l, 'inherited', :sys, :st)
-                on conflict (codebook_id, code_number) do nothing
+                values (:id, :cb, :n, :l, 'imported_client', false, null)
             """),
             {
                 "id": cid,
                 "cb": codebook_id,
                 "n": c["code_number"],
                 "l": c["label"],
-                "sys": c["is_system"],
-                "st": next((s[2] for s in SYSTEM_CODES if s[0] == c["code_number"]), None),
             },
         )
 
-        real_id = db.execute(
-            text("select id from codes where codebook_id = :cb and code_number = :n"),
-            {"cb": codebook_id, "n": c["code_number"]},
-        ).scalar()
+        real_id = cid
 
         if c["net"] and c["net"] in net_ids:
             db.execute(
@@ -323,7 +382,25 @@ def insert_codebook_from_excel(db: Session, codebook_id: uuid.UUID, parsed: dict
             )
             n_alias += 1
 
-    return {"codes": len(parsed["codes"]), "aliases": n_alias, "nets": len(parsed["nets"])}
+    overflow = any(95 <= number <= 99 for number in numbers)
+    seed_system_codes(db, codebook_id, overflow=overflow)
+    db.execute(
+        text("""
+            update codebooks
+               set imported_from_file_id = :file,
+                   status = 'approved',
+                   approved_by = :user,
+                   approved_at = now()
+             where id = :cb
+        """),
+        {"file": imported_from_file_id, "user": approved_by, "cb": codebook_id},
+    )
+    return {
+        "codes": len(parsed["codes"]),
+        "aliases": n_alias,
+        "nets": len(parsed["nets"]),
+        "system_codes_overflow": overflow,
+    }
 
 
 def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str | None) -> uuid.UUID | None:
@@ -338,7 +415,7 @@ def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str |
     ).scalar()
     if direct:
         return direct
-    return db.execute(
+    result = db.execute(
         text("""
             select q.id from questions q
             join question_aliases qa on qa.canonical_question_id = q.id
@@ -346,6 +423,7 @@ def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str |
         """),
         {"project": project_id, "qk": question_key},
     ).scalar()
+    return result
 
 
 def classify_question(
@@ -392,9 +470,10 @@ def _get_or_create_respondent(
     """v9 (REQ-03): la unicidad del Serial es por (ronda, carga, Serial) — el mismo
     Serial puede venir legítimamente de dos cargas distintas (Dimension/Enfield
     numeran cada una desde 1) y ambos se conservan. `realid` identifica a la
-    persona real; mientras el parser no lo separe del Serial, cae al propio
-    respondent_external_id para no dejar la columna vacía."""
-    return db.execute(
+    persona real (el parser .dau ya lo separa del Serial); cuando la fuente no
+    trae un realid aparte (Excel), cae al propio respondent_external_id — REQ-03
+    trata Serial/realid como sinónimos si no hay campo separado."""
+    result = db.execute(
         text("""
             insert into respondents (id, round_id, imported_file_id, respondent_external_id, realid)
             values (:id, :round, :file, :resp, :realid)
@@ -410,6 +489,7 @@ def _get_or_create_respondent(
             "realid": realid or respondent_external_id,
         },
     ).scalar()
+    return result
 
 
 def insert_verbatims(
@@ -418,13 +498,22 @@ def insert_verbatims(
     project_id: uuid.UUID,
     file_id: uuid.UUID,
     rows: list[dict],
+    min_mentions_threshold: int | None = None,
+    audit_percentage: float | None = None,
 ) -> tuple[int, pl.DataFrame, list[str]]:
     """Normaliza, inserta verbatims y devuelve (n_inserted, DF slim para fuzzy,
     question_keys nuevas sin clasificar). Cada fila se reparte al subproject_id que le
     corresponde según `questions.coding_type` de su variable de origen (sección 2.5) —
     no según un coding_type fijo. Filas cuya question_key no tiene fila en `questions`
     todavía se excluyen (no fallan) y se listan en el 3er valor de retorno para que el
-    caller dispare el flujo de clasificación de variable nueva (Tarea 9)."""
+    caller dispare el flujo de clasificación de variable nueva (Tarea 9) — salvo que
+    `guess_coding_type` reconozca la plantilla NBS_UNAID* (sección 2.5b), en cuyo caso
+    se auto-clasifica sin pedirle al analista. El subproyecto destino se crea de forma
+    perezosa (`get_or_create_subproject`) la primera vez que aparece su coding_type en
+    esta ronda — una ronda ya no nace con Marcas y Razones fijos, solo tiene los
+    subproyectos que sus archivos importados realmente traen. `min_mentions_threshold`/
+    `audit_percentage` (capturados en el wizard al soltar el archivo) solo se usan si
+    hay que crear un subproyecto nuevo — uno ya existente conserva su config original."""
     subproject_by_coding_type = {
         r["coding_type"]: r["id"]
         for r in db.execute(
@@ -433,7 +522,27 @@ def insert_verbatims(
         ).mappings().all()
     }
 
-    question_cache: dict[str | None, uuid.UUID | None] = {}
+    # Pre-load all questions + aliases for this project (elimina per-row SELECTs)
+    questions_by_key: dict[str, dict] = {}
+    for q in db.execute(
+        text("SELECT id, question_key, coding_type FROM questions WHERE project_id = :project"),
+        {"project": project_id},
+    ).mappings().all():
+        questions_by_key[q["question_key"]] = q
+
+    for a in db.execute(
+        text("""
+            SELECT qa.alias_key, q.id, q.coding_type
+            FROM question_aliases qa
+            JOIN questions q ON q.id = qa.canonical_question_id
+            WHERE q.project_id = :project
+        """),
+        {"project": project_id},
+    ).mappings().all():
+        if a["alias_key"] not in questions_by_key:
+            a["question_key"] = a["alias_key"]
+            questions_by_key[a["alias_key"]] = a
+
     pending: set[str] = set()
     rows_by_coding_type: dict[str, list[dict]] = {"brands": [], "reasons": []}
     question_id_by_key: dict[str | None, uuid.UUID | None] = {}
@@ -443,22 +552,22 @@ def insert_verbatims(
         if not resp:
             continue
         qk = row.get("question_key")
-        if qk not in question_cache:
-            question_cache[qk] = _resolve_question_id(db, project_id, qk)
-        question_id = question_cache[qk]
+        q_info = questions_by_key.get(qk) if qk else None
 
-        if qk and question_id is None:
-            pending.add(qk)
+        if qk and q_info is None:
+            guessed = guess_coding_type(qk)
+            if guessed is None:
+                pending.add(qk)
+                continue
+            qid = classify_question(db, project_id, qk, guessed)
+            q_info = {"id": qid, "coding_type": guessed}
+            questions_by_key[qk] = q_info
+
+        if q_info is None:
             continue
-        if question_id is None:
-            continue  # sin question_key: no hay variable de origen que repartir
 
-        coding_type = db.execute(
-            text("select coding_type from questions where id = :id"),
-            {"id": question_id},
-        ).scalar()
-        question_id_by_key[qk] = question_id
-        rows_by_coding_type[coding_type].append(row)
+        question_id_by_key[qk] = q_info["id"]
+        rows_by_coding_type.setdefault(q_info["coding_type"], []).append(row)
 
     n = 0
     df_parts = []
@@ -467,7 +576,12 @@ def insert_verbatims(
             continue
         subproject_id = subproject_by_coding_type.get(coding_type)
         if not subproject_id:
-            continue  # la ronda debería tener ambos subprojects (create_round los crea)
+            subproject_id = get_or_create_subproject(
+                db, round_id, project_id, coding_type,
+                min_mentions_threshold=min_mentions_threshold,
+                audit_percentage=audit_percentage,
+            )
+            subproject_by_coding_type[coding_type] = subproject_id
 
         df = rows_to_normalized_df(ct_rows, coding_type)
         df_parts.append(df)
@@ -479,43 +593,75 @@ def insert_verbatims(
                 continue
             originals[(resp, r.get("question_key"))] = r
 
+        # Phase 1: Batch respondent INSERT + SELECT (replaces per-row _get_or_create_respondent)
+        respondent_keys: set[str] = set()
+        for row in df.iter_rows(named=True):
+            respondent_keys.add(row["respondent_external_id"])
+
+        respondent_cache: dict[str, uuid.UUID] = {}
+        if respondent_keys:
+            respondent_params = [
+                {"id": uuid.uuid4(), "round": round_id, "file": file_id, "resp": resp, "realid": resp}
+                for resp in respondent_keys
+            ]
+            db.execute(
+                text("""
+                    INSERT INTO respondents (id, round_id, imported_file_id, respondent_external_id, realid)
+                    VALUES (:id, :round, :file, :resp, :realid)
+                    ON CONFLICT (round_id, imported_file_id, respondent_external_id)
+                    DO UPDATE SET realid = excluded.realid
+                """),
+                respondent_params,
+            )
+            resp_rows = db.execute(
+                text("""
+                    SELECT respondent_external_id, id FROM respondents
+                    WHERE round_id = :round AND imported_file_id = :file
+                    AND respondent_external_id = ANY(:resps)
+                """),
+                {"round": round_id, "file": file_id, "resps": list(respondent_keys)},
+            ).mappings().all()
+            respondent_cache = {r["respondent_external_id"]: r["id"] for r in resp_rows}
+
+        # Phase 2: Batch verbatim INSERT (replaces per-row INSERT)
+        verbatim_params = []
         for row in df.iter_rows(named=True):
             key = (row["respondent_external_id"], row.get("question_key"))
             src = originals.get(key) or originals.get((row["respondent_external_id"], None))
             original = (src or {}).get("original_text") or row["normalized_text"]
             input_code = (src or {}).get("input_code_number")
-            respondent_id = _get_or_create_respondent(
-                db, round_id, row["respondent_external_id"], file_id,
-                realid=(src or {}).get("realid"),
-            )
+            respondent_id = respondent_cache.get(row["respondent_external_id"])
 
-            result = db.execute(
+            verbatim_params.append({
+                "id": uuid.uuid4(),
+                "sp": subproject_id,
+                "resp_id": respondent_id,
+                "qid": question_id_by_key.get(row.get("question_key")),
+                "f": file_id,
+                "q": row.get("question_key"),
+                "txt": original,
+                "norm": row["normalized_text"],
+                "inp": input_code,
+            })
+
+        if verbatim_params:
+            db.execute(
                 text("""
-                    insert into verbatims (id, subproject_id, respondent_id, question_id,
+                    INSERT INTO verbatims (id, subproject_id, respondent_id, question_id,
                                            imported_file_id, source_question_key,
                                            original_text, normalized_text, input_code_number,
                                            coding_status)
-                    values (:id, :sp, :resp_id, :qid, :f, :q, :txt, :norm, :inp, 'pending')
-                    on conflict (subproject_id, respondent_id, source_question_key) do update set
+                    VALUES (:id, :sp, :resp_id, :qid, :f, :q, :txt, :norm, :inp, 'pending')
+                    ON CONFLICT (subproject_id, respondent_id, source_question_key)
+                    DO UPDATE SET
                       normalized_text = excluded.normalized_text,
                       original_text = excluded.original_text,
                       imported_file_id = excluded.imported_file_id
-                    where verbatims.coding_status = 'pending'
+                    WHERE verbatims.coding_status = 'pending'
                 """),
-                {
-                    "id": uuid.uuid4(),
-                    "sp": subproject_id,
-                    "resp_id": respondent_id,
-                    "qid": question_id_by_key.get(row.get("question_key")),
-                    "f": file_id,
-                    "q": row.get("question_key"),
-                    "txt": original,
-                    "norm": row["normalized_text"],
-                    "inp": input_code,
-                },
+                verbatim_params,
             )
-            if result.rowcount:
-                n += 1
+            n += len(verbatim_params)
 
     combined_df = pl.concat(df_parts) if df_parts else rows_to_normalized_df([], "brands")
     return n, combined_df, sorted(pending)
@@ -556,6 +702,84 @@ def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
     ).scalar()
 
 
+def propagate_group_codes_to_pending(db: Session, subproject_id: uuid.UUID) -> int:
+    """REQ-03: un verbatim de una carga nueva cuyo texto normalizado calza con un
+    mention_group YA resuelto/auto-codificado se cuelga de ese grupo (UNIQUE por
+    subproject+normalized_text), pero el motor solo mira grupos 'pending_review' —
+    sin esto quedaría 'pending' para siempre. Se le copian los códigos activos de
+    un hermano del grupo (la resolución asigna el mismo set a todo el grupo) sin
+    reabrir ni tocar el grupo histórico. Devuelve cuántos verbatims se actualizaron."""
+    pending = db.execute(
+        text("""
+            select v.id as verbatim_id, g.id as group_id, g.status as group_status
+            from verbatims v
+            join mention_groups g on g.id = v.mention_group_id
+            where g.subproject_id = :sp
+              and g.status in ('auto_coded', 'resolved')
+              and v.coding_status = 'pending'
+            order by g.id
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+    if not pending:
+        return 0
+
+    codes_by_group: dict = {}
+    updated = 0
+    for row in pending:
+        gid = row["group_id"]
+        if gid not in codes_by_group:
+            # Códigos de referencia: los del hermano más antiguo con asignación activa.
+            sibling = db.execute(
+                text("""
+                    select v2.id from verbatims v2
+                    where v2.mention_group_id = :gid and v2.coding_status <> 'pending'
+                      and exists (
+                        select 1 from verbatim_codes vc
+                        where vc.verbatim_id = v2.id and vc.is_active
+                      )
+                    order by v2.created_at
+                    limit 1
+                """),
+                {"gid": gid},
+            ).scalar()
+            codes_by_group[gid] = db.execute(
+                text("""
+                    select code_id, output_index, source, confidence_score, matched_alias
+                    from verbatim_codes
+                    where verbatim_id = :vid and is_active
+                    order by output_index
+                """),
+                {"vid": sibling},
+            ).mappings().all() if sibling else []
+
+        for code in codes_by_group[gid]:
+            db.execute(
+                text("""
+                    insert into verbatim_codes (id, verbatim_id, code_id, output_index,
+                                                source, confidence_score, matched_alias)
+                    values (:id, :vid, :code, :idx, :src, :score, :alias)
+                    on conflict (verbatim_id, code_id) do nothing
+                """),
+                {
+                    "id": uuid.uuid4(), "vid": row["verbatim_id"], "code": code["code_id"],
+                    "idx": code["output_index"], "src": code["source"],
+                    "score": code["confidence_score"], "alias": code["matched_alias"],
+                },
+            )
+        # Aun sin códigos (grupo resuelto por descarte puro) el estado acompaña
+        # al del grupo: no puede quedar 'pending' un verbatim de un grupo cerrado.
+        db.execute(
+            text("update verbatims set coding_status = :st where id = :vid"),
+            {
+                "st": "manually_coded" if row["group_status"] == "resolved" else "auto_coded",
+                "vid": row["verbatim_id"],
+            },
+        )
+        updated += 1
+    return updated
+
+
 # =====================================================================
 # Centro de Resolución (Fase 4)
 # =====================================================================
@@ -565,6 +789,67 @@ def _current_codebook_id(db: Session, project_id: uuid.UUID, coding_type: str) -
         text("select id from codebooks where project_id = :project and coding_type = :ct order by version desc limit 1"),
         {"project": project_id, "ct": coding_type},
     ).scalar()
+
+
+def get_or_create_subproject(
+    db: Session,
+    round_id: uuid.UUID,
+    project_id: uuid.UUID,
+    coding_type: str,
+    min_mentions_threshold: int | None = None,
+    audit_percentage: float | None = None,
+) -> uuid.UUID:
+    """Crea el subproyecto de este coding_type la primera vez que aparece en la
+    ronda — antes create_round creaba siempre los 2 (Marcas y Razones) sin mirar
+    el archivo; ahora una ronda solo tiene los subproyectos que sus archivos
+    importados realmente traen (una ronda con un .dau de solo marcas termina con
+    un único subproyecto). Reutiliza el codebook compartido del Estudio
+    (project_id+coding_type) igual que hacía create_round, incluida la
+    homologación cross-estudio si la ronda es 'homologated'.
+
+    `min_mentions_threshold`/`audit_percentage` solo se aplican en esta creación
+    (vienen del formulario de import, capturados al soltar el archivo) — cambiarlos
+    después de que el subproyecto arrancó a procesar puede dejar el motor en un
+    estado inconsistente (ej. el catálogo por frecuencia ya se derivó con el
+    umbral viejo), así que no existe un endpoint para editarlos más tarde."""
+    existing = db.execute(
+        text("select id from subprojects where round_id = :round and coding_type = :ct"),
+        {"round": round_id, "ct": coding_type},
+    ).scalar()
+    if existing:
+        return existing
+
+    cb_id = _current_codebook_id(db, project_id, coding_type)
+    if not cb_id:
+        cb_id = create_codebook(db, project_id, coding_type)
+        seed_system_codes(db, cb_id)
+
+        round_row = db.execute(
+            text("select origin_mode, source_round_id from rounds where id = :id"),
+            {"id": round_id},
+        ).mappings().first()
+        if round_row and round_row["origin_mode"] == "homologated" and round_row["source_round_id"]:
+            source_project_id = db.execute(
+                text("select project_id from rounds where id = :id"),
+                {"id": round_row["source_round_id"]},
+            ).scalar()
+            if source_project_id and source_project_id != project_id:
+                clone_codebook(db, source_project_id, coding_type, cb_id)
+
+    sp_id = uuid.uuid4()
+    db.execute(
+        text("""
+            insert into subprojects (id, round_id, codebook_id, coding_type,
+                                     min_mentions_threshold, audit_percentage)
+            values (:id, :round, :cb, :ct,
+                    coalesce(:min_m, 3), coalesce(:audit, 10))
+        """),
+        {
+            "id": sp_id, "round": round_id, "cb": cb_id, "ct": coding_type,
+            "min_m": min_mentions_threshold, "audit": audit_percentage,
+        },
+    )
+    return sp_id
 
 
 def get_resolution_queue(
@@ -806,10 +1091,21 @@ def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UU
     if existing:
         return {"id": str(existing["id"]), "code_number": existing["code_number"], "label": existing["label"], "is_new": False}
 
-    next_number = db.execute(
-        text("select coalesce(max(code_number), 0) + 1 from codes where codebook_id = :cb and not is_system"),
+    # Serializa la asignación para que dos resoluciones concurrentes no elijan
+    # el mismo número. Los números existentes jamás se reciclan ni actualizan.
+    db.execute(
+        text("select id from codebooks where id = :cb for update"),
         {"cb": codebook_id},
-    ).scalar()
+    )
+    number_rows = db.execute(
+        text("select code_number, is_system from codes where codebook_id = :cb"),
+        {"cb": codebook_id},
+    ).mappings().all()
+    occupied = {row["code_number"] for row in number_rows}
+    non_system = [row["code_number"] for row in number_rows if not row["is_system"]]
+    next_number = (max(non_system) if non_system else 0) + 1
+    while next_number in occupied:
+        next_number += 1
 
     code_id = uuid.uuid4()
     db.execute(
@@ -1405,6 +1701,31 @@ def set_round_status(db: Session, round_id: uuid.UUID, status: str) -> None:
         text("update rounds set status = :st, updated_at = now() where id = :id"),
         {"st": status, "id": round_id},
     )
+
+
+def approve_scratch_codebooks_for_round(
+    db: Session, round_id: uuid.UUID, user_id
+) -> int:
+    """Oficializa catálogos scratch solo cuando la ronda cerró su auditoría."""
+    result = db.execute(
+        text("""
+            update codebooks cb
+               set status = 'approved',
+                   approved_by = :user,
+                   approved_at = now()
+             where cb.origin = 'scratch'
+               and cb.status <> 'approved'
+               and cb.id in (
+                 select sp.codebook_id
+                   from subprojects sp
+                   join rounds r on r.id = sp.round_id
+                  where sp.round_id = :round
+                    and r.status = 'audit_approved'
+               )
+        """),
+        {"round": round_id, "user": user_id},
+    )
+    return getattr(result, "rowcount", 0)
 
 
 def log_action(

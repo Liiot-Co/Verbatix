@@ -251,6 +251,26 @@ def test_start_persists_seed_when_run_has_none():
     assert mocks.set_seed.call_args[0][1] == uuid.UUID(run_id)
 
 
+def test_start_resamples_stale_approved_session_after_new_load():
+    """REQ-03: una carga nueva reprocesa el motor y deja la sesión APROBADA
+    desactualizada — re-muestrear crea una sesión nueva sobre el conjunto
+    combinado; la aprobada queda en el historial (no se toca ni se borra)."""
+    db = FakeSession()
+    stale_approved = {"id": SESSION_ID, "status": "approved", "is_stale": True}
+    with ExitStack() as stack:
+        mocks = StartMocks(stack, existing=stale_approved, population=_population(5))
+        start_audit_session(db, SUBPROJECT_ID, user_id=USER_ID, resample=True)
+    mocks.create_session.assert_called_once()
+
+    # Sin resample explícito, la sesión aprobada se devuelve tal cual.
+    db2 = FakeSession()
+    with ExitStack() as stack:
+        mocks = StartMocks(stack, existing=stale_approved, population=_population(5))
+        result = start_audit_session(db2, SUBPROJECT_ID, user_id=USER_ID)
+    assert result is stale_approved
+    mocks.create_session.assert_not_called()
+
+
 def test_start_resamples_only_stale_sessions():
     db = FakeSession()
     stale = {"id": SESSION_ID, "status": "in_progress", "is_stale": True}

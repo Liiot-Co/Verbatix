@@ -92,13 +92,13 @@ def promote_llm_result_to_alias(
     )
 
 
-def _brand_code_numbers(start: int):
-    """Genera code_numbers correlativos saltando el rango 95-99 (reservado
-    para códigos de sistema: colisionar ahí viola el unique del codebook)."""
+def _brand_code_numbers(start: int, occupied: set[int] | None = None):
+    """Genera números nuevos sin reciclar ni colisionar con filas existentes."""
+    used = occupied or set()
     n = start
     while True:
-        if 95 <= n <= 99:
-            n = 100
+        while n in used or 95 <= n <= 99:
+            n += 1
         yield n
         n += 1
 
@@ -214,7 +214,12 @@ def discover_catalog_from_frequency(
         """),
         {"cb": codebook_id},
     ).scalar()
-    numbers = _brand_code_numbers(next_number)
+    occupied_rows = db.execute(
+        text("select code_number from codes where codebook_id = :cb"),
+        {"cb": codebook_id},
+    ).mappings().all()
+    occupied = {row["code_number"] for row in occupied_rows}
+    numbers = _brand_code_numbers(next_number, occupied)
 
     # Fase 1: agrupar candidatos por similitud fuzzy entre sí, sin filtrar
     # todavía por mínimo de menciones. Recorridos en orden de frecuencia desc.

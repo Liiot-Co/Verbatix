@@ -625,14 +625,19 @@ export default function AuditView() {
             <span className={approved ? "badge-success" : "badge-warning"}>
               {approved ? "Auditado" : "En auditoría"}
             </span>
-            {summary.is_stale && !approved && (
+            {summary.is_stale && (
               <button
                 onClick={handleResample}
                 disabled={busy}
                 className="inline-flex items-center gap-1.5 text-xs text-p-warning underline underline-offset-2"
-                title="El motor volvió a procesar después del muestreo: la muestra quedó desactualizada"
+                title={
+                  approved
+                    ? "Llegó una carga nueva después de aprobar: la sesión aprobada queda como historial y la nueva muestrea el conjunto combinado"
+                    : "El motor volvió a procesar después del muestreo: la muestra quedó desactualizada"
+                }
               >
-                <RefreshCw className="w-3.5 h-3.5" /> Muestra desactualizada — re-muestrear
+                <RefreshCw className="w-3.5 h-3.5" />{" "}
+                {approved ? "Nueva carga procesada — re-auditar" : "Muestra desactualizada — re-muestrear"}
               </button>
             )}
           </div>

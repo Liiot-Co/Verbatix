@@ -9,8 +9,12 @@ import type {
   AuditReviewResult,
   AuditSessionSummary,
   BulkResolveResult,
+  CatalogOriginSelection,
+  CatalogPreview,
+  CodebookSource,
   ColumnMap,
   ImportResult,
+  LoadReviewState,
   LoginPayload,
   LoginResponse,
   MentionGroupDetail,
@@ -23,8 +27,10 @@ import type {
   ResolutionQueue,
   ResolutionSummary,
   ResolveDecision,
+  ResolveFlagResult,
   ResolveResult,
   Round,
+  RoundLoad,
   RoundCode,
   RoundReport,
   RoundStatus,
@@ -204,7 +210,7 @@ export async function getProjects(): Promise<ProjectListItem[]> {
 export async function createProject(
   externalCode: string,
   name: string
-): Promise<{ id: string; external_code: string; name: string; created_at: string }> {
+): Promise<{ id: string; external_code: string; name: string; proyecto_id: string | null; created_at: string }> {
   return request("/projects", {
     method: "POST",
     headers: jsonHeaders,
@@ -243,6 +249,8 @@ export interface CreateRoundInput {
   audit_percentage: number;
   origin_mode: "from_scratch" | "homologated";
   source_round_id?: string | null | undefined;
+  catalog_origins: Record<"brands" | "reasons", CatalogOriginSelection>;
+  reuse_catalogs_from_round_id?: string | null;
 }
 
 export async function createRound(projectId: string, input: CreateRoundInput): Promise<Round> {
@@ -251,6 +259,15 @@ export async function createRound(projectId: string, input: CreateRoundInput): P
     headers: jsonHeaders,
     body: JSON.stringify(input),
   });
+}
+
+export async function getCodebookSources(
+  projectId: string,
+  codingType: "brands" | "reasons"
+): Promise<CodebookSource[]> {
+  return request<CodebookSource[]>(
+    `/projects/${projectId}/codebook-sources?coding_type=${codingType}`
+  );
 }
 
 /* ── Rondas: archivos, import, proceso (Fase 1 + Fase 2) ── */
@@ -265,23 +282,90 @@ export async function uploadFile(roundId: string, file: File): Promise<UploadedF
   return request<UploadedFile>(`/rounds/${roundId}/files`, { method: "POST", body: form });
 }
 
+export async function previewClientCatalog(
+  roundId: string,
+  fileId: string,
+  sheet: string,
+  codingType: "brands" | "reasons"
+): Promise<CatalogPreview> {
+  return request<CatalogPreview>(
+    `/rounds/${roundId}/files/${fileId}/catalog-preview`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ sheet, coding_type: codingType }),
+    }
+  );
+}
+
+export async function importClientCatalog(
+  roundId: string,
+  fileId: string,
+  sheet: string,
+  codingType: "brands" | "reasons"
+): Promise<CatalogPreview> {
+  return request<CatalogPreview>(
+    `/rounds/${roundId}/files/${fileId}/catalog-import`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ sheet, coding_type: codingType }),
+    }
+  );
+}
+
+export interface ImportSettings {
+  codebookSheet?: string | undefined;
+  codebookCodingType?: "brands" | "reasons" | undefined;
+  // REQ-03: etiqueta de la carga, confirmada/editada por el analista antes de importar.
+  sourceLabel?: string | undefined;
+  // Capturados al soltar el archivo — solo se usan si esta importación crea un
+  // subproyecto nuevo. No editables después (ver UpdateSubprojectInput).
+  minMentionsThreshold?: number | undefined;
+  auditPercentage?: number | undefined;
+}
+
 export async function importFile(
   roundId: string,
   fileId: string,
   verbatimsSheet: string,
   columnMap: ColumnMap,
-  codebookSheet?: string,
-  codebookCodingType?: "brands" | "reasons"
+  settings: ImportSettings = {}
 ): Promise<ImportResult> {
   return request<ImportResult>(`/rounds/${roundId}/files/${fileId}/import`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({
       verbatims_sheet: verbatimsSheet,
-      codebook_sheet: codebookSheet ?? null,
-      codebook_coding_type: codebookSheet ? codebookCodingType : null,
+      codebook_sheet: settings.codebookSheet ?? null,
+      codebook_coding_type: settings.codebookSheet ? settings.codebookCodingType : null,
       column_map: columnMap,
+      source_label: settings.sourceLabel ?? null,
+      min_mentions_threshold: settings.minMentionsThreshold ?? null,
+      audit_percentage: settings.auditPercentage ?? null,
     }),
+  });
+}
+
+/* ── REQ-03: cargas múltiples ── */
+
+export async function getRoundLoads(roundId: string): Promise<RoundLoad[]> {
+  return request<RoundLoad[]>(`/rounds/${roundId}/loads`);
+}
+
+export async function getLoadReview(roundId: string, fileId: string): Promise<LoadReviewState> {
+  return request<LoadReviewState>(`/rounds/${roundId}/files/${fileId}/review`);
+}
+
+export async function resolveImportFlag(
+  flagId: string,
+  action: "keep" | "remove" | "edit",
+  note?: string
+): Promise<ResolveFlagResult> {
+  return request<ResolveFlagResult>(`/import-review/${flagId}/resolve`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ action, note: note ?? null }),
   });
 }
 
