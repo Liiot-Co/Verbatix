@@ -12,6 +12,7 @@ const OPTIONS: { value: string; label: string; hint: string }[] = [
   { value: "excel", label: "Excel", hint: "Libro de Códigos (.xlsx)" },
   { value: "sql", label: "SQL", hint: "Metadatos + datos (.txt)" },
   { value: "onenextcase", label: "OnNextCase", hint: "Formato de casos (.txt)" },
+  { value: "mdd", label: "MDD", hint: "Metadata Dimensions (.mdd)" },
 ];
 
 /** Modal de selección de formatos para el ZIP de exportación (REQ-13). */
@@ -61,13 +62,6 @@ export function ExportModal({ exporting, onCancel, onConfirm }: ExportModalProps
               </span>
             </label>
           ))}
-          <label className="card-subtle p-3 flex items-start gap-2 text-sm opacity-50 cursor-not-allowed">
-            <input type="checkbox" className="mt-0.5" disabled />
-            <span>
-              <span className="block font-medium text-p-text">MDD</span>
-              <span className="block text-xs text-p-text-muted">Próximamente (.mdd)</span>
-            </span>
-          </label>
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2 sm:justify-end">

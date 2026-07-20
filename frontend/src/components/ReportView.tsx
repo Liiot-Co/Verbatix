@@ -429,7 +429,7 @@ export default function ReportView() {
               Libro de Códigos listo
             </p>
             <p className="text-xs text-p-text-muted leading-relaxed max-w-lg">
-              Excel, SQL y OnNextCase disponibles para exportar.{" "}
+              Excel, SQL, OnNextCase y MDD disponibles para exportar.{" "}
               {formatCount(report?.verbatims_total ?? 0)} registros ·{" "}
               {report?.codes.length ?? 0} {typeLabel}
             </p>
