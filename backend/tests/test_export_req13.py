@@ -20,6 +20,7 @@ schema/import change needed. `sql.py` uses it as-is; `onenextcase.py` applies
 the mangle-and-suffix transform documented above.
 """
 import os
+import re
 import zipfile
 from io import BytesIO
 
@@ -27,6 +28,7 @@ import pytest
 
 from app.pipeline.export import (
     build_export_zip,
+    build_mdd_xml,
     build_metadata_txt,
     build_onenextcase_txt,
     build_sql_txt,
@@ -227,6 +229,49 @@ def test_build_export_zip_rejects_empty_or_unknown_formats():
         build_export_zip(_ZIP_EXPORT_DATA, {"pdf"})
 
 
-def test_build_export_zip_mdd_not_implemented_yet():
-    with pytest.raises(NotImplementedError):
-        build_export_zip(_ZIP_EXPORT_DATA, {"mdd"})
+_MDD_EXPORT_DATA = {
+    "nets_by_coding_type": {
+        "brands": [{"name": "NETO MARCAS", "codes": [
+            {"code_number": 1, "label": "Gloria"},
+            {"code_number": 2, "label": "Nestlé & Co"},
+        ]}],
+        "reasons": [{"name": "NETO RAZONES", "codes": [
+            {"code_number": 1, "label": "Precio"},
+        ]}],
+    },
+}
+
+
+def test_build_mdd_xml_replaces_catalog_categories():
+    """Both known catalog blocks (Marcas id=7, Razones id=115) contain
+    exactly the current round's codes, keep the fixed CB_99 system category,
+    and the rest of the document is untouched (still opens with the real
+    mdm:metadata root)."""
+    out = build_mdd_xml(_MDD_EXPORT_DATA).decode("utf-8-sig")
+
+    assert '<mdm:metadata' in out
+    assert '<category id="_mdd_1" name="CB_1">' in out
+    assert '<text context="ANALYSIS" xml:lang="en-US">Gloria</text>' in out
+    assert '<text context="ANALYSIS" xml:lang="en-US">Nestlé &amp; Co</text>' in out
+    assert '<text context="ANALYSIS" xml:lang="en-US">Precio</text>' in out
+    # fixed system category preserved in both blocks
+    assert out.count('name="CB_99">') == 2
+    # the old fixture-only catalog (e.g. "Anchor", "Ideal") is gone
+    assert "Anchor" not in out
+
+
+def test_build_mdd_xml_never_invents_codes():
+    out = build_mdd_xml(_MDD_EXPORT_DATA).decode("utf-8-sig")
+    numbers = {
+        int(m) for m in re.findall(r'name="CB_(\d+)"', out)
+        if m != "99"
+    }
+    assert numbers == {1, 2}
+
+
+def test_build_export_zip_mdd():
+    zbytes = build_export_zip(_ZIP_EXPORT_DATA, {"mdd"})
+    with zipfile.ZipFile(BytesIO(zbytes)) as zf:
+        names = set(zf.namelist())
+        assert names == {"LC_32406432_R1.mdd", "LC_32406432_R1_MetaData.txt"}
+        assert zf.read("LC_32406432_R1.mdd")[:3] == b"\xef\xbb\xbf"
