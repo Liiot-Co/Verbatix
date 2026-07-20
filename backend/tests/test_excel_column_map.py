@@ -1,7 +1,8 @@
-"""Regresión: parse_verbatims sigue funcionando sin column_map (sniffing de header
-'Verbatim' intacto), y admite column_map.verbatim explícito cuando viene."""
+"""Regresión: parse_verbatims exige Respondent ID (cruce con perfil) y admite
+column_map explícito. El .dau no pasa por esta función."""
 import io
 
+import pytest
 from openpyxl import Workbook
 
 from app.pipeline.ingest import excel
@@ -46,6 +47,8 @@ def test_parse_verbatims_without_column_map_unchanged():
     rows = excel.parse_verbatims(content, "Sheet")
     assert len(rows) == 2
     assert rows[0]["original_text"] == "sabor rico"
+    assert rows[0]["respondent_external_id"] == "1"
+    assert rows[1]["respondent_external_id"] == "2"
 
 
 def test_parse_verbatims_with_explicit_column_map():
@@ -53,6 +56,56 @@ def test_parse_verbatims_with_explicit_column_map():
         ["Respondent ID", "Question ID", "Verbatim", "Comentario libre"],
         [["1", "Q1", "sabor rico", "otro texto"]],
     )
-    rows = excel.parse_verbatims(content, "Sheet", {"verbatim": "Comentario libre"})
+    rows = excel.parse_verbatims(
+        content,
+        "Sheet",
+        {"verbatim": "Comentario libre", "respondent_id": "Respondent ID"},
+    )
     assert len(rows) == 1
     assert rows[0]["original_text"] == "otro texto"
+    assert rows[0]["respondent_external_id"] == "1"
+
+
+def test_parse_verbatims_excel_solo_respondent_y_verbatim():
+    """Formato típico Excel (sin Question ID): Respondent ID + Verbatim."""
+    content = _make_xlsx(
+        ["Respondent ID", "Verbatim"],
+        [["101", "me gusta"], ["102", "no me gusta"], ["", "sin id"]],
+    )
+    rows = excel.parse_verbatims(content, "Sheet")
+    assert len(rows) == 2
+    assert {r["respondent_external_id"] for r in rows} == {"101", "102"}
+    assert all(r["question_key"] == "verbatim" for r in rows)
+
+
+def test_parse_verbatims_accepts_serial_alias():
+    content = _make_xlsx(
+        ["Serial", "Verbatim"],
+        [["7", "texto"]],
+    )
+    rows = excel.parse_verbatims(content, "Sheet")
+    assert rows[0]["respondent_external_id"] == "7"
+
+
+def test_parse_verbatims_rejects_missing_respondent_id():
+    content = _make_xlsx(
+        ["Verbatim"],
+        [["solo texto"]],
+    )
+    with pytest.raises(ValueError, match="Respondent ID"):
+        excel.parse_verbatims(content, "Sheet")
+
+
+def test_parse_verbatims_mapped_respondent_column():
+    content = _make_xlsx(
+        ["ID encuestado", "Respuesta abierta"],
+        [["55", "buen sabor"]],
+    )
+    rows = excel.parse_verbatims(
+        content,
+        "Sheet",
+        {"respondent_id": "ID encuestado", "verbatim": "Respuesta abierta"},
+    )
+    assert len(rows) == 1
+    assert rows[0]["respondent_external_id"] == "55"
+    assert rows[0]["original_text"] == "buen sabor"
