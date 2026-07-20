@@ -1,4 +1,8 @@
 {
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787",
+    "ENABLE_TOOL_SEARCH": "true"
+  },
   "permissions": {
     "allow": [
       "Bash(python3 -c ':*)",
@@ -22,5 +26,34 @@
   "enabledMcpjsonServers": [
     "engram",
     "headroom"
-  ]
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jeanpierre/.local/bin/headroom init hook ensure --profile init-verbatix-1b1983a6 --marker headroom-init-claude",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jeanpierre/.local/bin/headroom init hook ensure --profile init-verbatix-1b1983a6 --marker headroom-init-claude",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "headroom@headroom-marketplace": true
+  }
 }

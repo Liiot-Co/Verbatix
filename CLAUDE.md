@@ -50,3 +50,16 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## engram
+
+Persistent memory across sessions. Use MCP tools via `mcp__engram__mem_*`.
+- Core: `mem_save`, `mem_search`, `mem_context`, `mem_session_summary`, `mem_get_observation`, `mem_save_prompt`, `mem_current_project`
+- Save after every decision, bug fix, discovery, or convention
+- Resolve conflicts via `mem_judge` when `judgment_required` is true
+
+## headroom
+
+Context optimization — compresses large tool outputs (port 8787).
+- Proxy: `headroom proxy` then route via `ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude`
+- MCP tools: `mcp__headroom__headroom_retrieve`, `mcp__headroom__headroom_compress`, `mcp__headroom__headroom_stats`

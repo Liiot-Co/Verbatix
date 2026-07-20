@@ -129,6 +129,25 @@ project root/
 - State: Zustand store for global state
 - Frontend package manager is **bun**, not npm/npx — `bun install`, `bun run <script>`, `bunx <tool>`. Applies everywhere, including inside Docker containers (`docker compose exec frontend bun run dev`). `frontend/Dockerfile` (prod) already builds on `oven/bun:1`; `frontend/Dockerfile.dev` (the dev/hot-reload container) still uses `node:20-slim` + `npm install` and needs migrating to match — don't copy its `npm` usage into new instructions.
 
+## Activated Tools
+
+### graphify
+- Knowledge graph at `graphify-out/` with god nodes, community structure, and cross-file relationships.
+- For codebase questions, run `graphify query "<question>"` when `graphify-out/graph.json` exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts.
+- Read `graphify-out/GRAPH_REPORT.md` for architecture overview.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+### engram
+- Persistent memory across sessions — saves decisions, bugs, conventions, discoveries.
+- Core tools: `mem_save`, `mem_search`, `mem_context`, `mem_session_summary`, `mem_get_observation`, `mem_save_prompt`, `mem_current_project`.
+- Proactive save rule: call `mem_save` immediately after ANY decision, bug fix, discovery, or convention.
+- Conflict resolution: check `judgment_required` in `mem_save` responses and resolve via `mem_judge`.
+
+### headroom
+- Context optimization layer — compresses large tool outputs, saves tokens.
+- Proxy: `headroom proxy` (port 8787). Route Claude through it: `ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude`.
+- MCP tools: `headroom_retrieve`, `headroom_compress`, `headroom_stats`.
+
 ## Dead Code (Don't Touch — Needs Cleanup)
 
 - `backend/app/serializers.py` — stale, references old schema
