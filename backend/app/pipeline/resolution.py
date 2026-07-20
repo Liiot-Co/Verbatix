@@ -119,6 +119,24 @@ def resolve_group(
         raise ValueError(f"Acción inválida: {action!r}")
 
     deactivate_group_codes(db, group_id)
+
+    # REQ-08: código único es por Marcas/Razones (subproject), no por pregunta.
+    from app.pipeline.question_controls import assert_single_code_assignment
+    single_code = bool(db.execute(
+        text("select single_code_per_response from subprojects where id = :sp"),
+        {"sp": subproject_id},
+    ).scalar())
+    if code_ids:
+        code_meta = db.execute(
+            text("""
+                select id, is_system from codes where id = any(:ids)
+            """),
+            {"ids": list(code_ids)},
+        ).mappings().all()
+        by_id = {row["id"]: dict(row) for row in code_meta}
+        ordered = [by_id[cid] for cid in code_ids if cid in by_id]
+        assert_single_code_assignment(ordered, single_code=single_code)
+
     verbatims_updated = assign_codes_to_group(db, group_id, code_ids, source, user_id) if code_ids else 0
 
     auto_resolved = []

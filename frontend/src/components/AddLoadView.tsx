@@ -35,6 +35,11 @@ import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb from "./Breadcrumb";
 import FieldSelectionTable, { initialFieldSelections } from "./FieldSelectionTable";
+import RoundCodingControls, {
+  detectedMaxFromFields,
+  hasPendingRoundMentionDecision,
+  type RoundCodingControlsValue,
+} from "./RoundCodingControls";
 
 type Step = "upload" | "confirm" | "review";
 
@@ -59,6 +64,11 @@ export default function AddLoadView() {
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
   const [fieldPreviews, setFieldPreviews] = useState<FieldPreview[]>([]);
   const [fieldSelections, setFieldSelections] = useState<FieldSelection[]>([]);
+  const [roundControls, setRoundControls] = useState<RoundCodingControlsValue>({
+    singleCodeByType: {},
+    expectedMaxMentions: null,
+    mentionsDecision: null,
+  });
   const [submitting, setSubmitting] = useState(false);
 
   const [pendingQuestions, setPendingQuestions] = useState<string[]>([]);
@@ -110,28 +120,58 @@ export default function AddLoadView() {
     (s) => s.name === verbatimsSheet
   );
   const isDau = uploaded?.file_type === "dau";
-  const canImport = !!(uploaded && verbatimsSheet && (isDau || columnMap.verbatim));
+  const activeCodingTypesKey = (round?.subprojects ?? [])
+    .map((s) => s.coding_type)
+    .slice()
+    .sort()
+    .join(",");
+  const activeCodingTypes = useMemo(
+    () => (activeCodingTypesKey ? (activeCodingTypesKey.split(",") as CodingType[]) : []),
+    [activeCodingTypesKey],
+  );
+  const detectedMaxMentions = detectedMaxFromFields(fieldPreviews);
+  const canImport = !!(
+    uploaded
+    && verbatimsSheet
+    && (isDau || columnMap.verbatim)
+    && (!hasPendingRoundMentionDecision(roundControls, detectedMaxMentions, activeCodingTypes))
+  );
   const showCodingType = (round?.subprojects.length ?? 0) > 1;
 
-  // Selección de campos: para .dau se dispara apenas se sube el archivo; para
-  // Excel espera a que haya una hoja elegida (ver misma decisión en CreationWizard).
+  // Selección de campos: solo al cambiar archivo/hoja — no al tocar el interruptor.
   useEffect(() => {
-    if (!roundId || !uploaded) {
+    if (!roundId || !uploaded || !round) {
       setFieldPreviews([]);
       setFieldSelections([]);
       return;
     }
     if (!isDau && !verbatimsSheet) return;
+    const fileId = uploaded.file_id;
+    const expectedFromRound = round.expected_max_mentions ?? null;
+    const types = (round.subprojects ?? []).map((s) => s.coding_type as CodingType);
+    const singleFromSp = Object.fromEntries(
+      round.subprojects.map((s) => [s.coding_type, !!s.single_code_per_response])
+    ) as Partial<Record<CodingType, boolean>>;
+
     let cancelled = false;
-    void previewFields(roundId, uploaded.file_id, isDau ? undefined : verbatimsSheet).then(({ fields }) => {
+    void previewFields(roundId, fileId, isDau ? undefined : verbatimsSheet).then(({ fields }) => {
       if (cancelled) return;
       setFieldPreviews(fields);
       setFieldSelections(initialFieldSelections(fields));
+      const singleCodeByType: Partial<Record<CodingType, boolean>> = {};
+      for (const ct of types) {
+        singleCodeByType[ct] = singleFromSp[ct] ?? false;
+      }
+      setRoundControls({
+        singleCodeByType,
+        expectedMaxMentions: expectedFromRound,
+        mentionsDecision: null,
+      });
     });
     return () => {
       cancelled = true;
     };
-  }, [roundId, uploaded, verbatimsSheet, isDau]);
+  }, [roundId, uploaded?.file_id, verbatimsSheet, isDau, round?.id]); // round por id a propósito
 
   const pendingFlags = useMemo(
     () => duplicates.filter((d) => d.status === "pending").length,
@@ -153,6 +193,11 @@ export default function AddLoadView() {
           // field_selections (su question_key viene de la columna "Question ID",
           // no del nombre de columna).
           ...(isDau ? { fieldSelections } : {}),
+          singleCodeByType: Object.fromEntries(
+            activeCodingTypes.map((ct) => [ct, roundControls.singleCodeByType[ct] ?? false])
+          ),
+          expectedMaxMentions: roundControls.expectedMaxMentions,
+          mentionsDecision: roundControls.mentionsDecision,
         }
       );
       if (result.pending_questions.length > 0) {
@@ -185,7 +230,7 @@ export default function AddLoadView() {
     } finally {
       setSubmitting(false);
     }
-  }, [roundId, uploaded, canImport, verbatimsSheet, columnMap, sourceLabel, isDau, fieldSelections, navigate, showToast]);
+  }, [roundId, uploaded, canImport, verbatimsSheet, columnMap, sourceLabel, isDau, fieldSelections, roundControls, activeCodingTypes, navigate, showToast]);
 
   const handleClassifyQuestions = useCallback(async () => {
     if (!round?.project_id || pendingQuestions.length === 0) return;
@@ -370,6 +415,14 @@ export default function AddLoadView() {
               <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
                 {isDau ? "Campos a clasificar" : "Muestra de valores"}
               </label>
+              {activeCodingTypes.length > 0 && (
+                <RoundCodingControls
+                  codingTypes={activeCodingTypes}
+                  value={roundControls}
+                  onChange={setRoundControls}
+                  detectedMaxMentions={detectedMaxMentions}
+                />
+              )}
               <FieldSelectionTable
                 fields={fieldPreviews}
                 value={fieldSelections}

@@ -99,6 +99,12 @@ def test_guess_coding_type_known_patterns():
     assert dau.guess_coding_type("CUST_BE1[1].Slice") is None
 
 
+def test_guess_single_code_default_from_dau_shape():
+    assert dau.guess_single_code_default("VYK[1].Slice") is False
+    assert dau.guess_single_code_default("NBS_UNAIDBlock[{_1}].NBS_UNAID") is False
+    assert dau.guess_single_code_default("CUST_BE1[1].Slice") is None
+
+
 def test_other_fields_are_infrastructure_not_verbatims():
     assert "VXY.Other" in dau._NON_RESPONSE_FIELDS
     assert "VYH.Other" in dau._NON_RESPONSE_FIELDS

@@ -33,10 +33,6 @@ export default function FieldSelectionTable({
 
   return (
     <div className="rounded-xl border border-p-border overflow-hidden">
-      {/* Región de scroll contenida: con muchos campos (.dau puede traer 20+),
-          esto evita que la tabla empuje toda la página del wizard a un scroll
-          descontrolado — un único scroll acotado en vez de scrolls anidados.
-          El thead queda sticky para no perder el contexto de columnas al bajar. */}
       <div className="max-h-80 overflow-y-auto">
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10 bg-p-surface">
@@ -55,6 +51,7 @@ export default function FieldSelectionTable({
             {fields.map((preview) => {
               const selection = byField.get(preview.field);
               if (!readOnly && !selection) return null;
+
               return (
                 <tr key={preview.field} className="align-top">
                   {!readOnly && selection && (
@@ -114,8 +111,6 @@ export default function FieldSelectionTable({
   );
 }
 
-// Semilla inicial de FieldSelection[] a partir del preview del backend —
-// pre-marca el segmentado con la sugerencia de .dau; Excel queda sin sugerencia.
 export function initialFieldSelections(fields: FieldPreview[]): FieldSelection[] {
   return fields.map((f) => ({
     field: f.field,

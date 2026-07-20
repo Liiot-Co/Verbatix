@@ -40,12 +40,21 @@ class BrandsOnlySession:
         self.inserted_verbatims: list[dict] = []
 
     def execute(self, stmt, params=None):
-        sql = str(stmt).lower()
+        sql = " ".join(str(stmt).lower().split())
         params = params or {}
 
-        if "select id, question_key, coding_type from questions where project_id" in sql:
+        if "from questions where project_id" in sql and "question_key" in sql and "insert" not in sql:
+            if "and question_key" in sql:
+                q = self.questions.get((params["project"], params["qk"]))
+                if q:
+                    return FakeResult(mappings_list=[{"id": q["id"], "coding_type": q["coding_type"]}])
+                return FakeResult(mappings_list=[])
             return FakeResult(mappings_list=[
-                {"id": q["id"], "question_key": qk, "coding_type": q["coding_type"]}
+                {
+                    "id": q["id"],
+                    "question_key": qk,
+                    "coding_type": q["coding_type"],
+                }
                 for (project, qk), q in self.questions.items()
                 if project == params["project"]
             ])
@@ -59,14 +68,29 @@ class BrandsOnlySession:
 
         if "insert into questions" in sql:
             self.questions[(params["project"], params["qk"])] = {
-                "id": params["id"], "coding_type": params["ct"],
+                "id": params["id"],
+                "coding_type": params["ct"],
             }
             return FakeResult()
+
+        if "select expected_max_mentions from rounds" in sql:
+            return FakeResult(scalar=None)
+
+        if "from subprojects where round_id" in sql and "single_code_per_response" in sql:
+            return FakeResult(mappings_list=[
+                {"id": SUBPROJECT_BRANDS, "coding_type": "brands", "single_code_per_response": False},
+            ])
 
         if "select id, coding_type from subprojects where round_id" in sql:
             return FakeResult(mappings_list=[
                 {"id": SUBPROJECT_BRANDS, "coding_type": "brands"},
             ])
+
+        if "update imported_files" in sql:
+            return FakeResult()
+
+        if "insert into question_mention_decisions" in sql:
+            return FakeResult()
 
         if "insert into respondents" in sql:
             for p in params if isinstance(params, list) else [params]:

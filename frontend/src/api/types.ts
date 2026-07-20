@@ -127,6 +127,7 @@ export interface Round {
   round_number: number;
   min_mentions_threshold: number;
   audit_percentage: number;
+  expected_max_mentions?: number | null;
   origin_mode: OriginMode;
   source_round_id: string | null;
   status: string;
@@ -143,6 +144,7 @@ export interface RoundSubproject {
   source_subproject_id?: string | null;
   min_mentions_threshold?: number;
   audit_percentage?: number;
+  single_code_per_response?: boolean;
   inherited_codes?: number;
   inherited_aliases?: number;
   inherited_nets?: number;
@@ -211,6 +213,10 @@ export interface UploadedFile {
 export interface FieldPreview {
   field: string;
   suggested_coding_type: CodingType | null;
+  /** REQ-08: sugerencia de interruptor (false = multi / 1:N). null = sin señal. */
+  suggested_single_code_per_response?: boolean | null;
+  /** REQ-04: máximo de menciones detectadas por encuestado en el archivo. */
+  detected_max_mentions?: number;
   reason: string | null;
   sample_values: string[];
 }

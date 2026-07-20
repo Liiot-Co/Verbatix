@@ -82,6 +82,13 @@ _KNOWN_CODING_TYPES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^VYK\["), "brands"),
 )
 
+# Señal de cardinalidad del .dau para sugerir el interruptor "código único"
+# (REQ-08). No fuerza el valor: solo alimenta el default editable del wizard.
+_MULTI_RESPONSE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^VYK\["),          # selección múltiple codificada
+    re.compile(r"^NBS_UNAID"),      # texto libre 1:N (varias ideas)
+)
+
 
 def guess_coding_type(question_key: str) -> str | None:
     """Coding_type conocido de antemano para question_keys que siguen la plantilla
@@ -90,6 +97,16 @@ def guess_coding_type(question_key: str) -> str | None:
     for pattern, coding_type in _KNOWN_CODING_TYPES:
         if pattern.match(question_key):
             return coding_type
+    return None
+
+
+def guess_single_code_default(question_key: str) -> bool | None:
+    """Default sugerido de `single_code_per_response` según la forma del campo
+    en el .dau. False = admite varias respuestas/ideas; None = sin señal
+    (el UI cae al default del schema, false). No muta guess_coding_type."""
+    for pattern in _MULTI_RESPONSE_PATTERNS:
+        if pattern.match(question_key):
+            return False
     return None
 
 

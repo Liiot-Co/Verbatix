@@ -476,30 +476,31 @@ def classify_question(
     project_id: uuid.UUID,
     question_key: str,
     coding_type: str,
-    single_code_per_response: bool = False,
-    expected_max_mentions: int | None = None,
 ) -> uuid.UUID:
     """El analista responde 'esta variable es Marcas o Razones' una sola vez por
     estudio (sección 2.5/2.6) — queda guardado en `questions` para siempre; las
     rondas futuras del mismo estudio la reutilizan sin volver a preguntar. Una vez
     clasificada, reintentar `insert_verbatims` con las mismas filas ya no las deja
-    pendientes (Tarea 9)."""
+    pendientes (Tarea 9).
+
+    REQ-08/04 viven en subprojects/rounds (una vez por tipo / ronda), no aquí."""
     existing = db.execute(
-        text("select id from questions where project_id = :project and question_key = :qk"),
+        text("""
+            select id, coding_type from questions
+             where project_id = :project and question_key = :qk
+        """),
         {"project": project_id, "qk": question_key},
-    ).scalar()
+    ).mappings().first()
     if existing:
-        return existing
+        return existing["id"]
     qid = uuid.uuid4()
     db.execute(
         text("""
-            insert into questions (id, project_id, coding_type, question_key,
-                                   single_code_per_response, expected_max_mentions)
-            values (:id, :project, :ct, :qk, :single, :max_m)
+            insert into questions (id, project_id, coding_type, question_key)
+            values (:id, :project, :ct, :qk)
         """),
         {
             "id": qid, "project": project_id, "ct": coding_type, "qk": question_key,
-            "single": single_code_per_response, "max_m": expected_max_mentions,
         },
     )
     return qid
@@ -546,6 +547,10 @@ def insert_verbatims(
     min_mentions_threshold: int | None = None,
     audit_percentage: float | None = None,
     field_selections: list[dict] | None = None,
+    *,
+    expected_max_mentions: int | None = None,
+    mentions_decision: str | None = None,
+    single_code_by_type: dict[str, bool] | None = None,
 ) -> tuple[int, pl.DataFrame, list[str], dict[str, int]]:
     """Normaliza, inserta verbatims y devuelve (n_inserted, DF slim para fuzzy,
     question_keys nuevas sin clasificar, filas omitidas por coding_type no
@@ -562,23 +567,54 @@ def insert_verbatims(
     tipo que la ronda no configuró, esas filas se omiten y se reportan en el 4º
     valor. `min_mentions_threshold`/`audit_percentage` se conservan en la firma
     por compatibilidad con callers viejos, pero ya no se usan para crear
-    subproyectos."""
-    subproject_by_coding_type = {
-        r["coding_type"]: r["id"]
-        for r in db.execute(
-            text("select id, coding_type from subprojects where round_id = :round"),
-            {"round": round_id},
-        ).mappings().all()
+    subproyectos.
+
+    REQ-08/04: `single_code_by_type` (una vez por Marcas/Razones) y
+    `expected_max_mentions` (una vez por ronda) se persisten en subprojects/rounds."""
+    from app.pipeline.question_controls import (
+        apply_mention_limits,
+        max_mentions_across_keys,
+        persist_round_controls,
+        record_mention_decision,
+    )
+
+    persist_round_controls(
+        db,
+        round_id=round_id,
+        expected_max_mentions=expected_max_mentions,
+        single_code_by_type=single_code_by_type,
+    )
+
+    subproject_rows = db.execute(
+        text("""
+            select id, coding_type, single_code_per_response
+              from subprojects where round_id = :round
+        """),
+        {"round": round_id},
+    ).mappings().all()
+    subproject_by_coding_type = {r["coding_type"]: r["id"] for r in subproject_rows}
+    single_code_types = {
+        r["coding_type"] for r in subproject_rows if r.get("single_code_per_response")
     }
     configured_types = set(subproject_by_coding_type)
+
+    round_expected = expected_max_mentions
+    if round_expected is None:
+        round_expected = db.execute(
+            text("select expected_max_mentions from rounds where id = :id"),
+            {"id": round_id},
+        ).scalar()
 
     # Pre-load all questions + aliases for this project (elimina per-row SELECTs)
     questions_by_key: dict[str, dict] = {}
     for q in db.execute(
-        text("SELECT id, question_key, coding_type FROM questions WHERE project_id = :project"),
+        text("""
+            SELECT id, question_key, coding_type
+              FROM questions WHERE project_id = :project
+        """),
         {"project": project_id},
     ).mappings().all():
-        questions_by_key[q["question_key"]] = q
+        questions_by_key[q["question_key"]] = dict(q)
 
     for a in db.execute(
         text("""
@@ -590,29 +626,88 @@ def insert_verbatims(
         {"project": project_id},
     ).mappings().all():
         if a["alias_key"] not in questions_by_key:
-            a["question_key"] = a["alias_key"]
-            questions_by_key[a["alias_key"]] = a
+            row = dict(a)
+            row["question_key"] = a["alias_key"]
+            questions_by_key[a["alias_key"]] = row
 
-    # Selección de campos del wizard (Task 4): excluye campos marcados
-    # `included=False` antes de procesar filas, y pre-clasifica los que traen
-    # `coding_type` explícito para que nunca caigan en pending_questions.
+    # Wizard de campos: exclusiones + pre-clasificación (sin controles por pregunta).
     if field_selections:
         excluded_fields = {fs["field"] for fs in field_selections if not fs.get("included", True)}
         if excluded_fields:
             rows = [r for r in rows if r.get("question_key") not in excluded_fields]
         for fs in field_selections:
+            field = fs["field"]
             coding_type = fs.get("coding_type")
             if not coding_type:
                 continue
             if coding_type not in configured_types:
                 raise ValueError(
-                    f"coding_type '{coding_type}' para el campo '{fs['field']}' "
+                    f"coding_type '{coding_type}' para el campo '{field}' "
                     f"no está configurado en esta ronda"
                 )
-            field = fs["field"]
-            if field not in questions_by_key:
-                qid = classify_question(db, project_id, field, coding_type)
-                questions_by_key[field] = {"id": qid, "coding_type": coding_type}
+            qid = classify_question(db, project_id, field, coding_type)
+            questions_by_key[field] = {
+                "id": qid,
+                "coding_type": coding_type,
+                "question_key": field,
+            }
+
+    keys_in_batch = {r.get("question_key") for r in rows if r.get("question_key")}
+    for qk in keys_in_batch:
+        if qk in questions_by_key:
+            continue
+        guessed = guess_coding_type(qk)
+        if guessed is None or guessed not in configured_types:
+            continue
+        qid = classify_question(db, project_id, qk, guessed)
+        questions_by_key[qk] = {
+            "id": qid,
+            "coding_type": guessed,
+            "question_key": qk,
+        }
+
+    single_code_keys = {
+        qk for qk, qinfo in questions_by_key.items()
+        if qk in keys_in_batch and qinfo.get("coding_type") in single_code_types
+    }
+    for qk in keys_in_batch:
+        if qk in single_code_keys:
+            continue
+        if qk in questions_by_key:
+            continue
+        guessed = guess_coding_type(qk)
+        if guessed in single_code_types:
+            single_code_keys.add(qk)
+
+    limited_keys: dict[str, int] = {}
+    multi_keys = {qk for qk in keys_in_batch if qk not in single_code_keys}
+
+    if isinstance(round_expected, int) and round_expected > 0 and multi_keys:
+        detected = max_mentions_across_keys(rows, multi_keys)
+        if detected > round_expected:
+            if mentions_decision not in ("process_all", "limit_to_expected"):
+                raise ValueError(
+                    f"El archivo trae hasta {detected} menciones "
+                    f"(esperado {round_expected}): elige process_all o limit_to_expected"
+                )
+            record_mention_decision(
+                db,
+                imported_file_id=file_id,
+                expected_max_mentions=round_expected,
+                detected_max_mentions=detected,
+                decision=mentions_decision,
+                decided_by=None,
+            )
+            if mentions_decision == "limit_to_expected":
+                for qk in multi_keys:
+                    limited_keys[qk] = round_expected
+
+    if single_code_keys or limited_keys:
+        rows = apply_mention_limits(
+            rows,
+            single_code_keys=single_code_keys,
+            limited_keys=limited_keys,
+        )
 
     pending: set[str] = set()
     skipped_by_type: dict[str, int] = {}
@@ -635,7 +730,10 @@ def insert_verbatims(
                 pending.add(qk)
                 continue
             qid = classify_question(db, project_id, qk, guessed)
-            q_info = {"id": qid, "coding_type": guessed}
+            q_info = {
+                "id": qid,
+                "coding_type": guessed,
+            }
             questions_by_key[qk] = q_info
 
         if q_info is None:
