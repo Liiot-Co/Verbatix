@@ -26,6 +26,7 @@ import { glowVariantForIndex } from "@/components/GlowCard";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { can } from "@/lib/capabilities";
 import Breadcrumb from "./Breadcrumb";
+import { ExportModal } from "./ExportModal";
 
 const AUDIT_BADGE: Record<
   RoundStatus["audit"]["status"],
@@ -220,6 +221,7 @@ export default function ReportView() {
   const [report, setReport] = useState<RoundReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   useEffect(() => {
     if (!roundId) return;
@@ -251,18 +253,22 @@ export default function ReportView() {
     });
   }, [report?.codes]);
 
-  const handleExport = useCallback(async () => {
-    if (!roundId || exporting) return;
-    setExporting(true);
-    try {
-      await downloadCodebookExport(roundId);
-      showToast("Paquete descargado (Excel + MDD).", "success");
-    } catch {
-      showToast("No se pudo exportar el paquete.", "error");
-    } finally {
-      setExporting(false);
-    }
-  }, [roundId, exporting, showToast]);
+  const handleExport = useCallback(
+    async (formats: string[]) => {
+      if (!roundId || exporting) return;
+      setExporting(true);
+      try {
+        await downloadCodebookExport(roundId, formats);
+        showToast("Paquete descargado.", "success");
+        setShowExportModal(false);
+      } catch {
+        showToast("No se pudo exportar el paquete.", "error");
+      } finally {
+        setExporting(false);
+      }
+    },
+    [roundId, exporting, showToast],
+  );
 
   const studyCrumb = studio
     ? {
@@ -423,7 +429,7 @@ export default function ReportView() {
               Libro de Códigos listo
             </p>
             <p className="text-xs text-p-text-muted leading-relaxed max-w-lg">
-              Incluye Excel del Libro de Códigos y 2 archivos MDD (.txt).{" "}
+              Excel, SQL, OnNextCase y MDD disponibles para exportar.{" "}
               {formatCount(report?.verbatims_total ?? 0)} registros ·{" "}
               {report?.codes.length ?? 0} {typeLabel}
             </p>
@@ -432,17 +438,20 @@ export default function ReportView() {
         <button
           type="button"
           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-p-text hover:bg-p-text/90 transition-colors shrink-0 disabled:opacity-50"
-          disabled={exporting}
-          onClick={() => void handleExport()}
+          onClick={() => setShowExportModal(true)}
         >
-          {exporting ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Download className="w-4 h-4" />
-          )}
+          <Download className="w-4 h-4" />
           Exportar ZIP
         </button>
       </div>
+
+      {showExportModal && (
+        <ExportModal
+          exporting={exporting}
+          onCancel={() => !exporting && setShowExportModal(false)}
+          onConfirm={(formats) => void handleExport(formats)}
+        />
+      )}
     </div>
   );
 }

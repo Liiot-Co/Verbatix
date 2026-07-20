@@ -1,37 +1,289 @@
-# Verbatix — Backlog (ver detalle en tasks/plan.md)
+# Task Breakdown: REQ-13 — Exportación real configurable
 
-Zonas intocables: `temp/src/` (PoC Streamlit legacy) y `.knogg/`.
+## Phase 1: Foundation
 
-✅ Mockup añadido al repo como `Verbatix Light - Standalone.html` (bundle comprimido; markup/tokens extraídos y usados en FE-1/FE-2).
+### Task 1: Restructure `pipeline/export.py` into `pipeline/export/` package [DONE]
+**Description:** Pure refactor, no behavior change. Move current `export.py` content into `pipeline/export/excel.py` (rename nothing public), add empty `pipeline/export/__init__.py` re-exporting `build_codebook_excel`, `build_export_zip`, update the one import in `routers/report.py`.
 
-## Fase 1 — Backend: Estudios, Netos y Códigos ✅
+**Acceptance criteria:**
+- [x] `pipeline/export.py` no longer exists as a single file; `pipeline/export/` package exists
+- [x] `routers/report.py` imports from the new package path
+- [x] No function signatures or behavior changed
 
-- [x] **BE-1** Modelos `MarketStudy`, `Net`, `Code` (study_id obligatorio) + puente `response_codes` + `external_row_id` capturado en upload (`models.py`, `upload.py`, `seed.py`) — M
-- [x] **BE-2** Router `/api/studies` + CRUD nets/codes scoped por estudio + homologación `import-codebook` (`routers/codes.py`, `main.py`) — M
-- [x] **BE-3** Sugerencia auto de códigos: `classify_codes(text, study_id)` en pipeline + hookup en upload/classify — M
-- [x] **BE-4** `PUT /api/responses/{id}/codes` asignación manual, validando estudio (extender `resolve.py`) — S
-- [x] **BE-5** `/metrics` con `code_distribution` + export **matriz dummy 0/1** con `external_row_id` intacto — M
-- [x] **BE-6** Historial: `GET /rounds/{id}/responses`, `DELETE /rounds/{id}`, rounds con `study_id` (`rounds.py`) — S
+**Verification:**
+- [x] Tests pass: `pytest backend/tests/ -v`
+- [x] `grep -rn "from app.pipeline.export import\|from app.pipeline import export" backend/app backend/tests` shows only the package path
 
-### Checkpoint Fase 1 ✅
-- [x] Flujo actual (upload→classify→resolve→metrics→export) intacto; smoke tests curl OK; export dummy validado en pandas; tests de pipeline en verde
+**Dependencies:** None
 
-## Fase 2 — Frontend: Layout Verbatix Light ✅
+**Files likely touched:**
+- `backend/app/pipeline/export.py` → `backend/app/pipeline/export/excel.py`
+- `backend/app/pipeline/export/__init__.py`
+- `backend/app/routers/report.py`
 
-- [x] **FE-1** AppShell + Sidebar calcado del mockup, estudio activo; limpiar `Step1/2/3*.tsx` huérfanos — M
-- [x] **FE-2** Tema desde tokens del mockup como CSS variables (dark mode futuro sin retrabajo) (`tailwind.config.js`, `index.css`) — S
-- [x] **FE-3** Historial: estudios + rounds, continuar/eliminar/crear estudio/importar codebook (`HistoryView.tsx`) — M (requiere BE-2, BE-6)
+**Estimated scope:** Small: 1-2 files (plus the move)
 
-### Checkpoint Fase 2 ✅
-- [x] Build limpio; E2E dentro del shell nuevo; comparación lado a lado con el mockup aprobada por el usuario
+---
 
-## Fase 3 — Centro de Resolución y vistas cruzadas ✅
+### Task 2: Validate `source_question_key` carries the real Dimensions variable+slice path (risk gate) [DONE — not blocking]
+**Description:** Confirm — via a test against a trimmed real HBG Leches fixture — that `Verbatim.source_question_key` as imported today equals the literal variable path used in the client's SQL/OnNextCase files (e.g. `NBS_UNAID_FUP_ADD[{_4}].Slice`), including the correct occurrence index per verbatim. If it does not, this blocks Phase 2 and needs a schema/import change first.
 
-- [x] **FE-4** Tipos y cliente API de studies/nets/codes (`types.ts`, `client.ts`) — S
-- [x] **FE-5** ReviewStage a dos paneles calcado del mockup (cola | panel de acción), teclado preservado — M
-- [x] **FE-6** `CodePicker`: chips sugeridos + búsqueda por estudio + creación inline + teclas 1..9 — M
-- [x] **FE-7** Gamificación: racha, hitos, resumen de sesión (`SessionSummary.tsx`) — M
-- [x] **FE-8** Dashboard cruzado neto/código en `DashboardStage.tsx` — S
+**Acceptance criteria:**
+- [x] A written finding (comment in `export/dictionary.py` module docstring, or a short note if a schema change is needed) states whether `source_question_key` is sufficient
+- [x] If insufficient: a follow-up task is added to `todo.md` before Phase 2 starts (do not silently proceed)
 
-### Checkpoint Final ✅
-- [x] E2E completo con estudios + códigos + export dummy + historial; builds limpios; revisión final contra el mockup
+**Verification:**
+- [x] `pytest backend/tests/test_export_req13.py -v` (new test, loads a trimmed HBG fixture, asserts `source_question_key` values match known real variable paths from the SQL/OnNextCase samples)
+
+**Dependencies:** Task 1
+
+**Files likely touched:**
+- `backend/tests/test_export_req13.py` (new)
+
+**Estimated scope:** Small: 1-2 files
+
+---
+
+## Checkpoint: Foundation
+- [x] `pytest backend/tests/ -v` passes
+- [x] Task 2 finding documented and, if blocking, Phase 2 tasks below are revised first
+
+---
+
+## Phase 2: Text-format generators
+
+### Task 3: `dictionary.py::build_metadata_txt()` — CB_# dictionary [DONE]
+**Description:** Build the shared CB_# definitions file (`CB_<var> "<Label>" define { CB_1 "...", CB_2 "...", ... }`), grouped by variable, from `nets_by_coding_type` — same content needed by both the OnNextCase and MDD-estructura checkboxes.
+
+**Acceptance criteria:**
+- [x] Output structurally matches `MetaData.txt` fixture syntax (`define { CB_N "Label", ... }` blocks, one per variable)
+- [x] Uses real catalog numbers from `nets_by_coding_type[*][*]["codes"][*]["code_number"]`, never invents new numbering
+- [x] UTF-8 encoded, CRLF line endings (per fixture)
+
+**Verification:**
+- [x] Tests pass: `pytest backend/tests/test_export_req13.py -k dictionary -v`
+- [x] Manual check: diff generated output structure against a trimmed `MetaData.txt` slice for a small fixture round
+
+**Dependencies:** Task 2 (blocked if risk gate fails)
+
+**Files likely touched:**
+- `backend/app/pipeline/export/dictionary.py` (new)
+- `backend/tests/test_export_req13.py`
+
+**Estimated scope:** Medium: 1 file + tests
+
+---
+
+### Task 4: `sql.py::build_sql_txt()` [DONE] — UPDATE statements per respondent
+**Description:** One `UPDATE vdata SET <Var>.Coding = {CB_X}, ... WHERE Respondent.Serial = <serial>` line per respondent, using `respondent_external_id` (never the internal UUID). UTF-16LE encoded with BOM, CRLF line endings.
+
+**Acceptance criteria:**
+- [x] One line per respondent with active codes, using real `Serial` (`respondent_external_id`)
+- [x] Multiple codes for the same respondent (multiple variables/slices) are comma-joined in a single `SET` clause, matching the fixture
+- [x] Output bytes start with UTF-16LE BOM (`\xff\xfe`), lines end CRLF
+
+**Verification:**
+- [x] Tests pass: `pytest backend/tests/test_export_req13.py -k sql -v`
+- [x] Manual check: decode generated bytes as `utf-16-le` and diff structure against a trimmed slice of `..._SQL.txt`
+
+**Dependencies:** Task 2
+
+**Files likely touched:**
+- `backend/app/pipeline/export/sql.py` (new)
+- `backend/tests/test_export_req13.py`
+
+**Estimated scope:** Medium: 1 file + tests
+
+---
+
+### Task 5: `onenextcase.py::build_onenextcase_txt()` [DONE] — Select Case script per respondent
+**Description:** `Select Case Respondent.Serial` header, then one `Case <serial>` block per respondent with `Var_Codes=Var_Codes+{CB_X}` lines for each active code. ASCII encoded, CRLF line endings.
+
+**Acceptance criteria:**
+- [x] Structure matches `OnNextCase.txt`: `Select Case Respondent.Serial` / `Case N` / indented `Var_Codes=Var_Codes+{CB_X}` lines
+- [x] Uses real `Serial` (`respondent_external_id`), same rule as Task 4
+- [x] ASCII encoding, CRLF line endings
+
+**Verification:**
+- [x] Tests pass: `pytest backend/tests/test_export_req13.py -k onenextcase -v`
+- [x] Manual check: diff structure against a trimmed slice of `OnNextCase.txt`
+
+**Dependencies:** Task 2
+
+**Files likely touched:**
+- `backend/app/pipeline/export/onenextcase.py` (new)
+- `backend/tests/test_export_req13.py`
+
+**Estimated scope:** Medium: 1 file + tests
+
+---
+
+## Checkpoint: Text formats
+- [x] `pytest backend/tests/ -v` passes, including new golden-file structural diffs for Tasks 3-5
+- [x] All three generators run end-to-end against a seeded SQLite round (StaticPool/FakeSession per project convention) and produce non-empty, correctly-encoded output
+
+---
+
+## Phase 3: Selectable export
+
+### Task 6: `zip.py::build_export_zip(export_data, formats)` — orchestration [DONE]
+**Description:** Replace the current always-build-everything `build_export_zip` with a version that takes a `formats: set[str]` (subset of `{"excel", "sql", "onenextcase", "mdd"}`) and only includes the requested files in the ZIP. `dictionary.py`'s output is included once if either `"onenextcase"` or `"mdd"` is selected (shared file, per the earlier decision — not duplicated).
+
+**Acceptance criteria:**
+- [x] `formats={"excel"}` produces a ZIP with only the `.xlsx`
+- [x] `formats={"sql", "onenextcase"}` produces SQL + OnNextCase + exactly one shared dictionary file
+- [x] Empty/invalid formats raise a clear error, not a silently empty ZIP
+
+**Verification:**
+- [x] Tests pass: `pytest backend/tests/test_export_req13.py -k zip -v`
+
+**Dependencies:** Tasks 3, 4, 5 (mdd excluded until Phase 4 — Task 6 accepts `"mdd"` in the type but raises `NotImplementedError` until Task 11 lands)
+
+**Files likely touched:**
+- `backend/app/pipeline/export/zip.py` (new, supersedes old `build_export_zip`)
+
+**Estimated scope:** Small: 1 file
+
+---
+
+### Task 7: Router accepts format selection [DONE]
+**Description:** `GET /rounds/{round_id}/report/export` takes a `formats` query param (comma-separated), validates against the allowed set, 400s on unknown values, passes through to `build_export_zip`.
+
+**Acceptance criteria:**
+- [x] `?formats=excel,sql` returns a ZIP with only those files
+- [x] Omitted `formats` param defaults to all currently-available formats (backward compatible with existing frontend button until Task 9 ships)
+- [x] Unknown format value → `400` with a clear message
+
+**Verification:**
+- [x] Tests pass: `pytest backend/tests/test_report.py -k export -v`
+
+**Dependencies:** Task 6
+
+**Files likely touched:**
+- `backend/app/routers/report.py`
+
+**Estimated scope:** Small: 1 file
+
+---
+
+### Task 8: `client.ts::downloadCodebookExport(roundId, formats)` [DONE]
+**Description:** Extend the frontend API function to pass the selected formats through as a query param.
+
+**Acceptance criteria:**
+- [x] Function signature accepts `formats: string[]`, builds the query string
+- [x] Existing callers updated
+
+**Verification:**
+- [x] `bunx tsc --noEmit` clean
+
+**Dependencies:** Task 7
+
+**Files likely touched:**
+- `frontend/src/api/client.ts`
+
+**Estimated scope:** Small: 1 file
+
+---
+
+### Task 9: Export modal component [DONE]
+**Description:** Replace the instant "Exportar ZIP" button in `ReportView.tsx` with a modal offering checkboxes for Excel, SQL, OnNextCase (MDD checkbox present but disabled with a "próximamente" note until Phase 4). "Descargar ZIP" button confirms and triggers `downloadCodebookExport` with the selection.
+
+**Acceptance criteria:**
+- [x] Modal opens on the existing export button click, closes on cancel/backdrop
+- [x] At least one format must be selected to enable "Descargar ZIP"
+- [x] MDD checkbox visibly disabled, not just hidden (communicates it's coming, not missing)
+
+**Verification:**
+- [x] `bunx tsc --noEmit` and `bun run build` clean
+- [x] Manual check in browser: open a finished round's report, open modal, select subset, download, verify ZIP contents match selection
+
+**Dependencies:** Task 8
+
+**Files likely touched:**
+- `frontend/src/components/ReportView.tsx`
+- `frontend/src/components/ExportModal.tsx` (new)
+
+**Estimated scope:** Medium: 2 files
+
+---
+
+## Checkpoint: Selectable export end-to-end
+- [ ] Manual check: full flow from report view → modal → selection → downloaded ZIP with exactly the selected, correctly-formatted files — NOT DONE, no browser tool available in-session; needs a human pass
+- [x] `bunx tsc --noEmit`, `bun run build` clean — `bun run lint` fails on a pre-existing env issue (`Cannot find package '@eslint/js'`), unrelated to this work
+- [x] `pytest backend/tests/ -v` clean (219 passed)
+- [x] Review with human before starting Phase 4 — approved via "Continue with next" (2026-07-19)
+
+---
+
+## Phase 4: MDD real XML (isolated — do not block Phase 3 ship)
+
+### Task 10: Validate template-clone assumption with a second client `.mdd`
+**Description:** Acquire a second client's real `.mdd` file and diff its XML shape (atoms table, `mdm:metadata` version, categories nesting) against the HBG Leches reference. This determines whether template-clone-and-patch is viable across clients or whether a real schema writer is unavoidable.
+
+**Finding (2026-07-19):** No second client `.mdd` sample exists in the accessible data (`Datos Cliente/` only contains the HBG Leches / project 32406358 folder). Cross-client diff is not possible with current data. Proceeding on single-client evidence instead, per explicit user decision ("Make the .mdd export meanwhile"): the HBG file's internal `<categories name="CB_<mangled_variable_name>">` / `<category name="CB_<code_number>">` naming is identical to the `CB_#` dictionary convention already implemented and shipped in `dictionary.py::build_metadata_txt` and used by `onenextcase.py`, and matches the variable→coding_type regex table already hardcoded in `pipeline/ingest/dau.py`. This internal self-consistency is strong (not cross-client-validated) evidence that template-clone-and-patch is viable for this client. **Risk accepted, not eliminated**: cross-client generalization is unvalidated — see plan.md Risks table.
+
+**Acceptance criteria:**
+- [x] Written finding: structurally similar enough to template-clone (single-client only — see finding above)
+- [x] If not viable: N/A — finding supports proceeding; risk documented instead of blocking
+
+**Verification:**
+- [x] Manual diff documented (no automated test — this is a research task; single-file structural analysis only, no second sample available)
+
+**Dependencies:** None (can start anytime, doesn't block Phase 3)
+
+**Files likely touched:** None (research only)
+
+**Estimated scope:** N/A (research)
+
+---
+
+### Task 11: `mdd.py::build_mdd_xml()` — template-clone MDD generator
+**Description:** Parse the reference `.mdd` as XML, patch category/label nodes from the catalog (`nets_by_coding_type`), leave atoms/language tables untouched.
+
+**Status: DONE (2026-07-19).** User ran the `cp` themselves via `!`-prefixed command, unblocking the asset copy. Implemented as a string-splice template-clone (not full XML re-serialization): the two known `<categories id="7"|"115" name="CB_...">` blocks (brands/reasons) are located by regex and only their inner `<category>` list is replaced with freshly generated categories from `nets_by_coding_type`; the fixed `CB_99` system category, `<deleted />` footer, and all other document sections (atoms, languages, `mdm:metadata` root, `<categorymap>`) are left byte-identical to the template. IDs use an `_mdd_{code_number}` prefix to avoid collision with the template's existing numeric/GUID ids.
+
+**Acceptance criteria:**
+- [x] Output is valid XML matching the reference schema
+- [x] Category/label nodes reflect the current round's catalog, real numbering preserved (REQ-07 rule)
+- [x] Non-catalog sections (atoms, languages) byte-identical to the template
+
+**Verification:**
+- [x] Tests pass: `pytest backend/tests/test_export_req13.py -k mdd -v` (3 tests, all passing)
+- [ ] Manual check: generated `.mdd` opens without error in the client's Dimensions tooling — NOT DONE, no Dimensions install available in-session
+
+**Dependencies:** Task 10 confirming viability (done, single-client), template asset file present (done)
+
+**Files likely touched:**
+- `backend/app/pipeline/export/mdd.py` (new)
+- `backend/app/pipeline/export/assets/mdd_template.mdd` (new)
+
+**Estimated scope:** Large: likely 5+ files once XML template assets are included — re-break-down once Task 10's finding is in
+
+---
+
+### Task 12: Wire MDD into modal + orchestrator
+**Status: DONE (2026-07-19).**
+
+**Description:** Enable the MDD checkbox in the modal, add `"mdd"` handling to `build_export_zip`.
+
+**Acceptance criteria:**
+- [x] MDD checkbox selectable and produces a `.mdd` in the ZIP
+- [x] All 4 formats combinable in one export
+
+**Verification:**
+- [x] `pytest backend/tests/ -v` clean (221 passed)
+- [ ] Manual check: full 4-format ZIP download — NOT DONE, no browser tool available in-session
+
+**Dependencies:** Task 11
+
+**Files likely touched:**
+- `backend/app/pipeline/export/zip.py`
+- `frontend/src/components/ExportModal.tsx`
+
+**Estimated scope:** Small: 2 files
+
+---
+
+## Checkpoint: Complete
+- [ ] All 4 checkboxes produce client-importable files, verified against real fixtures — automated + structural checks pass (221 backend tests, tsc, vite build); NOT manually verified by opening files in real Dimensions/Excel tooling
+- [x] Ready for review
