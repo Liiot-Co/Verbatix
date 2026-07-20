@@ -21,7 +21,7 @@ the mangle-and-suffix transform documented above.
 """
 import os
 
-from app.pipeline.export import build_metadata_txt, build_sql_txt, mangle_variable
+from app.pipeline.export import build_metadata_txt, build_onenextcase_txt, build_sql_txt, mangle_variable
 from app.pipeline.ingest import dau
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.dau")
@@ -142,3 +142,33 @@ def test_build_sql_txt_never_invents_codes():
     }
     assert "CB_2" in build_sql_txt(export_data)
     assert build_sql_txt({"verbatims": []}) == ""
+
+
+def test_build_onenextcase_txt_matches_real_fixture_syntax():
+    """Structurally matches the real OnNextCase.txt: Select Case block, one
+    tab-indented Case per respondent, two-tab-indented `<var>_Codes=...`
+    lines using the mangled variable name (confirmed line-for-line against
+    the real Case 3 / VYK[1] entry)."""
+    export_data = {
+        "verbatims": [
+            {"respondent_external_id": "3", "question_key": "VYK[1].Slice",
+             "codes": [{"code_number": 2}]},
+            {"respondent_external_id": "5", "question_key": "NBS_UNAID_FUP_ADD[{_4}].Slice",
+             "codes": [{"code_number": 16}]},
+        ],
+    }
+    out = build_onenextcase_txt(export_data)
+
+    expected = (
+        "Select Case Respondent.Serial\r\n"
+        "\tCase 3\r\n"
+        "\t\tVYK_1__Slice_Codes=VYK_1__Slice_Codes+{CB_2}\r\n"
+        "\tCase 5\r\n"
+        "\t\tNBS_UNAID_FUP_ADD___4___Slice_Codes=NBS_UNAID_FUP_ADD___4___Slice_Codes+{CB_16}\r\n"
+        "End Select\r\n"
+    )
+    assert out == expected
+
+
+def test_build_onenextcase_txt_empty():
+    assert build_onenextcase_txt({"verbatims": []}) == "Select Case Respondent.Serial\r\nEnd Select\r\n"

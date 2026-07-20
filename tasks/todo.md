@@ -96,7 +96,7 @@
 
 ---
 
-### Task 5: `onenextcase.py::build_onenextcase_txt()` — Select Case script per respondent
+### Task 5: `onenextcase.py::build_onenextcase_txt()` [DONE] — Select Case script per respondent
 **Description:** `Select Case Respondent.Serial` header, then one `Case <serial>` block per respondent with `Var_Codes=Var_Codes+{CB_X}` lines for each active code. ASCII encoded, CRLF line endings.
 
 **Acceptance criteria:**

@@ -1,6 +1,7 @@
 from .dictionary import build_metadata_txt, mangle_variable
 from .excel import build_codebook_excel
 from .mdd import build_mdd_txt
+from .onenextcase import build_onenextcase_txt
 from .sql import build_sql_txt
 from .zip import build_export_zip
 
@@ -11,4 +12,5 @@ __all__ = [
     "build_metadata_txt",
     "mangle_variable",
     "build_sql_txt",
+    "build_onenextcase_txt",
 ]
