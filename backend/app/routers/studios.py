@@ -140,32 +140,29 @@ def _create_catalog_for_origin(
     )
 
 
-@router.post("/projects/{project_id}/rounds", status_code=201)
-def create_round(
-    project_id: uuid.UUID,
-    payload: RoundIn,
-    db: Session = Depends(get_db),
-    user: CurrentUser = Depends(current_user),
-):
-    """Crea la ronda y solo los subproyectos pedidos en `catalog_origins`
-    (Marcas, Razones o ambos). Cada uno lleva su origen de catálogo (REQ-07:
-    `scratch` / `inherited_round` / `imported_client_catalog`)."""
-    require_project(db, project_id, user["id"])
-    require_capability(db, user["id"], "rounds.manage")
-
-    selections = payload.catalog_origins or {
-        coding_type: CatalogOriginIn(origin="scratch")
-        for coding_type in CODING_TYPES
-    }
+def _validate_catalog_origins(selections: dict[str, CatalogOriginIn]) -> list[str]:
     selected_types = [ct for ct in CODING_TYPES if ct in selections]
     unknown = set(selections) - set(CODING_TYPES)
     if unknown:
         raise HTTPException(400, f"coding_type inválido: {', '.join(sorted(unknown))}")
     if not selected_types:
         raise HTTPException(400, "Elige al menos Marcas, Razones o ambas")
+    return selected_types
+
+
+def _create_subprojects(
+    db: Session,
+    project_id: uuid.UUID,
+    round_id: uuid.UUID,
+    selections: dict[str, CatalogOriginIn],
+    selected_types: list[str],
+    min_mentions_threshold: int,
+    audit_percentage: float,
+    reuse_catalogs_from_round_id: uuid.UUID | None,
+) -> tuple[dict[str, dict], uuid.UUID | None]:
     reasons_source_round_id = None
     reused_catalogs: dict[str, dict] = {}
-    if payload.reuse_catalogs_from_round_id:
+    if reuse_catalogs_from_round_id:
         rows = db.execute(
             text("""
                 select sp.coding_type, sp.codebook_id, cb.origin
@@ -175,7 +172,7 @@ def create_round(
                  where r.id = :source and r.project_id = :project
             """),
             {
-                "source": payload.reuse_catalogs_from_round_id,
+                "source": reuse_catalogs_from_round_id,
                 "project": project_id,
             },
         ).mappings().all()
@@ -186,28 +183,6 @@ def create_round(
                 400,
                 "La ronda origen no tiene catálogo para: " + ", ".join(missing),
             )
-
-    round_id = uuid.uuid4()
-    db.execute(
-        text("""
-            insert into rounds (id, project_id, category_id, name, round_number,
-                                min_mentions_threshold, audit_percentage, origin_mode,
-                                source_round_id, created_by)
-            values (:id, :p, :cat, :n, :num, :thr, :pct, :om, :src, :u)
-        """),
-        {
-            "id": round_id,
-            "p": project_id,
-            "cat": payload.category_id,
-            "n": payload.name,
-            "num": payload.round_number,
-            "thr": payload.min_mentions_threshold,
-            "pct": payload.audit_percentage,
-            "om": "from_scratch",
-            "src": None,
-            "u": user["id"],
-        },
-    )
 
     subprojects = {}
     for coding_type in selected_types:
@@ -250,8 +225,8 @@ def create_round(
                     else "from_scratch"
                 ),
                 "source": selection.source_subproject_id,
-                "threshold": payload.min_mentions_threshold,
-                "audit": payload.audit_percentage,
+                "threshold": min_mentions_threshold,
+                "audit": audit_percentage,
             },
         )
         subprojects[coding_type] = {
@@ -260,6 +235,55 @@ def create_round(
             "inherited_codes": inherited["codes"], "inherited_aliases": inherited["aliases"],
             "inherited_nets": inherited["nets"],
         }
+    return subprojects, reasons_source_round_id
+
+
+@router.post("/projects/{project_id}/rounds", status_code=201)
+def create_round(
+    project_id: uuid.UUID,
+    payload: RoundIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Crea la ronda y solo los subproyectos pedidos en `catalog_origins`
+    (Marcas, Razones o ambos). Cada uno lleva su origen de catálogo (REQ-07:
+    `scratch` / `inherited_round` / `imported_client_catalog`)."""
+    require_project(db, project_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+
+    selections = payload.catalog_origins or {
+        coding_type: CatalogOriginIn(origin="scratch")
+        for coding_type in CODING_TYPES
+    }
+    selected_types = _validate_catalog_origins(selections)
+
+    round_id = uuid.uuid4()
+    db.execute(
+        text("""
+            insert into rounds (id, project_id, category_id, name, round_number,
+                                min_mentions_threshold, audit_percentage, origin_mode,
+                                source_round_id, created_by)
+            values (:id, :p, :cat, :n, :num, :thr, :pct, :om, :src, :u)
+        """),
+        {
+            "id": round_id,
+            "p": project_id,
+            "cat": payload.category_id,
+            "n": payload.name,
+            "num": payload.round_number,
+            "thr": payload.min_mentions_threshold,
+            "pct": payload.audit_percentage,
+            "om": "from_scratch",
+            "src": None,
+            "u": user["id"],
+        },
+    )
+
+    subprojects, reasons_source_round_id = _create_subprojects(
+        db, project_id, round_id, selections, selected_types,
+        payload.min_mentions_threshold, payload.audit_percentage,
+        payload.reuse_catalogs_from_round_id,
+    )
 
     if reasons_source_round_id:
         db.execute(
@@ -282,6 +306,59 @@ def create_round(
             str(reasons_source_round_id) if reasons_source_round_id else None
         ),
         "status": "created",
+        "subprojects": list(subprojects.values()),
+    }
+
+
+class SubprojectsIn(BaseModel):
+    catalog_origins: dict[str, CatalogOriginIn]
+    reuse_catalogs_from_round_id: uuid.UUID | None = None
+
+
+@router.post("/rounds/{round_id}/subprojects", status_code=201)
+def create_round_subprojects(
+    round_id: uuid.UUID,
+    payload: SubprojectsIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Crea los subproyectos (Marcas/Razones) de una ronda ya existente,
+    paso 2 del wizard tras elegir el origen de catálogo (REQ-07)."""
+    round_row = require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    project_id = round_row["project_id"]
+
+    selected_types = _validate_catalog_origins(payload.catalog_origins)
+    existing_types = set(db.execute(
+        text("select coding_type from subprojects where round_id = :id"),
+        {"id": round_id},
+    ).scalars().all())
+    dupes = set(selected_types) & existing_types
+    if dupes:
+        raise HTTPException(
+            400, "Ya existen subproyectos para: " + ", ".join(sorted(dupes))
+        )
+
+    subprojects, reasons_source_round_id = _create_subprojects(
+        db, project_id, round_id, payload.catalog_origins, selected_types,
+        round_row["min_mentions_threshold"], round_row["audit_percentage"],
+        payload.reuse_catalogs_from_round_id,
+    )
+
+    if reasons_source_round_id:
+        db.execute(
+            text("""
+                update rounds
+                   set origin_mode = 'homologated', source_round_id = :source
+                 where id = :id
+            """),
+            {"source": reasons_source_round_id, "id": round_id},
+        )
+
+    db.commit()
+
+    return {
+        "round_id": str(round_id),
         "subprojects": list(subprojects.values()),
     }
 
