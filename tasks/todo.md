@@ -74,7 +74,7 @@
 
 ---
 
-### Task 4: `sql.py::build_sql_txt()` — UPDATE statements per respondent
+### Task 4: `sql.py::build_sql_txt()` [DONE] — UPDATE statements per respondent
 **Description:** One `UPDATE vdata SET <Var>.Coding = {CB_X}, ... WHERE Respondent.Serial = <serial>` line per respondent, using `respondent_external_id` (never the internal UUID). UTF-16LE encoded with BOM, CRLF line endings.
 
 **Acceptance criteria:**

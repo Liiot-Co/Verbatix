@@ -21,7 +21,7 @@ the mangle-and-suffix transform documented above.
 """
 import os
 
-from app.pipeline.export import build_metadata_txt, mangle_variable
+from app.pipeline.export import build_metadata_txt, build_sql_txt, mangle_variable
 from app.pipeline.ingest import dau
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.dau")
@@ -103,3 +103,42 @@ def test_build_metadata_txt_uses_real_catalog_numbers_only():
 
 def test_mangle_variable_matches_onenextcase_transform():
     assert mangle_variable("NBS_UNAID_FUP_ADD[{_4}].Slice") == "NBS_UNAID_FUP_ADD___4___Slice"
+
+
+def test_build_sql_txt_matches_real_fixture_line():
+    """Structurally matches the real ..._SQL.txt: one UPDATE vdata per
+    respondent combining every coded variable, `<path>.Coding = {CB_N}`
+    clauses (sorted by path for determinism — the vendor tool's own
+    ordering is internal and not reproducible), CRLF, no trailing comma."""
+    export_data = {
+        "verbatims": [
+            {"respondent_external_id": "3", "question_key": "NBS_UNAID_FUP_ADD[{_4}].Slice",
+             "codes": [{"code_number": 4}]},
+            {"respondent_external_id": "3", "question_key": "VYK[1].Slice",
+             "codes": [{"code_number": 2}]},
+            {"respondent_external_id": "3", "question_key": "NBS_UNAIDBlock[{_1}].NBS_UNAID",
+             "codes": [{"code_number": 4}]},
+            {"respondent_external_id": "5", "question_key": "VYK[1].Slice",
+             "codes": [{"code_number": 2}]},
+        ],
+    }
+    out = build_sql_txt(export_data)
+
+    expected = (
+        "UPDATE vdata SET NBS_UNAIDBlock[{_1}].NBS_UNAID.Coding = {CB_4}, "
+        "NBS_UNAID_FUP_ADD[{_4}].Slice.Coding = {CB_4}, "
+        "VYK[1].Slice.Coding = {CB_2} WHERE Respondent.Serial = 3\r\n"
+        "UPDATE vdata SET VYK[1].Slice.Coding = {CB_2} WHERE Respondent.Serial = 5\r\n"
+    )
+    assert out == expected
+
+
+def test_build_sql_txt_never_invents_codes():
+    export_data = {
+        "verbatims": [
+            {"respondent_external_id": "3", "question_key": "VYK[1].Slice",
+             "codes": [{"code_number": 2}]},
+        ],
+    }
+    assert "CB_2" in build_sql_txt(export_data)
+    assert build_sql_txt({"verbatims": []}) == ""
