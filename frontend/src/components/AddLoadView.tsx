@@ -15,10 +15,12 @@ import {
 import {
   classifyQuestion,
   getRound,
+  getRoundProfile,
   importFile,
   previewFields,
   resolveImportFlag,
   uploadFile,
+  uploadRoundProfile,
 } from "@/api/client";
 import type {
   CodingType,
@@ -27,6 +29,9 @@ import type {
   DuplicateFlag,
   FieldPreview,
   FieldSelection,
+  ProfileCandidateFlag,
+  ProfileReviewSummary,
+  RoundProfileSummary,
   RoundStatus,
   SerialCollision,
   UploadedFile,
@@ -35,11 +40,13 @@ import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb from "./Breadcrumb";
 import FieldSelectionTable, { initialFieldSelections } from "./FieldSelectionTable";
+import ProfileReviewPanel from "./ProfileReviewPanel";
 import RoundCodingControls, {
   detectedMaxFromFields,
   hasPendingRoundMentionDecision,
   type RoundCodingControlsValue,
 } from "./RoundCodingControls";
+import { guessExcelColumnMap } from "@/lib/excelColumns";
 
 type Step = "upload" | "confirm" | "review";
 
@@ -75,6 +82,10 @@ export default function AddLoadView() {
   const [questionTypes, setQuestionTypes] = useState<Record<string, CodingType>>({});
 
   const [duplicates, setDuplicates] = useState<DuplicateFlag[]>([]);
+  const [profileCandidates, setProfileCandidates] = useState<ProfileCandidateFlag[]>([]);
+  const [profileSummary, setProfileSummary] = useState<ProfileReviewSummary | null>(null);
+  const [roundProfile, setRoundProfile] = useState<RoundProfileSummary | null>(null);
+  const [profileUploading, setProfileUploading] = useState(false);
   const [serialCollisions, setSerialCollisions] = useState<SerialCollision[]>([]);
   const [importedCount, setImportedCount] = useState(0);
   const [editNotes, setEditNotes] = useState<Record<string, string>>({});
@@ -85,6 +96,9 @@ export default function AddLoadView() {
     getRound(roundId)
       .then(setRound)
       .catch(() => showToast("No se pudo cargar la ronda.", "error"));
+    getRoundProfile(roundId)
+      .then(setRoundProfile)
+      .catch(() => setRoundProfile(null));
   }, [roundId, showToast]);
 
   const onDrop = useCallback(
@@ -96,7 +110,14 @@ export default function AddLoadView() {
         setUploaded(result);
         setSourceLabel(result.suggested_source_label ?? file.name);
         const verbatimGuess = result.detected_sheets.find((s) => s.guessed_as === "verbatims");
-        setVerbatimsSheet(verbatimGuess?.name ?? result.detected_sheets[0]?.name ?? "");
+        const sheetName = verbatimGuess?.name ?? result.detected_sheets[0]?.name ?? "";
+        setVerbatimsSheet(sheetName);
+        if (result.file_type !== "dau") {
+          const sheet = result.detected_sheets.find((s) => s.name === sheetName);
+          setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
+        } else {
+          setColumnMap({});
+        }
         setStep("confirm");
         playTick();
       } catch {
@@ -133,7 +154,7 @@ export default function AddLoadView() {
   const canImport = !!(
     uploaded
     && verbatimsSheet
-    && (isDau || columnMap.verbatim)
+    && (isDau || (Boolean(columnMap.verbatim) && Boolean(columnMap.respondent_id)))
     && (!hasPendingRoundMentionDecision(roundControls, detectedMaxMentions, activeCodingTypes))
   );
   const showCodingType = (round?.subprojects.length ?? 0) > 1;
@@ -174,9 +195,36 @@ export default function AddLoadView() {
   }, [roundId, uploaded?.file_id, verbatimsSheet, isDau, round?.id]); // round por id a propósito
 
   const pendingFlags = useMemo(
-    () => duplicates.filter((d) => d.status === "pending").length,
-    [duplicates]
+    () =>
+      duplicates.filter((d) => d.status === "pending").length
+      + profileCandidates.filter((c) => c.status === "pending").length,
+    [duplicates, profileCandidates]
   );
+
+  const handleProfileUpload = useCallback(async (file: File) => {
+    if (!roundId) return;
+    setProfileUploading(true);
+    try {
+      const result = await uploadRoundProfile(roundId, file);
+      setRoundProfile({
+        profile_file_id: result.profile_file_id,
+        original_filename: result.original_filename,
+        total_rows: result.total_rows,
+        expected_respondents: result.expected_respondents,
+        created_at: null,
+      });
+      showToast(
+        `Perfil cargado: ${result.expected_respondents} Respondent ID esperados`,
+        "success"
+      );
+      playTick();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "No se pudo leer el perfil.";
+      showToast(message, "error");
+    } finally {
+      setProfileUploading(false);
+    }
+  }, [roundId, showToast]);
 
   const handleImport = useCallback(async () => {
     if (!roundId || !uploaded || !canImport) return;
@@ -210,6 +258,8 @@ export default function AddLoadView() {
       }
       setImportedCount(result.imported.verbatims);
       setDuplicates(result.review.duplicates);
+      setProfileCandidates(result.review.profile_candidates ?? []);
+      setProfileSummary(result.review.profile ?? null);
       setSerialCollisions(result.review.serial_collisions);
       playSuccess();
       if (result.review.pending_flags === 0) {
@@ -222,7 +272,7 @@ export default function AddLoadView() {
       }
       setStep("review");
       showToast(
-        `Importados ${result.imported.verbatims} verbatims · ${result.review.pending_flags} posibles duplicados por revisar.`,
+        `Importados ${result.imported.verbatims} verbatims · ${result.review.pending_flags} pendientes de revisión.`,
         "info"
       );
     } catch {
@@ -254,7 +304,11 @@ export default function AddLoadView() {
   }, [round, pendingQuestions, questionTypes, handleImport, showToast]);
 
   const handleResolve = useCallback(
-    async (flag: DuplicateFlag, action: "keep" | "remove" | "edit") => {
+    async (
+      flag: { flag_id: string },
+      action: "keep" | "remove" | "edit",
+      kind: "duplicate" | "profile" = "duplicate",
+    ) => {
       if (resolvingFlagId) return;
       setResolvingFlagId(flag.flag_id);
       try {
@@ -263,17 +317,23 @@ export default function AddLoadView() {
           action,
           action === "edit" ? editNotes[flag.flag_id] : undefined
         );
-        setDuplicates((current) =>
-          current.map((d) => (d.flag_id === flag.flag_id ? { ...d, status: result.status } : d))
-        );
+        if (kind === "duplicate") {
+          setDuplicates((current) =>
+            current.map((d) => (d.flag_id === flag.flag_id ? { ...d, status: result.status } : d))
+          );
+        } else {
+          setProfileCandidates((current) =>
+            current.map((c) => (c.flag_id === flag.flag_id ? { ...c, status: result.status } : c))
+          );
+        }
         playTick();
         if (result.pending_flags === 0) {
           playSuccess();
-          showToast("Duplicados resueltos · codificando en el motor...", "success");
+          showToast("Revisión resuelta · codificando en el motor...", "success");
           navigate(`/rounds/${roundId}/preliminary`);
         }
       } catch {
-        showToast("No se pudo resolver el duplicado.", "error");
+        showToast("No se pudo resolver la decisión.", "error");
       } finally {
         setResolvingFlagId(null);
       }
@@ -363,6 +423,38 @@ export default function AddLoadView() {
             </p>
           </div>
 
+          <div className="rounded-lg border border-p-border bg-p-bg-subtle p-3 space-y-2">
+            <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+              Perfil de referencia (opcional)
+            </label>
+            <p className="text-[11px] text-p-text-faint">
+              Excel pactado con el cliente (`Respondent ID`). Si no se carga, la importación sigue igual que hoy.
+            </p>
+            {roundProfile ? (
+              <p className="text-xs text-p-text">
+                Activo: <span className="font-medium">{roundProfile.original_filename}</span>
+                {" · "}
+                {roundProfile.expected_respondents} Respondent ID esperados
+              </p>
+            ) : (
+              <p className="text-xs text-p-text-muted">Sin perfil cargado.</p>
+            )}
+            <label className="btn-secondary text-xs py-1.5 px-2.5 inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                className="sr-only"
+                disabled={profileUploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void handleProfileUpload(f);
+                  e.target.value = "";
+                }}
+              />
+              {profileUploading ? "Subiendo…" : "Subir perfil .xlsx"}
+            </label>
+          </div>
+
           <div>
             <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
               Hoja de verbatims
@@ -372,7 +464,12 @@ export default function AddLoadView() {
               value={verbatimsSheet}
               onChange={(e) => {
                 setVerbatimsSheet(e.target.value);
-                setColumnMap({});
+                if (uploaded && uploaded.file_type !== "dau") {
+                  const sheet = uploaded.detected_sheets.find((s) => s.name === e.target.value);
+                  setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
+                } else {
+                  setColumnMap({});
+                }
               }}
             >
               {uploaded.detected_sheets.map((s) => (
@@ -391,22 +488,47 @@ export default function AddLoadView() {
           )}
 
           {!isDau && activeSheet && (
-            <div>
-              <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                Columna de verbatim
-              </label>
-              <select
-                className="input w-full text-sm mt-1"
-                value={columnMap.verbatim ?? ""}
-                onChange={(e) => setColumnMap((m) => ({ ...m, verbatim: e.target.value }))}
-              >
-                <option value="">Elegir columna...</option>
-                {activeSheet.columns.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                  Columna Respondent ID
+                </label>
+                <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
+                  Se cruza con el perfil de referencia
+                </p>
+                <select
+                  className="input w-full text-sm"
+                  value={columnMap.respondent_id ?? ""}
+                  onChange={(e) => setColumnMap((m) => ({ ...m, respondent_id: e.target.value }))}
+                >
+                  <option value="">Elegir columna...</option>
+                  {activeSheet.columns.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                  Columna de verbatim
+                </label>
+                <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
+                  Texto abierto a clasificar
+                </p>
+                <select
+                  className="input w-full text-sm"
+                  value={columnMap.verbatim ?? ""}
+                  onChange={(e) => setColumnMap((m) => ({ ...m, verbatim: e.target.value }))}
+                >
+                  <option value="">Elegir columna...</option>
+                  {activeSheet.columns.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           )}
 
@@ -510,10 +632,24 @@ export default function AddLoadView() {
               <span className="text-p-accent">{sourceLabel || uploaded?.original_filename}</span>
             </div>
             <p className="text-xs text-p-text-muted">
-              El motor arrancará automáticamente cuando resuelvas los posibles duplicados. Nada se borró: cada
-              decisión queda registrada.
+              El motor arrancará automáticamente cuando resuelvas los pendientes de revisión
+              (duplicados y/o candidatos a exclusión por perfil). Nada se borra sin tu aprobación.
             </p>
           </div>
+
+          <ProfileReviewPanel
+            roundId={roundId!}
+            fileId={uploaded!.file_id}
+            summary={profileSummary}
+            candidates={profileCandidates}
+            onCandidatesChange={setProfileCandidates}
+            showToast={showToast}
+            onAllResolved={() => {
+              playSuccess();
+              showToast("Revisión resuelta · codificando en el motor...", "success");
+              navigate(`/rounds/${roundId}/preliminary`);
+            }}
+          />
 
           {/* Sección 1: duplicados reales (mismo realid) — decisión humana */}
           <section className="card p-4 space-y-3">
@@ -522,8 +658,12 @@ export default function AddLoadView() {
               <h2 className="text-sm font-bold uppercase tracking-wide text-p-text">
                 Posibles duplicados reales
               </h2>
-              <span className={pendingFlags > 0 ? "badge-warning" : "badge-success"}>
-                {pendingFlags > 0 ? `${pendingFlags} pendientes` : "Resueltos"}
+              <span className={
+                duplicates.some((d) => d.status === "pending") ? "badge-warning" : "badge-success"
+              }>
+                {duplicates.filter((d) => d.status === "pending").length > 0
+                  ? `${duplicates.filter((d) => d.status === "pending").length} pendientes`
+                  : "Resueltos"}
               </span>
             </div>
             <p className="text-xs text-p-text-muted">
@@ -630,7 +770,7 @@ export default function AddLoadView() {
           {pendingFlags > 0 && (
             <div className="flex items-center gap-2 text-xs text-p-text-muted">
               <AlertCircle className="w-3.5 h-3.5 text-p-warning" />
-              El procesamiento está en pausa hasta resolver los {pendingFlags} duplicados pendientes.
+              El procesamiento está en pausa hasta resolver los {pendingFlags} pendientes de revisión.
             </div>
           )}
         </motion.div>

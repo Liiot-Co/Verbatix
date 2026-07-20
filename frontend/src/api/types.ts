@@ -258,8 +258,25 @@ export interface SerialCollision {
   previous_source_label: string;
 }
 
+export interface ProfileCandidateFlag {
+  flag_id: string;
+  status: "pending" | "approved_keep" | "approved_remove" | "edited" | "resolved";
+  serial: string | null;
+  realid: string | null;
+}
+
+export interface ProfileReviewSummary {
+  has_profile: boolean;
+  expected: number;
+  arrived: number;
+  extra: number;
+  summary?: string;
+}
+
 export interface LoadReviewState {
   duplicates: DuplicateFlag[];
+  profile_candidates?: ProfileCandidateFlag[];
+  profile?: ProfileReviewSummary;
   serial_collisions: SerialCollision[];
   pending_flags: number;
   requires_review: boolean;
@@ -280,8 +297,22 @@ export interface ImportResult {
   warnings: string[];
   // REQ-03: presente cuando la ronda ya tenía otra carga validada.
   is_additional_load: boolean;
-  review: { duplicates: DuplicateFlag[]; serial_collisions: SerialCollision[]; pending_flags: number };
+  review: {
+    duplicates: DuplicateFlag[];
+    profile_candidates?: ProfileCandidateFlag[];
+    profile?: ProfileReviewSummary;
+    serial_collisions: SerialCollision[];
+    pending_flags: number;
+  };
   round_status: string;
+}
+
+export interface RoundProfileSummary {
+  profile_file_id: string;
+  original_filename: string;
+  total_rows: number | null;
+  expected_respondents: number;
+  created_at: string | null;
 }
 
 // GET /rounds/{id}/loads — las cargas de verbatims de la ronda (REQ-03).

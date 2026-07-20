@@ -24,6 +24,7 @@ import type {
   NewCodeInput,
   PreliminarySummary,
   ProcessResult,
+  ProfileCandidateFlag,
   ProjectDetail,
   ProjectListItem,
   ResolutionQueue,
@@ -34,6 +35,7 @@ import type {
   Round,
   RoundLoad,
   RoundCode,
+  RoundProfileSummary,
   RoundReport,
   RoundStatus,
   SignupPayload,
@@ -404,6 +406,69 @@ export async function resolveImportFlag(
     headers: jsonHeaders,
     body: JSON.stringify({ action, note: note ?? null }),
   });
+}
+
+export async function resolveProfileFlagsBulk(
+  flagIds: string[],
+  action: "keep" | "remove"
+): Promise<{
+  resolved: number;
+  status: ProfileCandidateFlag["status"];
+  flag_ids: string[];
+  pending_flags: number;
+  already_resolved?: boolean;
+  processing: { status: "queued" | "blocked_on_review" };
+}> {
+  return request(`/import-review/bulk-resolve`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ flag_ids: flagIds, action }),
+  });
+}
+
+/** Una sola petición: mantener/excluir todos los pendientes de perfil de la carga. */
+export async function resolveAllProfileForFile(
+  roundId: string,
+  fileId: string,
+  action: "keep" | "remove"
+): Promise<{
+  resolved: number;
+  status: ProfileCandidateFlag["status"];
+  flag_ids: string[];
+  pending_flags: number;
+  already_resolved?: boolean;
+  processing: { status: "queued" | "blocked_on_review" };
+}> {
+  return request(`/rounds/${roundId}/files/${fileId}/profile-review/resolve-all`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ action }),
+  });
+}
+
+/* ── REQ-05: perfil de referencia ── */
+
+export async function uploadRoundProfile(
+  roundId: string,
+  file: File,
+  sheet?: string
+): Promise<{
+  profile_file_id: string;
+  original_filename: string;
+  total_rows: number;
+  expected_respondents: number;
+  sheet: string;
+}> {
+  const form = new FormData();
+  form.append("file", file);
+  const qs = sheet ? `?sheet=${encodeURIComponent(sheet)}` : "";
+  return request(`/rounds/${roundId}/profile${qs}`, { method: "POST", body: form });
+}
+
+export async function getRoundProfile(
+  roundId: string
+): Promise<RoundProfileSummary | null> {
+  return request(`/rounds/${roundId}/profile`);
 }
 
 export async function classifyQuestion(
