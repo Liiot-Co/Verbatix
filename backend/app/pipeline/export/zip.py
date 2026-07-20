@@ -4,6 +4,7 @@ import zipfile
 
 from .dictionary import build_metadata_txt
 from .excel import build_codebook_excel
+from .mdd import build_mdd_xml
 from .onenextcase import build_onenextcase_txt
 from .sql import build_sql_txt
 
@@ -31,7 +32,7 @@ def build_export_zip(export_data: dict, formats: set[str]) -> bytes:
         if "onenextcase" in formats:
             zf.writestr(f"{base}_OnNextCase.txt", build_onenextcase_txt(export_data).encode("utf-8"))
         if "mdd" in formats:
-            raise NotImplementedError("MDD export pending REQ-13 Fase 4 (Task 11)")
+            zf.writestr(f"{base}.mdd", build_mdd_xml(export_data))
         if formats & {"sql", "onenextcase", "mdd"}:
             metadata = build_metadata_txt(export_data)
             zf.writestr(f"{base}_MetaData.txt", metadata.encode("utf-8"))
