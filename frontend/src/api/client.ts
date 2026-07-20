@@ -336,6 +336,11 @@ export interface ImportSettings {
   // Wizard de selección de campos: None conserva el comportamiento actual
   // (todos los campos incluidos, sin pre-clasificar).
   fieldSelections?: FieldSelection[] | undefined;
+  // REQ-08: una vez por Marcas / Razones.
+  singleCodeByType?: Partial<Record<"brands" | "reasons", boolean>> | undefined;
+  // REQ-04: máximo de la ronda + decisión si hay overflow.
+  expectedMaxMentions?: number | null | undefined;
+  mentionsDecision?: "process_all" | "limit_to_expected" | null | undefined;
 }
 
 export async function previewFields(
@@ -372,6 +377,9 @@ export async function importFile(
       min_mentions_threshold: settings.minMentionsThreshold ?? null,
       audit_percentage: settings.auditPercentage ?? null,
       field_selections: settings.fieldSelections ?? null,
+      single_code_by_type: settings.singleCodeByType ?? null,
+      expected_max_mentions: settings.expectedMaxMentions ?? null,
+      mentions_decision: settings.mentionsDecision ?? null,
     }),
   });
 }

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.pipeline.llm.client import classify_batch
 from app.pipeline.fuzzy.catalog import promote_llm_result_to_alias
 from app.pipeline.normalize import normalize
+from app.pipeline.question_controls import cap_codes_for_single_response
 from app.pipeline.semantic.cache import write as write_reason_cache
 from app.core.config import settings
 
@@ -61,7 +62,7 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
     # version" — subprojects.codebook_id apunta directo al vigente).
     codes = db.execute(
         text("""
-            select c.id, c.code_number, c.label, n.name as net_name, c.system_type,
+            select c.id, c.code_number, c.label, c.is_system, n.name as net_name, c.system_type,
                    array(
                        select alias_sample from code_aliases a
                        where a.code_id = c.id and a.alias_sample is not null
@@ -76,6 +77,7 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
         {"sp": subproject_id},
     ).mappings().all()
     codes_by_number = {c["code_number"]: c["id"] for c in codes}
+    system_code_ids = {c["id"] for c in codes if c.get("is_system")}
     # system_type 'anomaly' (code 95, "Menciones confusas/Incorrectas") means the LLM itself
     # isn't sure the mention belongs to this question — that's exactly the case that needs a
     # human to confirm, so it must never auto-code no matter how confident the model claims to be.
@@ -98,6 +100,10 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
         {"sp": subproject_id},
     ).mappings().all()
     groups_by_id = {str(g["id"]): g for g in groups}
+    single_code = bool(db.execute(
+        text("select single_code_per_response from subprojects where id = :sp"),
+        {"sp": subproject_id},
+    ).scalar())
 
     auto_coded = 0
     anomalies = 0
@@ -151,6 +157,15 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
                 continue
             group_id = group["id"]
             matched_code_ids = [codes_by_number[n] for n in result["code_numbers"] if n in codes_by_number]
+            matched_rows = [
+                {"id": cid, "is_system": cid in system_code_ids}
+                for cid in matched_code_ids
+            ]
+            matched_rows = cap_codes_for_single_response(
+                matched_rows,
+                single_code=single_code,
+            )
+            matched_code_ids = [row["id"] for row in matched_rows]
             confidence = result.get("confidence")
             confidence_threshold = (
                 settings.llm_confidence_threshold_brands

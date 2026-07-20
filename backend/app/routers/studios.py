@@ -383,6 +383,7 @@ def get_round(
         text("""
             select sp.id, sp.coding_type, sp.codebook_id, sp.status, sp.origin_mode,
                    sp.source_subproject_id, sp.min_mentions_threshold, sp.audit_percentage,
+                   sp.single_code_per_response,
                    (select count(*) from verbatims where subproject_id = sp.id) as verbatims_total,
                    (select count(*) from mention_groups where subproject_id = sp.id) as mention_groups,
                    (select count(*) from codes where codebook_id = sp.codebook_id) as codes_total,
@@ -419,6 +420,7 @@ def get_round(
             "source_subproject_id": str(sp["source_subproject_id"]) if sp["source_subproject_id"] else None,
             "min_mentions_threshold": sp["min_mentions_threshold"],
             "audit_percentage": float(sp["audit_percentage"]),
+            "single_code_per_response": bool(sp.get("single_code_per_response") or False),
             "counters": {
                 "verbatims_total": sp["verbatims_total"],
                 "mention_groups": sp["mention_groups"],
@@ -774,6 +776,11 @@ class ImportIn(BaseModel):
     # None = comportamiento actual (todos los campos incluidos, sin pre-clasificar).
     # Solo el wizard nuevo de selección de campos lo envía.
     field_selections: list[FieldSelection] | None = None
+    # REQ-08: una vez por Marcas / Razones (según aplique en la ronda).
+    single_code_by_type: dict[str, bool] | None = None
+    # REQ-04: máximo esperado de la ronda + decisión si el archivo trae más.
+    expected_max_mentions: int | None = None
+    mentions_decision: str | None = None
     # Red de seguridad para rondas creadas antes de REQ-07 (sin catalog_origins,
     # ver get_or_create_subproject en repositories.py): solo se usan si esta
     # importación todavía tiene que crear el subproyecto de este coding_type.
@@ -972,6 +979,9 @@ def import_file(
                 [fs.model_dump() for fs in payload.field_selections]
                 if payload.field_selections else None
             ),
+            expected_max_mentions=payload.expected_max_mentions,
+            mentions_decision=payload.mentions_decision,
+            single_code_by_type=payload.single_code_by_type,
         )
     except ValueError as exc:
         db.rollback()
@@ -1206,8 +1216,6 @@ def resolve_import_flag(
 class ClassifyQuestionIn(BaseModel):
     question_key: str
     coding_type: str
-    single_code_per_response: bool = False
-    expected_max_mentions: int | None = None
 
 
 @router.post("/projects/{project_id}/questions/classify", status_code=201)
@@ -1227,7 +1235,6 @@ def classify_question_endpoint(
 
     question_id = classify_question(
         db, project_id, payload.question_key, payload.coding_type,
-        payload.single_code_per_response, payload.expected_max_mentions,
     )
     db.commit()
     return {"id": str(question_id), "question_key": payload.question_key, "coding_type": payload.coding_type}

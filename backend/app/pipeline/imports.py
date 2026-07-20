@@ -42,13 +42,27 @@ def field_metadata_for_dau(records: list[dict[str, str]], n: int = 5) -> list[di
     """Metadata por campo de un `.dau` ya parseado, para el preview de selección
     de campos: sugerencia de coding_type (patrón NBS_UNAID/VYK) + muestra de
     valores. Excluye los mismos campos de infraestructura que `dau.parse_verbatims`."""
+    from app.pipeline.question_controls import max_mentions_per_respondent
+
     fields = sorted({
         key for record in records for key in record
         if not key.startswith("##") and key not in dau._NON_RESPONSE_FIELDS
     })
+    # Filas virtuales (una por registro×campo) para contar menciones REQ-04.
+    virtual_rows: list[dict] = []
+    for record in records:
+        serial = record.get(dau._SERIAL_KEY) or record.get("realid") or ""
+        for field in fields:
+            value = record.get(field)
+            if value:
+                virtual_rows.append({
+                    "respondent_external_id": serial,
+                    "question_key": field,
+                })
     out = []
     for field in fields:
         coding_type = dau.guess_coding_type(field)
+        single_default = dau.guess_single_code_default(field)
         reason = (
             "coincide con plantilla conocida (NBS_UNAID/VYK)" if coding_type
             else "sin patrón conocido, requiere clasificación manual"
@@ -56,6 +70,8 @@ def field_metadata_for_dau(records: list[dict[str, str]], n: int = 5) -> list[di
         out.append({
             "field": field,
             "suggested_coding_type": coding_type,
+            "suggested_single_code_per_response": single_default,
+            "detected_max_mentions": max_mentions_per_respondent(virtual_rows, field),
             "reason": reason,
             "sample_values": dau.sample_values(records, field, n),
         })
@@ -69,6 +85,8 @@ def field_metadata_for_excel(rows: list[dict[str, object]], columns: list[str], 
         {
             "field": column,
             "suggested_coding_type": None,
+            "suggested_single_code_per_response": None,
+            "detected_max_mentions": 0,
             "reason": None,
             "sample_values": excel.sample_values(rows, column, n),
         }

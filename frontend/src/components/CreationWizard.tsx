@@ -7,6 +7,11 @@ import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb, { type Crumb } from "./Breadcrumb";
 import FieldSelectionTable, { initialFieldSelections } from "./FieldSelectionTable";
+import RoundCodingControls, {
+  detectedMaxFromFields,
+  hasPendingRoundMentionDecision,
+  type RoundCodingControlsValue,
+} from "./RoundCodingControls";
 import {
   createProject,
   createRound,
@@ -66,9 +71,14 @@ const SCOPE_OPTIONS: { value: CodingScope; label: string; hint: string }[] = [
   { value: "both", label: "Ambas", hint: "Marcas y razones en la misma ronda" },
 ];
 
+const SCOPE_CODING_TYPES: Record<CodingScope, CodingType[]> = {
+  brands: ["brands"],
+  reasons: ["reasons"],
+  both: ["brands", "reasons"],
+};
+
 function codingTypesForScope(scope: CodingScope): CodingType[] {
-  if (scope === "both") return ["brands", "reasons"];
-  return [scope];
+  return SCOPE_CODING_TYPES[scope];
 }
 
 const ORIGIN_OPTIONS: {
@@ -162,6 +172,11 @@ export default function CreationWizard() {
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
   const [fieldPreviews, setFieldPreviews] = useState<FieldPreview[]>([]);
   const [fieldSelections, setFieldSelections] = useState<FieldSelection[]>([]);
+  const [roundControls, setRoundControls] = useState<RoundCodingControlsValue>({
+    singleCodeByType: {},
+    expectedMaxMentions: null,
+    mentionsDecision: null,
+  });
   const [submitting, setSubmitting] = useState(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const [pendingQuestions, setPendingQuestions] = useState<string[]>([]);
@@ -344,6 +359,8 @@ export default function CreationWizard() {
 
   // Selección de campos: para .dau se dispara apenas se sube el archivo (no
   // depende de elegir hoja); para Excel espera a que haya una hoja elegida.
+  // Depende de ids/scope estables — NO de arrays recreados por render, o el
+  // preview se re-dispara en bucle y resetea roundControls (Sí → No).
   useEffect(() => {
     if (!round || !uploaded) {
       setFieldPreviews([]);
@@ -351,27 +368,51 @@ export default function CreationWizard() {
       return;
     }
     if (!isDau && !verbatimsSheet) return;
+    const types = codingTypesForScope(codingScope);
+    const roundId = round.id;
+    const fileId = uploaded.file_id;
+    const expectedFromRound = round.expected_max_mentions ?? null;
+    const singleFromSp = Object.fromEntries(
+      round.subprojects.map((s) => [s.coding_type, !!s.single_code_per_response])
+    ) as Partial<Record<CodingType, boolean>>;
+
     let cancelled = false;
-    void previewFields(round.id, uploaded.file_id, isDau ? undefined : verbatimsSheet).then(({ fields }) => {
+    void previewFields(roundId, fileId, isDau ? undefined : verbatimsSheet).then(({ fields }) => {
       if (cancelled) return;
       setFieldPreviews(fields);
       setFieldSelections(initialFieldSelections(fields));
+      const singleCodeByType: Partial<Record<CodingType, boolean>> = {};
+      for (const ct of types) {
+        // Valor ya guardado en el subproyecto, si no → No (multi); sugerencia
+        // DAU también es multi (false). El analista puede cambiar a Sí.
+        singleCodeByType[ct] = singleFromSp[ct] ?? false;
+      }
+      setRoundControls({
+        singleCodeByType,
+        expectedMaxMentions: expectedFromRound,
+        mentionsDecision: null,
+      });
     });
     return () => {
       cancelled = true;
     };
-  }, [round, uploaded, verbatimsSheet, isDau]);
+  }, [round?.id, uploaded?.file_id, verbatimsSheet, isDau, codingScope]); // round/uploaded por id a propósito
 
   const importedCatalogTypes = activeCodingTypes.filter(
     (codingType) => catalogOrigins[codingType].origin === "imported_client_catalog"
   );
   const catalogsReady = importedCatalogTypes.every((codingType) => catalogConfirmed[codingType]);
+  const detectedMaxMentions = detectedMaxFromFields(fieldPreviews);
+  const mentionDecisionsReady = !hasPendingRoundMentionDecision(
+    roundControls, detectedMaxMentions, activeCodingTypes
+  );
   const canImport = !!(
     round
     && uploaded
     && verbatimsSheet
     && (isDau || columnMap.verbatim)
     && catalogsReady
+    && mentionDecisionsReady
   );
 
   const loadCatalogPreview = async (
@@ -485,7 +526,27 @@ export default function CreationWizard() {
         // (ver Task 8): en Excel, "field" es la columna del sheet, que no
         // corresponde al question_key real de cada fila (viene de la columna
         // "Question ID"), así que field_selections no aplicaría a nada real.
-        isDau ? { fieldSelections } : {}
+        isDau
+          ? {
+            fieldSelections: fieldSelections.map((fs) => ({
+              ...fs,
+              coding_type: codingScope === "both"
+                ? fs.coding_type
+                : (activeCodingTypes[0] ?? fs.coding_type),
+            })),
+            singleCodeByType: Object.fromEntries(
+              activeCodingTypes.map((ct) => [ct, roundControls.singleCodeByType[ct] ?? false])
+            ),
+            expectedMaxMentions: roundControls.expectedMaxMentions,
+            mentionsDecision: roundControls.mentionsDecision,
+          }
+          : {
+            singleCodeByType: Object.fromEntries(
+              activeCodingTypes.map((ct) => [ct, roundControls.singleCodeByType[ct] ?? false])
+            ),
+            expectedMaxMentions: roundControls.expectedMaxMentions,
+            mentionsDecision: roundControls.mentionsDecision,
+          }
       );
       if (result.pending_questions.length > 0) {
         const defaultType = activeCodingTypes[0] ?? "brands";
@@ -1273,6 +1334,12 @@ export default function CreationWizard() {
                 <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
                   {isDau ? "Campos a clasificar" : "Muestra de valores"}
                 </label>
+                <RoundCodingControls
+                  codingTypes={activeCodingTypes}
+                  value={roundControls}
+                  onChange={setRoundControls}
+                  detectedMaxMentions={detectedMaxMentions}
+                />
                 <FieldSelectionTable
                   fields={fieldPreviews}
                   value={fieldSelections}

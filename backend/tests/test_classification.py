@@ -43,6 +43,8 @@ class FakeSession:
             return FakeResult(rows=self._codes)
         if "from mention_groups" in sql and "select id, sample_text" in sql:
             return FakeResult(rows=self._groups)
+        if "single_code_per_response from subprojects" in sql:
+            return FakeResult(scalar=False)
         return FakeResult()
 
     def commit(self):

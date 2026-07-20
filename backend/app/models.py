@@ -211,6 +211,7 @@ class Subproject(Base):
     min_mentions_threshold = Column(Integer, nullable=False, default=3)
     audit_percentage = Column(Numeric(5, 2), nullable=False, default=10)
     target_sample_size = Column(Integer, nullable=True)
+    single_code_per_response = Column(Boolean, nullable=False, default=False)
     status = Column(String, nullable=False, default="created")
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -234,6 +235,7 @@ class Round(Base):
     status = Column(String, nullable=False, default="created")
     min_mentions_threshold = Column(Integer, nullable=False, default=3)
     audit_percentage = Column(Numeric(5, 2), nullable=False, default=10.00)
+    expected_max_mentions = Column(Integer, nullable=True)
     origin_mode = Column(String, nullable=False, default="from_scratch")  # 'from_scratch' | 'homologated'
     source_round_id = Column(UUID(as_uuid=True), ForeignKey("rounds.id"), nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)

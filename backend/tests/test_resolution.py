@@ -20,9 +20,10 @@ USER_ID = uuid.uuid4()
 
 
 class FakeResult:
-    def __init__(self, scalar=None, mapping=None):
+    def __init__(self, scalar=None, mapping=None, mappings_list=None):
         self._scalar = scalar
         self._mapping = mapping
+        self._mappings_list = mappings_list or []
 
     def scalar(self):
         return self._scalar
@@ -33,23 +34,35 @@ class FakeResult:
     def first(self):
         return self._mapping
 
+    def all(self):
+        return self._mappings_list
+
 
 class FakeSession:
-    """Answers the two ad-hoc queries resolve_group runs itself: codebook_id/round_id
-    of the subproject, and the discard code lookup by code_number."""
+    """Answers the ad-hoc queries resolve_group runs itself: codebook_id/round_id
+    of the subproject, discard code lookup, and REQ-08 single-code checks."""
 
-    def __init__(self, threshold=3, discard_code_id=None):
+    def __init__(self, threshold=3, discard_code_id=None, single_code=False):
         self.threshold = threshold
         self.discard_code_id = discard_code_id
+        self.single_code = single_code
         self.committed = False
 
     def execute(self, stmt, params=None):
-        sql = str(stmt)
+        sql = " ".join(str(stmt).lower().split())
+        params = params or {}
         if "codebook_id, round_id from subprojects" in sql:
             return FakeResult(mapping={"codebook_id": CODEBOOK_ID, "round_id": ROUND_ID})
         if "code_number = :n" in sql:
             mapping = {"id": self.discard_code_id} if self.discard_code_id else None
             return FakeResult(mapping=mapping)
+        if "single_code_per_response" in sql:
+            return FakeResult(scalar=self.single_code)
+        if "is_system from codes" in sql:
+            ids = list(params.get("ids") or [])
+            return FakeResult(mappings_list=[
+                {"id": cid, "is_system": False} for cid in ids
+            ])
         return FakeResult()
 
     def commit(self):
