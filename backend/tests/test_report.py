@@ -3,10 +3,13 @@ import io
 import uuid
 from datetime import datetime, timezone
 
+import pytest
+from fastapi import HTTPException
 from openpyxl import load_workbook
 
 from app.pipeline.export import build_codebook_excel, build_export_zip
 from app.repositories import get_round_report
+from app.routers.report import _DEFAULT_FORMATS, _parse_export_formats
 
 ROUND_ID = uuid.uuid4()
 CODE_A = uuid.uuid4()
@@ -203,12 +206,23 @@ def test_code_entry_content_filters_null_aliases():
 
     import zipfile
 
-    zbytes = build_export_zip(export_data)
+    zbytes = build_export_zip(export_data, {"excel"})
     assert zbytes[:2] == b"PK"
     with zipfile.ZipFile(io.BytesIO(zbytes)) as zf:
-        names = zf.namelist()
-        assert "LC_32406432_R1.xlsx" in names
-        assert "LC_32406432_R1_mdd_1.txt" in names
-        assert "LC_32406432_R1_mdd_2.txt" in names
-        assert zf.read("LC_32406432_R1_mdd_1.txt")[:1] == b"#"
+        assert zf.namelist() == ["LC_32406432_R1.xlsx"]
         assert zf.read("LC_32406432_R1.xlsx")[:2] == b"PK"
+
+
+def test_parse_export_formats_defaults_when_omitted():
+    assert _parse_export_formats(None) == _DEFAULT_FORMATS
+
+
+def test_parse_export_formats_parses_comma_separated():
+    assert _parse_export_formats("excel,sql") == {"excel", "sql"}
+    assert _parse_export_formats(" excel , sql ") == {"excel", "sql"}
+
+
+def test_parse_export_formats_rejects_unknown_value():
+    with pytest.raises(HTTPException) as exc_info:
+        _parse_export_formats("excel,pdf")
+    assert exc_info.value.status_code == 400

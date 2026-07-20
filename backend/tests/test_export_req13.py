@@ -20,8 +20,18 @@ schema/import change needed. `sql.py` uses it as-is; `onenextcase.py` applies
 the mangle-and-suffix transform documented above.
 """
 import os
+import zipfile
+from io import BytesIO
 
-from app.pipeline.export import build_metadata_txt, build_onenextcase_txt, build_sql_txt, mangle_variable
+import pytest
+
+from app.pipeline.export import (
+    build_export_zip,
+    build_metadata_txt,
+    build_onenextcase_txt,
+    build_sql_txt,
+    mangle_variable,
+)
 from app.pipeline.ingest import dau
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.dau")
@@ -172,3 +182,51 @@ def test_build_onenextcase_txt_matches_real_fixture_syntax():
 
 def test_build_onenextcase_txt_empty():
     assert build_onenextcase_txt({"verbatims": []}) == "Select Case Respondent.Serial\r\nEnd Select\r\n"
+
+
+_ZIP_EXPORT_DATA = {
+    "project_external_code": "32406432",
+    "round_number": 1,
+    "study_name": "HBG Leches",
+    "total_verbatims": 1,
+    "max_output_index": 1,
+    "nets_by_coding_type": {
+        "marcas": [{
+            "name": "NETO MARCAS",
+            "codes": [{"code_number": 1, "label": "Gloria", "content": "GLORIA", "frequency": 1, "pct": 1.0}],
+        }],
+    },
+    "verbatims": [{
+        "respondent_external_id": "3",
+        "question_key": "NBS_UNAID_FUP_ADD[{_4}].Slice",
+        "original_text": "GLORIA",
+        "coding_type": "marcas",
+        "codes": [{"output_index": 1, "code_number": 1, "label": "Gloria"}],
+    }],
+}
+
+
+def test_build_export_zip_excel_only():
+    zbytes = build_export_zip(_ZIP_EXPORT_DATA, {"excel"})
+    with zipfile.ZipFile(BytesIO(zbytes)) as zf:
+        assert zf.namelist() == ["LC_32406432_R1.xlsx"]
+
+
+def test_build_export_zip_sql_and_onenextcase_share_one_dictionary():
+    zbytes = build_export_zip(_ZIP_EXPORT_DATA, {"sql", "onenextcase"})
+    with zipfile.ZipFile(BytesIO(zbytes)) as zf:
+        names = set(zf.namelist())
+        assert names == {"LC_32406432_R1_SQL.txt", "LC_32406432_R1_OnNextCase.txt", "LC_32406432_R1_MetaData.txt"}
+        assert zf.read("LC_32406432_R1_SQL.txt")[:2] == b"\xff\xfe"
+
+
+def test_build_export_zip_rejects_empty_or_unknown_formats():
+    with pytest.raises(ValueError):
+        build_export_zip(_ZIP_EXPORT_DATA, set())
+    with pytest.raises(ValueError):
+        build_export_zip(_ZIP_EXPORT_DATA, {"pdf"})
+
+
+def test_build_export_zip_mdd_not_implemented_yet():
+    with pytest.raises(NotImplementedError):
+        build_export_zip(_ZIP_EXPORT_DATA, {"mdd"})

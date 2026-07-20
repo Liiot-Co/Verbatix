@@ -126,7 +126,7 @@
 
 ## Phase 3: Selectable export
 
-### Task 6: `zip.py::build_export_zip(export_data, formats)` — orchestration
+### Task 6: `zip.py::build_export_zip(export_data, formats)` — orchestration [DONE]
 **Description:** Replace the current always-build-everything `build_export_zip` with a version that takes a `formats: set[str]` (subset of `{"excel", "sql", "onenextcase", "mdd"}`) and only includes the requested files in the ZIP. `dictionary.py`'s output is included once if either `"onenextcase"` or `"mdd"` is selected (shared file, per the earlier decision — not duplicated).
 
 **Acceptance criteria:**
@@ -146,7 +146,7 @@
 
 ---
 
-### Task 7: Router accepts format selection
+### Task 7: Router accepts format selection [DONE]
 **Description:** `GET /rounds/{round_id}/report/export` takes a `formats` query param (comma-separated), validates against the allowed set, 400s on unknown values, passes through to `build_export_zip`.
 
 **Acceptance criteria:**
