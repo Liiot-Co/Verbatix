@@ -14,75 +14,210 @@ sentido esperar a que termine marcas antes de arrancarlo.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
+import re
 
-import polars as pl
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.pipeline.fuzzy import (
     discover_catalog_from_frequency,
     load_catalog_aliases,
-    run_fuzzy_matching,
 )
-from app.pipeline.fuzzy.models import Cols, SCORE_THRESHOLD, SYSTEM_ALIAS_VARIANTS
+from app.pipeline.fuzzy.models import SCORE_THRESHOLD, SYSTEM_ALIAS_VARIANTS
+from app.pipeline.fuzzy.scoring import best_brand_candidate
 from app.pipeline.llm import classify_round
+from app.pipeline.llm.client import propose_brand_codes
+from app.pipeline.normalize import normalize
 from app.pipeline.semantic import cache as semantic_cache
 from app.pipeline.semantic.cluster import discover_reason_catalog
+
+logger = logging.getLogger(__name__)
+
+
+def _canonicalize_brand_draft(db: Session, subproject_id: uuid.UUID) -> int:
+    """Enriquece códigos de Marca pendientes; DeepSeek propone y el humano decide.
+
+    Si el LLM falla, se conservan las semillas por frecuencia y la ronda sigue a
+    codebook_review: la canonización es mejora, no requisito del bootstrap.
+    """
+    rows = db.execute(
+        text("""
+            select c.id, c.label, c.examples,
+                   coalesce(sum(mg.frequency_count), 0) as mentions
+              from subprojects sp
+              join codes c on c.codebook_id = sp.codebook_id
+              left join mention_groups mg on mg.suggested_code_id = c.id
+             where sp.id = :sp and c.is_active and not c.is_system
+               and c.approval_status = 'pending'
+             group by c.id
+             order by mentions desc, c.code_number
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+    if not rows:
+        return 0
+    context_row = db.execute(
+        text("""
+            select p.name as study, p.external_code, cat.name as product_category
+              from subprojects sp
+              join rounds r on r.id = sp.round_id
+              join projects p on p.id = r.project_id
+              left join categories cat on cat.id = r.category_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().first()
+    summaries = [
+        f"Etiqueta observada: {row['label']}. Variantes: {'; '.join(row['examples'] or [])}. "
+        f"Frecuencia: {int(row['mentions'] or 0)}."
+        for row in rows
+    ]
+    try:
+        proposals = propose_brand_codes(summaries, dict(context_row) if context_row else {})
+    except Exception:
+        logger.exception(
+            "Canonización DeepSeek falló para subproyecto %s; se usan semillas por frecuencia",
+            subproject_id,
+        )
+        return len(rows)
+    winner_by_label: dict[str, uuid.UUID] = {}
+    for row, proposal in zip(rows, proposals, strict=True):
+        normalized_label = normalize(proposal["label"])
+        winner_id = winner_by_label.get(normalized_label)
+        if winner_id is not None:
+            # DeepSeek puede reconocer que dos clusters conservadores son la
+            # misma marca (p.ej. cinco variantes de Gloria). Se fusionan solo
+            # cuando propuso exactamente el mismo label canónico; los códigos
+            # descartados quedan revocados, nunca se borran ni renumeran.
+            db.execute(
+                text("update mention_groups set suggested_code_id = :winner where suggested_code_id = :loser"),
+                {"winner": winner_id, "loser": row["id"]},
+            )
+            db.execute(
+                text("""
+                    insert into code_aliases (
+                      id, codebook_id, code_id, alias_normalized, alias_sample,
+                      occurrences, origin, match_score, alias_kind, status,
+                      normalization_version, evidence
+                    )
+                    select gen_random_uuid(), a.codebook_id, :winner,
+                           a.alias_normalized, a.alias_sample, a.occurrences,
+                           a.origin, a.match_score, a.alias_kind, a.status,
+                           a.normalization_version, a.evidence
+                      from code_aliases a where a.code_id = :loser
+                    on conflict (codebook_id, alias_normalized, code_id) do update
+                      set occurrences = greatest(code_aliases.occurrences, excluded.occurrences),
+                          evidence = code_aliases.evidence || excluded.evidence
+                """),
+                {"winner": winner_id, "loser": row["id"]},
+            )
+            db.execute(
+                text("update code_aliases set status = 'revoked', revoked_at = now() where code_id = :loser"),
+                {"loser": row["id"]},
+            )
+            db.execute(
+                text("update codes set approval_status = 'revoked', is_active = false where id = :loser"),
+                {"loser": row["id"]},
+            )
+            continue
+        winner_by_label[normalized_label] = row["id"]
+        db.execute(
+            text("""
+                update codes
+                   set label = :label,
+                       definition = :definition,
+                       inclusion_criteria = cast(:inclusions as jsonb),
+                       exclusion_criteria = cast(:exclusions as jsonb)
+                 where id = :id and approval_status = 'pending'
+            """),
+            {
+                "id": row["id"], "label": proposal["label"],
+                "definition": (
+                    f"Canonización DeepSeek pendiente de aprobación. "
+                    f"Ajuste de categoría: {proposal['category_fit']}. {proposal['rationale']}"
+                ),
+                "inclusions": '["Variantes confirmadas de esta marca dentro de la categoría del estudio"]',
+                "exclusions": '["Palabras solo parecidas, otras marcas o pertenencia de categoría no confirmada"]',
+            },
+        )
+    return len(winner_by_label)
 
 
 def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> dict:
     groups = db.execute(
         text("""
-            select id, normalized_text from mention_groups
+            select id, normalized_text, frequency_count from mention_groups
             where subproject_id = :sp and status = 'pending_review'
         """),
         {"sp": subproject_id},
     ).mappings().all()
+    negative_rows = db.execute(
+        text("""
+            select a.alias_normalized, a.code_id::text as code_id
+              from code_aliases a
+              join subprojects sp on sp.codebook_id = a.codebook_id
+             where sp.id = :sp and a.alias_kind = 'negative'
+               and a.status = 'approved'
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+    negative_targets: dict[str, set[str]] = {}
+    for row in negative_rows:
+        negative_targets.setdefault(row["alias_normalized"], set()).add(row["code_id"])
 
-    # El catálogo sale del codebook cuando existe. Si el subproyecto no trae libro
-    # de códigos, se deriva de la frecuencia: las marcas que superan el mínimo de
-    # menciones se vuelven semillas y el fuzzy arrastra sus typos hacia ellas.
+    # El catálogo ya debe estar aprobado. El bootstrap corre exclusivamente en
+    # process_round antes de la barrera humana; esta etapa nunca crea códigos.
     catalog = load_catalog_aliases(db, subproject_id)
     min_mentions = None
-    if not catalog:
-        # subprojects.min_mentions_threshold, no rounds — se captura en el
-        # wizard al importar y vive por subproyecto (ver get_or_create_subproject).
-        min_mentions = db.execute(
-            text("select min_mentions_threshold from subprojects where id = :sp"),
-            {"sp": subproject_id},
-        ).scalar()
-        catalog = discover_catalog_from_frequency(db, subproject_id, min_mentions, threshold)
 
     run_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into processing_runs (id, subproject_id, run_type, algorithm, min_mentions_threshold, status, started_at)
-            values (:id, :sp, 'initial', :algo, :thr, 'running', now())
+            insert into processing_runs (
+              id, subproject_id, run_type, algorithm, min_mentions_threshold,
+              status, started_at, policy_version
+            )
+            values (:id, :sp, 'initial', :algo, :thr, 'running', now(), :policy)
         """),
         {
             "id": run_id,
             "sp": subproject_id,
-            "algo": "fuzzy_frequency" if min_mentions is not None else "fuzzy_dictionary",
+            "algo": "exact_then_brand_multisignal_suggest_v1",
             "thr": min_mentions,
+            "policy": "brand-multisignal-suggest-v1",
         },
     )
     db.commit()
 
+    aliases_by_text: dict[str, str] = {}
+    for alias in catalog:
+        aliases_by_text[alias.alias_normalized] = alias.code_id
+
     matched_by_group: dict[str, dict] = {}
-    if groups and catalog:
-        df = pl.DataFrame({
-            Cols.RESPONDENT_ID: [str(g["id"]) for g in groups],
-            Cols.QUESTION_KEY: [None] * len(groups),
-            Cols.NORMALIZED_TEXT: [g["normalized_text"] for g in groups],
-            Cols.CODING_TYPE: ["brands"] * len(groups),
-        })
-        result = run_fuzzy_matching(df, catalog, threshold=threshold)
-        matched_by_group = {row[Cols.RESPONDENT_ID]: row for row in result.classified.iter_rows(named=True)}
+    for group in groups:
+        normalized = group["normalized_text"]
+        exact_code = aliases_by_text.get(normalized)
+        if exact_code:
+            matched_by_group[str(group["id"])] = {
+                "code_id": exact_code, "score": 100.0,
+                "matched_alias": normalized, "source": "engine_exact",
+            }
+            continue
+        candidate = best_brand_candidate(normalized, catalog)
+        if candidate:
+            matched_by_group[str(group["id"])] = {
+                "code_id": candidate.code_id, "score": candidate.score,
+                "matched_alias": candidate.alias, "source": "engine_fuzzy",
+                "margin": candidate.margin,
+            }
 
     auto_coded = 0
+    suggestions = 0
     anomalies = 0
 
     update_groups_params = []
@@ -92,17 +227,39 @@ def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> 
     for g in groups:
         gid = g["id"]
         match = matched_by_group.get(str(gid))
+        if match and str(match["code_id"]) in negative_targets.get(g["normalized_text"], set()):
+            match = None
         if match:
-            update_groups_params.append({"code": match[Cols.CODE_ID], "run": run_id, "id": gid})
+            is_exact = match["source"] == "engine_exact"
+            if is_exact:
+                auto_commit = settings.auto_commit_exact_approved
+            else:
+                # Auto-cierre de fuzzy solo si pasa el gate calibrado (score +
+                # margen top1-top2). Los bloqueos de recall (palabra corta/común,
+                # substring, longitudes) ya los aplicó rank_brand_candidates.
+                auto_commit = (
+                    settings.auto_commit_brand_fuzzy
+                    and match["score"] >= settings.brand_fuzzy_autocommit_score
+                    and match.get("margin", 0.0) >= settings.brand_fuzzy_autocommit_margin
+                )
+            state = "auto_coded" if auto_commit else "suggested"
+            update_groups_params.append({
+                "code": match["code_id"], "run": run_id, "id": gid, "status": state,
+            })
             insert_verbatim_codes_params.append({
-                "code": match[Cols.CODE_ID],
-                "score": match[Cols.SCORE] / 100,
-                "alias": match[Cols.MATCHED_ALIAS],
+                "code": match["code_id"],
+                "score": match["score"] / 100,
+                "alias": match["matched_alias"],
+                "source": match["source"],
                 "run": run_id,
                 "gid": gid,
+                "active": auto_commit,
             })
-            update_verbatims_params.append({"gid": gid})
-            auto_coded += 1
+            update_verbatims_params.append({"gid": gid, "status": state})
+            if auto_commit:
+                auto_coded += 1
+            else:
+                suggestions += 1
         else:
             anomalies += 1
 
@@ -110,22 +267,28 @@ def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> 
         db.execute(
             text("""
                 update mention_groups
-                set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
+                set status = :status, suggested_code_id = :code, created_by_run_id = :run
                 where id = :id
             """),
             update_groups_params,
         )
         db.execute(
             text("""
-                insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias, processing_run_id)
-                select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', :score, :alias, :run
+                insert into verbatim_codes (id, verbatim_id, code_id, output_index, source,
+                                            confidence_score, matched_alias, processing_run_id, is_active)
+                select gen_random_uuid(), v.id, :code, 1, :source, :score,
+                       :alias, :run, :active
                 from verbatims v where v.mention_group_id = :gid
-                on conflict (verbatim_id, code_id) do nothing
+                on conflict (verbatim_id, code_id) do update set
+                  confidence_score = excluded.confidence_score,
+                  matched_alias = excluded.matched_alias,
+                  processing_run_id = excluded.processing_run_id,
+                  is_active = excluded.is_active
             """),
             insert_verbatim_codes_params,
         )
         db.execute(
-            text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :gid"),
+            text("update verbatims set coding_status = :status where mention_group_id = :gid"),
             update_verbatims_params,
         )
 
@@ -135,21 +298,31 @@ def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> 
         text("""
             update processing_runs
             set status = 'completed', finished_at = now(),
-                total_verbatims = :total, auto_coded_count = :auto, anomalies_count = :anom
+                total_verbatims = :verbatims, total_groups = :groups,
+                auto_coded_count = :auto, anomalies_count = :anom,
+                metrics = jsonb_build_object('suggestions', :suggestions)
             where id = :id
         """),
-        {"total": len(groups), "auto": auto_coded, "anom": anomalies, "id": run_id},
+        {
+            "verbatims": sum(g.get("frequency_count", 1) for g in groups),
+            "groups": len(groups),
+            "auto": auto_coded, "anom": anomalies, "suggestions": suggestions,
+            "id": run_id,
+        },
     )
     db.commit()
 
-    return {"run_id": str(run_id), "groups_classified": auto_coded, "anomalies": anomalies, "total": len(groups)}
+    return {
+        "run_id": str(run_id), "groups_classified": auto_coded,
+        "suggestions": suggestions, "anomalies": anomalies, "total": len(groups),
+    }
 
 
 def _apply_semantic_cache(db: Session, subproject_id: uuid.UUID, coding_type: str) -> dict:
     """Antes de mandar razones al LLM, busca cada mention_group pendiente en el
-    caché semántico (Task C2 lo escribe): un hit por encima del umbral se
-    auto-codifica sin tocar el LLM. Solo aplica a razones — para marcas el
-    catálogo fuzzy ya cumple ese rol (ver fuzzy/matcher.py).
+    caché semántico aprobado. Un hit solo genera una sugerencia inactiva; nunca
+    auto-cierra mientras no exista una política temporalmente calibrada. Solo
+    aplica a razones; Marcas usa su motor de candidatos especializado.
     """
     if coding_type != "reasons":
         return {"groups_classified": 0}
@@ -211,6 +384,12 @@ def _apply_semantic_cache(db: Session, subproject_id: uuid.UUID, coding_type: st
     if not hits:
         return {"groups_classified": 0}
 
+    # Todo hit que llega aquí ya superó semantic_cache_similarity_threshold
+    # (semantic_cache.lookup lo filtra). Con auto_commit_semantic activo eso
+    # basta para auto-cerrar; si no, queda como sugerencia inactiva.
+    auto_commit = settings.auto_commit_semantic
+    state = "auto_coded" if auto_commit else "suggested"
+
     run_id = uuid.uuid4()
     db.execute(
         text("""
@@ -222,35 +401,128 @@ def _apply_semantic_cache(db: Session, subproject_id: uuid.UUID, coding_type: st
     db.execute(
         text("""
             update mention_groups
-            set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
+            set status = :state, suggested_code_id = :code, created_by_run_id = :run
             where id = :id
         """),
-        [{"code": h["code"], "run": run_id, "id": h["id"]} for h in hits],
+        [{"code": h["code"], "run": run_id, "id": h["id"], "state": state} for h in hits],
     )
     db.execute(
         text("""
-            insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, processing_run_id)
-            select gen_random_uuid(), v.id, :code, 1, 'semantic_cache', :score, :run
+            insert into verbatim_codes (id, verbatim_id, code_id, output_index, source,
+                                        confidence_score, processing_run_id, is_active)
+            select gen_random_uuid(), v.id, :code, 1, 'semantic_cache', :score, :run, :active
             from verbatims v where v.mention_group_id = :id
-            on conflict (verbatim_id, code_id) do nothing
+            on conflict (verbatim_id, code_id) do update set
+              confidence_score = excluded.confidence_score,
+              processing_run_id = excluded.processing_run_id,
+              is_active = excluded.is_active
         """),
-        [{"code": h["code"], "score": h["score"], "run": run_id, "id": h["id"]} for h in hits],
+        [{"code": h["code"], "score": h["score"], "run": run_id, "id": h["id"], "active": auto_commit} for h in hits],
     )
     db.execute(
-        text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :id"),
-        [{"id": h["id"]} for h in hits],
+        text("update verbatims set coding_status = :state where mention_group_id = :id"),
+        [{"id": h["id"], "state": state} for h in hits],
     )
     db.execute(
         text("""
             update processing_runs
-            set status = 'completed', finished_at = now(), total_verbatims = :total, auto_coded_count = :auto
+            set status = 'completed', finished_at = now(), total_groups = :total,
+                auto_coded_count = :auto, metrics = jsonb_build_object('suggestions', :suggestions)
             where id = :id
         """),
-        {"total": len(groups), "auto": len(hits), "id": run_id},
+        {
+            "total": len(groups),
+            "auto": len(hits) if auto_commit else 0,
+            "suggestions": 0 if auto_commit else len(hits),
+            "id": run_id,
+        },
     )
     db.commit()
 
-    return {"groups_classified": len(hits)}
+    return {"groups_classified": 0, "suggestions": len(hits)}
+
+
+def _contains_brand(text_value: str, approved_aliases: list[str]) -> bool:
+    """Coincidencia por tokens completos; evita substrings tipo aro/huarochirano."""
+    return any(
+        len(alias) >= 4
+        and re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text_value) is not None
+        for alias in approved_aliases
+    )
+
+
+def _apply_brand_in_reason_rule(db: Session, subproject_id: uuid.UUID) -> dict:
+    """Propone la categoría Marca/Nombre si una razón menciona una marca aprobada."""
+    target = db.execute(
+        text("""
+            select c.id
+              from subprojects rsp
+              join codes c on c.codebook_id = rsp.codebook_id
+             where rsp.id = :sp and c.is_active and c.approval_status = 'approved'
+               and not c.is_system
+               and (lower(c.label) like '%marca%' or lower(c.label) like '%nombre%')
+             order by c.code_number
+             limit 2
+        """),
+        {"sp": subproject_id},
+    ).scalars().all()
+    # Ambigüedad en el propio libro: no elige por orden accidental.
+    if len(target) != 1:
+        return {"groups_classified": 0, "suggestions": 0}
+
+    aliases = db.execute(
+        text("""
+            select distinct a.alias_normalized
+              from subprojects rsp
+              join subprojects bsp on bsp.round_id = rsp.round_id and bsp.coding_type = 'brands'
+              join codebooks bcb on bcb.id = bsp.codebook_id
+              join code_aliases a on a.codebook_id = bcb.id
+              join codes c on c.id = a.code_id
+             where rsp.id = :sp and bcb.status in ('approved','exported')
+               and a.status = 'approved' and a.alias_kind = 'positive'
+               and c.is_active and c.approval_status = 'approved'
+        """),
+        {"sp": subproject_id},
+    ).scalars().all()
+    if not aliases:
+        return {"groups_classified": 0, "suggestions": 0}
+
+    groups = db.execute(
+        text("""
+            select id, normalized_text from mention_groups
+             where subproject_id = :sp and status = 'pending_review'
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+    hits = [group for group in groups if _contains_brand(group["normalized_text"], list(aliases))]
+    if not hits:
+        return {"groups_classified": 0, "suggestions": 0}
+
+    code_id = target[0]
+    db.execute(
+        text("""
+            update mention_groups set status = 'suggested', suggested_code_id = :code
+             where id = :id
+        """),
+        [{"code": code_id, "id": group["id"]} for group in hits],
+    )
+    db.execute(
+        text("""
+            insert into verbatim_codes (
+              id, verbatim_id, code_id, output_index, source, is_active
+            )
+            select gen_random_uuid(), v.id, :code, 1, 'rule_brand_in_reason', false
+              from verbatims v where v.mention_group_id = :id
+            on conflict (verbatim_id, code_id) do update set
+              source = 'rule_brand_in_reason', is_active = false
+        """),
+        [{"code": code_id, "id": group["id"]} for group in hits],
+    )
+    db.execute(
+        text("update verbatims set coding_status = 'suggested' where mention_group_id = :id"),
+        [{"id": group["id"]} for group in hits],
+    )
+    return {"groups_classified": 0, "suggestions": len(hits)}
 
 
 def _prefilter_garbage(db: Session, subproject_id: uuid.UUID) -> int:
@@ -326,6 +598,76 @@ def _prefilter_garbage(db: Session, subproject_id: uuid.UUID) -> int:
     return garbage_res.rowcount + resolved
 
 
+def _apply_residual_confuso_bucket(
+    db: Session, subproject_id: uuid.UUID, coding_type: str,
+) -> int:
+    """Bucket residual estilo Ascribe (última etapa, tras fuzzy/caché/LLM).
+
+    Todo grupo que quedó SIN decisión — `pending_review`, `anomaly`, `abstained` o
+    `engine_error`, y **sin** una sugerencia de código real — se cierra al código de
+    sistema universal del estudio: Marcas → 95 "Menciones confusas/Incorrectas",
+    Razones → 97 "Otras menciones". Así la ronda no deja verbatims sin clasificar
+    (cobertura ~100%) y el analista solo reclasifica en Resolución lo que sea una
+    marca real poco frecuente. Los grupos `suggested` NO se tocan: conservan la
+    sugerencia real para que el humano la confirme, en vez de perderla en el 95.
+    """
+    if not settings.residual_to_confuso:
+        return 0
+    system_type = (
+        settings.residual_brand_system_type
+        if coding_type == "brands"
+        else settings.residual_reason_system_type
+    )
+    code_id = db.execute(
+        text("""
+            select c.id from codes c
+              join subprojects sp on sp.codebook_id = c.codebook_id
+             where sp.id = :sp and c.is_system = true and c.system_type = :st
+             limit 1
+        """),
+        {"sp": subproject_id, "st": system_type},
+    ).scalar()
+    if code_id is None:
+        return 0
+
+    groups = db.execute(
+        text("""
+            select id from mention_groups
+             where subproject_id = :sp
+               and status in ('pending_review', 'anomaly', 'abstained', 'engine_error')
+               and suggested_code_id is null
+        """),
+        {"sp": subproject_id},
+    ).scalars().all()
+    if not groups:
+        return 0
+    group_ids = list(groups)
+
+    db.execute(
+        text("""
+            update mention_groups
+               set status = 'auto_coded', suggested_code_id = :code
+             where id = any(:ids)
+        """),
+        {"code": code_id, "ids": group_ids},
+    )
+    db.execute(
+        text("""
+            insert into verbatim_codes (id, verbatim_id, code_id, output_index, source,
+                                        confidence_score, matched_alias, is_active)
+            select gen_random_uuid(), v.id, :code, 1, 'engine_rule', 1.0, v.normalized_text, true
+            from verbatims v where v.mention_group_id = any(:ids)
+            on conflict (verbatim_id, code_id) do update set is_active = true
+        """),
+        {"code": code_id, "ids": group_ids},
+    )
+    db.execute(
+        text("update verbatims set coding_status = 'auto_coded' where mention_group_id = any(:ids)"),
+        {"ids": group_ids},
+    )
+    return len(group_ids)
+
+
 def _process_subproject(db: Session, subproject_id: uuid.UUID, coding_type: str, threshold: float) -> dict:
     """Un subproyecto (Marcas o Razones) de punta a punta: prefiltro -> motor
     correspondiente a su propio coding_type -> lo que quede pending_review al LLM."""
@@ -346,19 +688,39 @@ def _process_subproject(db: Session, subproject_id: uuid.UUID, coding_type: str,
             text("select min_mentions_threshold from subprojects where id = :sp"),
             {"sp": subproject_id},
         ).scalar()
-        discover_reason_catalog(db, subproject_id, min_mentions or 3)
-        fuzzy_result = {"run_id": None, "groups_classified": 0, "anomalies": 0, "total": 0}
+        discover_reason_catalog(db, subproject_id, min_mentions or 2)
+        fuzzy_result = {
+            "run_id": None, "groups_classified": 0, "suggestions": 0,
+            "anomalies": 0, "total": 0,
+        }
 
+    brand_rule_result = (
+        _apply_brand_in_reason_rule(db, subproject_id)
+        if coding_type == "reasons"
+        else {"groups_classified": 0, "suggestions": 0}
+    )
     cache_result = _apply_semantic_cache(db, subproject_id, coding_type)
 
     # Lo que no matcheó por fuzzy/caché sigue 'pending_review'. Al LLM.
     llm_result = classify_round(db, subproject_id)
 
+    # Última red de seguridad: lo que quedó sin decisión ni sugerencia real se cierra
+    # al código universal de confuso (95 marcas / 97 razones). Garantiza cobertura.
+    residual = _apply_residual_confuso_bucket(db, subproject_id, coding_type)
+    db.commit()
+
     return {
         "run_id": fuzzy_result["run_id"] or llm_result["run_id"],
         "llm_run_id": llm_result["run_id"],
         "groups_classified": (
-            fuzzy_result["groups_classified"] + cache_result["groups_classified"] + llm_result["groups_classified"]
+            fuzzy_result["groups_classified"] + cache_result["groups_classified"]
+            + llm_result["groups_classified"] + residual
+        ),
+        "suggestions": (
+            fuzzy_result.get("suggestions", 0)
+            + brand_rule_result.get("suggestions", 0)
+            + cache_result.get("suggestions", 0)
+            + llm_result.get("suggestions", 0)
         ),
         "anomalies": llm_result["anomalies"],
         "total": fuzzy_result["total"] + llm_result["total"],
@@ -389,11 +751,88 @@ def process_round(db: Session, round_id: uuid.UUID, threshold: float = SCORE_THR
     (sección 2.5 del documento v8: la unidad de procesamiento es el Subproyecto, no
     la Ronda). Mantiene la firma por round_id para minimizar cambios en callers."""
     subprojects = db.execute(
-        text("select id, coding_type from subprojects where round_id = :round"),
+        text("""
+            select sp.id, sp.coding_type, sp.min_mentions_threshold,
+                   cb.status as codebook_status, cb.origin as codebook_origin
+              from subprojects sp
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.round_id = :round
+        """),
         {"round": round_id},
     ).mappings().all()
     if not subprojects:
         raise LookupError(f"Ronda no encontrada o sin subproyectos: {round_id}")
+
+    unavailable_catalogs = [
+        sp for sp in subprojects
+        if sp["codebook_origin"] != "scratch"
+        and sp["codebook_status"] not in ("approved", "exported")
+    ]
+    if unavailable_catalogs:
+        db.execute(
+            text("update rounds set status = 'files_uploaded', updated_at = now() where id = :id"),
+            {"id": round_id},
+        )
+        db.commit()
+        return {
+            "run_id": None, "llm_run_id": None, "groups_classified": 0,
+            "suggestions": 0, "anomalies": 0, "total": 0,
+            "awaiting_client_catalog_confirmation": True,
+        }
+
+    # Un catálogo nuevo no se puede usar para clasificarse y validarse a sí
+    # mismo. Primero construimos una propuesta trazable y detenemos la ronda;
+    # solo una aprobación humana explícita vuelve a habilitar el motor.
+    draft_scratch = [
+        sp for sp in subprojects
+        if sp["codebook_origin"] == "scratch"
+        and sp["codebook_status"] not in ("approved", "exported")
+    ]
+    if draft_scratch:
+        proposed = 0
+        for sp in draft_scratch:
+            minimum = sp["min_mentions_threshold"] or 2
+            if sp["coding_type"] == "brands":
+                discover_catalog_from_frequency(db, sp["id"], minimum, threshold)
+                proposed += _canonicalize_brand_draft(db, sp["id"])
+            else:
+                proposed += discover_reason_catalog(db, sp["id"], minimum)
+
+        if not settings.auto_approve_scratch_codebook:
+            # Gate humano: se detiene la ronda hasta que un analista apruebe el
+            # borrador (POST .../codebook-draft/approve reanuda el scheduler).
+            db.execute(
+                text("""
+                    update subprojects
+                       set status = 'codebook_review', updated_at = now()
+                     where round_id = :round
+                       and id = any(:ids)
+                """),
+                {"round": round_id, "ids": [sp["id"] for sp in draft_scratch]},
+            )
+            db.execute(
+                text("update rounds set status = 'codebook_review', updated_at = now() where id = :id"),
+                {"id": round_id},
+            )
+            db.commit()
+            return {
+                "run_id": None,
+                "llm_run_id": None,
+                "groups_classified": 0,
+                "anomalies": 0,
+                "total": 0,
+                "proposed_codes": proposed,
+                "awaiting_codebook_approval": True,
+            }
+
+        # Auto-aprobar la propuesta del bootstrap y seguir de corrido a la
+        # clasificación (el analista corrige en Resolución). La cascada re-toma
+        # los grupos ahora con el libro aprobado.
+        from app.repositories import auto_approve_scratch_codebooks
+        auto_approve_scratch_codebooks(
+            db, round_id, [sp["id"] for sp in draft_scratch],
+        )
+        db.commit()
 
     results: dict[uuid.UUID, dict] = {}
     errors: dict[uuid.UUID, BaseException] = {}
@@ -420,6 +859,7 @@ def process_round(db: Session, round_id: uuid.UUID, threshold: float = SCORE_THR
         "run_id": ordered[0]["run_id"],
         "llm_run_id": ordered[0]["llm_run_id"],
         "groups_classified": sum(r["groups_classified"] for r in ordered),
+        "suggestions": sum(r.get("suggestions", 0) for r in ordered),
         "anomalies": sum(r["anomalies"] for r in ordered),
         "total": sum(r["total"] for r in ordered),
     }

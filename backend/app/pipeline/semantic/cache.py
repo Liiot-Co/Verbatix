@@ -32,6 +32,7 @@ def lookup(db: Session, codebook_ids, normalized_text: str) -> dict | None:
             select code_id, codebook_id, 1 - (embedding <=> :vec) as similarity
             from reason_embeddings
             where codebook_id = any(:cbs)
+              and approval_status = 'approved'
             order by embedding <=> :vec
             limit 1
         """),
@@ -42,15 +43,27 @@ def lookup(db: Session, codebook_ids, normalized_text: str) -> dict | None:
     return {"code_id": row["code_id"], "codebook_id": row["codebook_id"], "similarity": row["similarity"]}
 
 
-def write(db: Session, code_id: str, source_text: str, confidence: float) -> None:
+def write(
+    db: Session,
+    code_id: str,
+    source_text: str,
+    confidence: float,
+    *,
+    approval_status: str = "pending",
+    source: str = "deepseek_proposal",
+) -> None:
     """Cachea el embedding de una razón LLM-aprobada. codebook_id se resuelve
     desde code_id (no se pide al caller) — mismo patrón que
     promote_llm_result_to_alias en fuzzy/catalog.py."""
     vector = embed(source_text)
     db.execute(
         text("""
-            insert into reason_embeddings (id, codebook_id, code_id, source_text, embedding, confidence)
-            select gen_random_uuid(), c.codebook_id, :code, :text, :embedding, :conf
+            insert into reason_embeddings (
+              id, codebook_id, code_id, source_text, embedding, confidence,
+              approval_status, source
+            )
+            select gen_random_uuid(), c.codebook_id, :code, :text, :embedding, :conf,
+                   :approval, :source
             from codes c where c.id = :code
         """),
         {
@@ -58,5 +71,7 @@ def write(db: Session, code_id: str, source_text: str, confidence: float) -> Non
             "text": source_text,
             "embedding": _to_pgvector(vector),
             "conf": confidence,
+            "approval": approval_status,
+            "source": source,
         },
     )

@@ -10,7 +10,7 @@ from app.core.access import is_admin, require_capability, require_round
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 from app.pipeline.export import build_export_zip
-from app.repositories import get_round_export_data, get_round_report
+from app.repositories import get_round_export_data, get_round_report, round_export_blockers
 
 router = APIRouter(prefix="/api/v1", tags=["report"])
 
@@ -49,7 +49,9 @@ def export_codebook(
 ):
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "reports.export")
-    _require_final_for_member(db, round_id, user["id"])
+    blockers = round_export_blockers(db, round_id)
+    if blockers:
+        raise HTTPException(422, "Exportación bloqueada: " + "; ".join(blockers))
     nav = db.execute(
         text("""
             select p.external_code, r.round_number

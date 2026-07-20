@@ -297,6 +297,9 @@ export default function ResolutionSidebar({
           setResolvedThisSession((n) => n + result.auto_resolved_groups.length);
           parts.push(`${result.auto_resolved_groups.length} grupo(s) auto-clasificados`);
         }
+        if (result.similar_suggestions?.length) {
+          parts.push(`${result.similar_suggestions.length} grupo(s) parecido(s) para confirmar`);
+        }
         if (parts.length > 0) showToast(parts.join(" · "), "success");
         lastResolvedRef.current = groupId;
         loadSummary();

@@ -147,6 +147,8 @@ class _FreqSession:
         sql = str(stmt)
         if "codebook_id from subprojects" in sql:
             return _FreqResult(scalar=self._codebook_id)
+        if "select exists" in sql and "from codes" in sql:
+            return _FreqResult(scalar=False)
         if "from mention_groups" in sql:
             return _FreqResult(rows=self._seeds)
         if "is_system and system_type is not null" in sql:
@@ -162,8 +164,8 @@ class _FreqSession:
 
 def test_discover_catalog_promotes_frequent_groups_to_seeds():
     seeds = [
-        {"normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
-        {"normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 7},
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
+        {"id": uuid.uuid4(), "normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 7},
     ]
     db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
 
@@ -194,8 +196,8 @@ def test_discover_catalog_routes_system_responses_to_system_codes():
     # sino alias del código de sistema 96 para que el fuzzy lo codifique ahí.
     code_96 = str(uuid.uuid4())
     seeds = [
-        {"normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 12},
-        {"normalized_text": "no se", "sample_text": "No se", "frequency_count": 10},
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 12},
+        {"id": uuid.uuid4(), "normalized_text": "no se", "sample_text": "No se", "frequency_count": 10},
     ]
     db = _FreqSession(
         codebook_id=uuid.uuid4(),
@@ -216,8 +218,8 @@ def test_discover_catalog_routes_system_responses_to_system_codes():
 
 def test_discover_catalog_clusters_typo_seeds_as_aliases():
     seeds = [
-        {"normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 20},
-        {"normalized_text": "gloriaa", "sample_text": "GLORIAA", "frequency_count": 6},
+        {"id": uuid.uuid4(), "normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 20},
+        {"id": uuid.uuid4(), "normalized_text": "gloriaa", "sample_text": "GLORIAA", "frequency_count": 6},
     ]
     db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
 
@@ -231,8 +233,8 @@ def test_discover_catalog_clusters_typo_seeds_as_aliases():
 
 def test_discover_catalog_numbering_skips_system_range():
     seeds = [
-        {"normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
-        {"normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 8},
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
+        {"id": uuid.uuid4(), "normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 8},
     ]
     # El siguiente número libre cae en el rango de sistema (95-99): debe saltarlo.
     db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds, next_number=95)
@@ -294,8 +296,8 @@ def test_discover_catalog_clusters_sub_threshold_typos_by_combined_frequency():
 
 def test_discover_catalog_promotes_cluster_when_combined_frequency_reaches_minimum():
     seeds = [
-        {"normalized_text": "kraft", "sample_text": "Kraft", "frequency_count": 2},
-        {"normalized_text": "kraf", "sample_text": "Kraf", "frequency_count": 1},
+        {"id": uuid.uuid4(), "normalized_text": "kraft", "sample_text": "Kraft", "frequency_count": 2},
+        {"id": uuid.uuid4(), "normalized_text": "kraftt", "sample_text": "Kraftt", "frequency_count": 1},
     ]
     db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
 
@@ -306,4 +308,16 @@ def test_discover_catalog_promotes_cluster_when_combined_frequency_reaches_minim
     assert len(db.inserted_codes) == 1
     assert db.inserted_codes[0]["label"] == "Kraft"
     by_alias = {c.alias_normalized: c.code_id for c in catalog}
-    assert by_alias["kraft"] == by_alias["kraf"] == db.inserted_codes[0]["id"]
+    assert by_alias["kraft"] == by_alias["kraftt"] == db.inserted_codes[0]["id"]
+
+
+def test_discover_catalog_never_clusters_bone_into_bonle():
+    seeds = [
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonlé", "frequency_count": 5},
+        {"id": uuid.uuid4(), "normalized_text": "bone", "sample_text": "Bone", "frequency_count": 5},
+    ]
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
+
+    discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=5)
+
+    assert len(db.inserted_codes) == 2

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from app.pipeline.resolution import BelowThresholdError, ResolutionConflict, resolve_group
+from app.repositories import add_alias_from_group
 
 ROUND_ID = uuid.uuid4()
 SUBPROJECT_ID = uuid.uuid4()
@@ -37,6 +38,10 @@ class FakeResult:
     def all(self):
         return self._mappings_list
 
+    @property
+    def rowcount(self):
+        return 0
+
 
 class FakeSession:
     """Answers the ad-hoc queries resolve_group runs itself: codebook_id/round_id
@@ -51,8 +56,11 @@ class FakeSession:
     def execute(self, stmt, params=None):
         sql = " ".join(str(stmt).lower().split())
         params = params or {}
-        if "codebook_id, round_id from subprojects" in sql:
-            return FakeResult(mapping={"codebook_id": CODEBOOK_ID, "round_id": ROUND_ID})
+        if "codebook_id, round_id" in sql and "from subprojects" in sql:
+            return FakeResult(mapping={
+                "codebook_id": CODEBOOK_ID, "round_id": ROUND_ID,
+                "coding_type": "brands",
+            })
         if "code_number = :n" in sql:
             mapping = {"id": self.discard_code_id} if self.discard_code_id else None
             return FakeResult(mapping=mapping)
@@ -95,6 +103,9 @@ class Mocks:
         self.mark_resolved = stack.enter_context(patch("app.pipeline.resolution.mark_group_resolved"))
         self.log_action = stack.enter_context(patch("app.pipeline.resolution.log_action"))
         self.add_alias = stack.enter_context(patch("app.pipeline.resolution.add_alias_from_group"))
+        self.add_negative_alias = stack.enter_context(
+            patch("app.pipeline.resolution.add_negative_alias_from_group")
+        )
         self.create_code = stack.enter_context(patch("app.pipeline.resolution.create_code"))
         stack.enter_context(patch("app.pipeline.resolution.list_codebook_codes", return_value=existing_codes or []))
 
@@ -168,6 +179,91 @@ def test_reassignment_deactivates_before_reassigning():
     assert call_order == ["deactivate", "assign"]
 
 
+def test_rejecting_engine_suggestion_creates_approved_negative_memory():
+    rejected_id, selected_id = uuid.uuid4(), uuid.uuid4()
+    group = _group()
+    group["suggested_code"] = {
+        "id": str(rejected_id), "code_number": 1, "label": "Bonlé",
+    }
+    with ExitStack() as stack:
+        mocks = Mocks(stack, group)
+        resolve_group(
+            FakeSession(), SUBPROJECT_ID, GROUP_ID,
+            {"action": "approve", "code_ids": [str(selected_id)]},
+            user_id=USER_ID,
+        )
+
+    args = mocks.add_negative_alias.call_args.args
+    assert args[1:] == (CODEBOOK_ID, rejected_id, group, USER_ID)
+
+
+def test_alias_contradiction_stops_assignment_and_persists_conflict():
+    group = _group()
+    with ExitStack() as stack:
+        mocks = Mocks(stack, group)
+        mocks.add_alias.return_value = False
+        db = FakeSession()
+        with pytest.raises(ResolutionConflict, match="conflicto"):
+            resolve_group(
+                db, SUBPROJECT_ID, GROUP_ID,
+                {
+                    "action": "approve",
+                    "code_ids": [str(uuid.uuid4())],
+                    "add_alias": True,
+                },
+                user_id=USER_ID,
+            )
+
+    assert db.committed is True
+    mocks.deactivate.assert_not_called()
+    mocks.assign.assert_not_called()
+
+
+def test_alias_repository_materializes_both_sides_as_conflict():
+    class ConflictSession:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, stmt, params=None):
+            sql = str(stmt)
+            self.executed.append((sql, params))
+            if sql.lstrip().startswith("select count(*) from code_aliases"):
+                return FakeResult(scalar=0)
+            if sql.lstrip().startswith("select code_id from code_aliases"):
+                return FakeResult(scalar=uuid.uuid4())
+            return FakeResult()
+
+    db = ConflictSession()
+    result = add_alias_from_group(
+        db, CODEBOOK_ID, uuid.uuid4(), _group(),
+    )
+
+    assert result is False
+    conflict_sql = "\n".join(sql for sql, _ in db.executed)
+    assert "set status = 'conflict'" in conflict_sql
+    assert "'positive', 'conflict'" in conflict_sql
+
+
+def test_alias_repository_human_adjudication_revokes_other_conflict_targets():
+    class AdjudicationSession:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, stmt, params=None):
+            sql = str(stmt)
+            self.executed.append((sql, params))
+            if sql.lstrip().startswith("select count(*) from code_aliases"):
+                return FakeResult(scalar=2)
+            return FakeResult(scalar=None)
+
+    db = AdjudicationSession()
+    assert add_alias_from_group(db, CODEBOOK_ID, uuid.uuid4(), _group()) is True
+
+    sql = "\n".join(statement for statement, _ in db.executed)
+    assert "then 'approved' else 'revoked'" in sql
+    assert "on conflict (codebook_id, alias_normalized, code_id) do update" in sql
+
+
 def test_discard_uses_configured_discard_code():
     group = _group()
     discard_id = uuid.uuid4()
@@ -189,10 +285,9 @@ def test_wrong_subproject_raises_lookup_error():
             resolve_group(FakeSession(), SUBPROJECT_ID, GROUP_ID, {"action": "discard"}, user_id=USER_ID)
 
 
-def test_auto_resolve_matches_below_threshold_and_returns_texts():
-    """«pia monte» (below_threshold) se auto-clasifica al resolver «piamonte» manualmente,
-    y la respuesta trae id + texto para el feedback del frontend."""
-    from app.pipeline.resolution import _auto_resolve_similar_pending_groups
+def test_similar_groups_are_suggested_without_being_auto_resolved():
+    """WRatio puede priorizar, pero nunca propaga una decisión sin confirmación."""
+    from app.pipeline.resolution import _suggest_similar_pending_groups
 
     class FakeRowsResult:
         def __init__(self, rows):
@@ -214,22 +309,18 @@ def test_auto_resolve_matches_below_threshold_and_returns_texts():
             return FakeRowsResult(self.rows)
 
     pid = uuid.uuid4()
-    code_id = uuid.uuid4()
     rows = [
         {"id": pid, "normalized_text": "pia monte", "status": "below_threshold"},
         {"id": uuid.uuid4(), "normalized_text": "coca cola", "status": "pending_review"},
     ]
     with ExitStack() as stack:
-        stack.enter_context(patch("app.pipeline.resolution.deactivate_group_codes"))
-        assign = stack.enter_context(patch("app.pipeline.resolution.assign_codes_to_group"))
-        stack.enter_context(patch("app.pipeline.resolution.mark_group_resolved"))
-        log = stack.enter_context(patch("app.pipeline.resolution.log_action"))
         db = FakeDb(rows)
-        result = _auto_resolve_similar_pending_groups(
-            db, SUBPROJECT_ID, ROUND_ID, code_id, {"normalized_text": "piamonte"}, USER_ID
+        result = _suggest_similar_pending_groups(
+            db, SUBPROJECT_ID, {"normalized_text": "piamonte"}
         )
 
     assert "below_threshold" in db.sql
-    assert result == [{"id": str(pid), "normalized_text": "pia monte"}]
-    assign.assert_called_once()
-    assert log.call_args.kwargs["old_value"] == {"status": "below_threshold"}
+    assert result[0]["id"] == str(pid)
+    assert result[0]["normalized_text"] == "pia monte"
+    assert result[0]["status"] == "below_threshold"
+    assert result[0]["score"] == pytest.approx(94.1176, rel=1e-4)

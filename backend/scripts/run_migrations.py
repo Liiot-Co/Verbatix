@@ -56,6 +56,21 @@ _ALREADY_PRESENT = {
         "where table_schema = 'public' and table_name = 'rounds' "
         "and column_name = 'expected_max_mentions'"
     ),
+    "007_ingestion_fidelity.sql": (
+        "select 1 from information_schema.columns "
+        "where table_schema = 'public' and table_name = 'verbatims' "
+        "and column_name = 'mention_position'"
+    ),
+    "008_classification_governance.sql": (
+        "select 1 from information_schema.columns "
+        "where table_schema = 'public' and table_name = 'codes' "
+        "and column_name = 'approval_status'"
+    ),
+    "009_precision_sources_and_legacy_reopen.sql": (
+        "select 1 from pg_constraint "
+        "where conname = 'verbatim_codes_source_check' "
+        "and pg_get_constraintdef(oid) like '%llm_suggestion%'"
+    ),
 }
 
 

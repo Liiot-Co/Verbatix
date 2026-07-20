@@ -48,9 +48,16 @@ def _mark_round_failed(db: Session, round_id: uuid.UUID, message: str) -> None:
 
 def _run_round(round_id: uuid.UUID) -> None:
     from app.pipeline import process_round
+    from app.repositories import round_processing_blockers
 
     db = SessionLocal()
     try:
+        blockers = round_processing_blockers(db, round_id)
+        if blockers:
+            logger.warning(
+                "Ronda %s no se procesa: %s", round_id, "; ".join(blockers)
+            )
+            return
         process_round(db, round_id)
     except Exception as exc:
         logger.exception("process_round falló para ronda %s", round_id)

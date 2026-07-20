@@ -113,6 +113,10 @@ def delete_project(
     user: CurrentUser = Depends(current_user),
 ):
     require_capability(db, user["id"], "projects.manage")
+    # El proyecto posee tanto questions como rounds; verbatims referencia a
+    # ambos árboles. Borrar las rondas primero elimina verbatims por cascade y
+    # evita que PostgreSQL intente borrar questions aún referenciadas.
+    db.execute(text("delete from rounds where project_id = :id"), {"id": project_id})
     deleted = db.execute(
         text("delete from projects where id = :id returning id"),
         {"id": project_id},

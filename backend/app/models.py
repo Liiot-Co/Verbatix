@@ -208,7 +208,7 @@ class Subproject(Base):
     # conserva sus copias (transición) hasta migrar el código que aún las lee.
     origin_mode = Column(String, nullable=False, default="from_scratch")  # from_scratch | homologated
     source_subproject_id = Column(UUID(as_uuid=True), ForeignKey("subprojects.id"), nullable=True)
-    min_mentions_threshold = Column(Integer, nullable=False, default=3)
+    min_mentions_threshold = Column(Integer, nullable=False, default=2)
     audit_percentage = Column(Numeric(5, 2), nullable=False, default=10)
     target_sample_size = Column(Integer, nullable=True)
     single_code_per_response = Column(Boolean, nullable=False, default=False)
@@ -233,7 +233,7 @@ class Round(Base):
     name = Column(String, nullable=False)
     round_number = Column(Integer, nullable=False)
     status = Column(String, nullable=False, default="created")
-    min_mentions_threshold = Column(Integer, nullable=False, default=3)
+    min_mentions_threshold = Column(Integer, nullable=False, default=2)
     audit_percentage = Column(Numeric(5, 2), nullable=False, default=10.00)
     expected_max_mentions = Column(Integer, nullable=True)
     origin_mode = Column(String, nullable=False, default="from_scratch")  # 'from_scratch' | 'homologated'
@@ -285,6 +285,7 @@ class ImportedFile(Base):
     total_rows = Column(Integer, nullable=True)
     detected_max_mentions = Column(Integer, nullable=True)  # REQ-04
     mentions_decision = Column(String, nullable=True)  # REQ-04: process_all | limit_to_expected
+    dataset_snapshot = Column(JSON, nullable=True)  # snapshot v1; inmutable en BD al quedar ready
     status = Column(String, nullable=False, default="uploaded")
     error_log = Column(JSON, nullable=True)
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
@@ -323,6 +324,11 @@ class Code(Base):
     codebook_id = Column(UUID(as_uuid=True), ForeignKey("codebooks.id", ondelete="CASCADE"), nullable=False)
     code_number = Column(Integer, nullable=False)
     label = Column(String, nullable=False)
+    definition = Column(Text, nullable=True)
+    inclusion_criteria = Column(JSON, nullable=False, default=list)
+    exclusion_criteria = Column(JSON, nullable=False, default=list)
+    examples = Column(JSON, nullable=False, default=list)
+    approval_status = Column(String, nullable=False, default="approved")
     origin = Column(String, nullable=False, default="analyst_manual")
     is_system = Column(Boolean, nullable=False, default=False)
     system_type = Column(String, nullable=True)
@@ -347,7 +353,13 @@ class CodeAlias(Base):
     occurrences = Column(Integer, default=1)
     origin = Column(String, nullable=False, default="analyst_manual")
     match_score = Column(Numeric(4, 3), nullable=True)
+    alias_kind = Column(String, nullable=False, default="positive")
+    status = Column(String, nullable=False, default="approved")
+    normalization_version = Column(String, nullable=False, default="canonical-v1")
+    evidence = Column(JSON, nullable=False, default=dict)
     approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
@@ -390,6 +402,10 @@ class ProcessingRun(Base):
     random_seed = Column(Integer, nullable=True)
     status = Column(String, nullable=False, default="queued")
     total_verbatims = Column(Integer, default=0)
+    total_groups = Column(Integer, nullable=False, default=0)
+    policy_version = Column(String, nullable=True)
+    prompt_version = Column(String, nullable=True)
+    model_name = Column(String, nullable=True)
     auto_coded_count = Column(Integer, default=0)
     manual_coded_count = Column(Integer, default=0)
     new_codes_count = Column(Integer, default=0)
@@ -437,6 +453,8 @@ class Verbatim(Base):
     original_text = Column(Text, nullable=False)
     normalized_text = Column(String, nullable=True)
     input_code_number = Column(Integer, nullable=True)
+    source_row_number = Column(Integer, nullable=True)
+    mention_position = Column(Integer, nullable=False, default=1)
     coding_status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
@@ -450,8 +468,8 @@ class Verbatim(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "subproject_id", "respondent_id", "source_question_key",
-            name="verbatims_subproject_id_respondent_id_source_question_key_key",
+            "subproject_id", "respondent_id", "source_question_key", "mention_position",
+            name="verbatims_source_mention_identity_key",
         ),
     )
 
@@ -463,7 +481,7 @@ class VerbatimCode(Base):
     verbatim_id = Column(UUID(as_uuid=True), ForeignKey("verbatims.id", ondelete="CASCADE"), nullable=False)
     code_id = Column(UUID(as_uuid=True), ForeignKey("codes.id", ondelete="CASCADE"), nullable=False)
     output_index = Column(Integer, nullable=False, default=1)
-    source = Column(String, nullable=False)
+    source = Column(String, nullable=False)  # exact/fuzzy/LLM suggestion/manual/audit
     confidence_score = Column(Numeric(4, 3), nullable=True)
     matched_alias = Column(String, nullable=True)
     processing_run_id = Column(UUID(as_uuid=True), ForeignKey("processing_runs.id", ondelete="SET NULL"), nullable=True)

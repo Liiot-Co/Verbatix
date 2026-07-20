@@ -1,4 +1,5 @@
 import logging
+import json
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -6,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.pipeline.llm.client import classify_batch
+from app.pipeline.llm.client import PROMPT_VERSIONS, classify_batch
 from app.pipeline.fuzzy.catalog import promote_llm_result_to_alias
 from app.pipeline.normalize import normalize
 from app.pipeline.question_controls import cap_codes_for_single_response
@@ -16,6 +17,8 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _RETRY_DELAY_SECONDS = 2.0
+POLICY_VERSION = "precision-v1-suggest-only"
+PROMPT_VERSION = "classification-v2-generic"
 
 
 def _chunks(items: list, size: int):
@@ -23,15 +26,18 @@ def _chunks(items: list, size: int):
         yield items[i : i + size]
 
 
-def _classify_batch_with_retry(codebook: list[dict], payload: list[dict], coding_type: str) -> list[dict]:
+def _classify_batch_with_retry(
+    codebook: list[dict], payload: list[dict], coding_type: str,
+    context: dict | None = None,
+) -> list[dict]:
     """Un reintento ante fallo transitorio (red/timeout/JSON malformado) antes de
     rendir el batch: sin esto, un blip puntual mandaba 20 grupos a revisión humana."""
     try:
-        return classify_batch(codebook, payload, coding_type)
+        return classify_batch(codebook, payload, coding_type, context)
     except Exception:
         logger.warning("Batch LLM falló (%d verbatims); reintentando una vez", len(payload))
         time.sleep(_RETRY_DELAY_SECONDS)
-        return classify_batch(codebook, payload, coding_type)
+        return classify_batch(codebook, payload, coding_type, context)
 
 
 def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
@@ -43,13 +49,23 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
     fuzzy-match leftovers (whatever a future alias-matching pass doesn't resolve), per
     docs/ideas/verbatix-sharpen.md.
     """
+    started_monotonic = time.monotonic()
     run_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into processing_runs (id, subproject_id, run_type, algorithm, status, started_at)
-            values (:id, :sp, 'initial', 'llm_structured_output', 'running', now())
+            insert into processing_runs (
+              id, subproject_id, run_type, algorithm, status, started_at,
+              policy_version, prompt_version, model_name
+            )
+            values (
+              :id, :sp, 'initial', 'deepseek_structured_suggestion', 'running', now(),
+              :policy, :prompt, :model
+            )
         """),
-        {"id": run_id, "sp": subproject_id},
+        {
+            "id": run_id, "sp": subproject_id, "policy": POLICY_VERSION,
+            "prompt": PROMPT_VERSION, "model": settings.llm_model,
+        },
     )
     db.commit()
 
@@ -57,21 +73,43 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
         text("select coding_type from subprojects where id = :sp"),
         {"sp": subproject_id},
     ).scalar()
+    db.execute(
+        text("update processing_runs set prompt_version = :prompt where id = :id"),
+        {"prompt": PROMPT_VERSIONS.get(coding_type, PROMPT_VERSION), "id": run_id},
+    )
+    context_row = db.execute(
+        text("""
+            select p.name as study, p.external_code,
+                   cat.name as product_category, sp.single_code_per_response
+              from subprojects sp
+              join rounds r on r.id = sp.round_id
+              join projects p on p.id = r.project_id
+              left join categories cat on cat.id = r.category_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().first()
+    study_context = dict(context_row) if context_row else {}
 
     # Solo el codebook del subproyecto (ya resuelto, sin necesidad de "latest
     # version" — subprojects.codebook_id apunta directo al vigente).
     codes = db.execute(
         text("""
-            select c.id, c.code_number, c.label, c.is_system, n.name as net_name, c.system_type,
+            select c.id, c.code_number, c.label, c.definition,
+                   c.inclusion_criteria, c.exclusion_criteria, c.examples,
+                   c.is_system, n.name as net_name, c.system_type,
                    array(
                        select alias_sample from code_aliases a
                        where a.code_id = c.id and a.alias_sample is not null
+                         and a.status = 'approved' and a.alias_kind in ('positive', 'system')
                    ) as aliases
             from codes c
             join subprojects sp on sp.codebook_id = c.codebook_id
+            join codebooks cb on cb.id = c.codebook_id
             left join net_codes nc on nc.code_id = c.id
             left join nets n on n.id = nc.net_id
-            where sp.id = :sp and c.is_active
+            where sp.id = :sp and c.is_active and c.approval_status = 'approved'
+              and cb.status in ('approved', 'exported')
             order by c.code_number
         """),
         {"sp": subproject_id},
@@ -89,13 +127,27 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
             "net": c["net_name"],
             "aliases": c["aliases"],
             "system_type": c["system_type"],
+            "definition": c.get("definition"),
+            "inclusion_criteria": c.get("inclusion_criteria") or [],
+            "exclusion_criteria": c.get("exclusion_criteria") or [],
+            "examples": c.get("examples") or [],
         } for c in codes
     ]
 
     groups = db.execute(
         text("""
-            select id, sample_text from mention_groups
-            where subproject_id = :sp and status = 'pending_review'
+            select mg.id, mg.sample_text, mg.frequency_count,
+                   array(
+                     select distinct coalesce(q.display_label, q.question_key)
+                     from verbatims v join questions q on q.id = v.question_id
+                     where v.mention_group_id = mg.id
+                   ) as questions,
+                   array(
+                     select distinct v.original_text from verbatims v
+                     where v.mention_group_id = mg.id limit 5
+                   ) as surface_forms
+            from mention_groups mg
+            where mg.subproject_id = :sp and mg.status = 'pending_review'
         """),
         {"sp": subproject_id},
     ).mappings().all()
@@ -105,16 +157,21 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
         {"sp": subproject_id},
     ).scalar())
 
+    suggestions = 0
     auto_coded = 0
-    anomalies = 0
+    abstentions = 0
+    engine_errors = 0
 
     update_groups_params = []
     insert_verbatim_codes_params = []
     update_verbatims_params = []
-    update_anomalies_groups = []
-    update_anomalies_verbatims = []
+    update_abstained_groups = []
+    update_abstained_verbatims = []
+    update_error_groups = []
+    update_error_verbatims = []
     promotions = []
     reason_promotions = []
+    structured_decisions: list[dict] = []
 
     # Los batches son independientes entre sí (cada uno lleva el codebook completo
     # y sus propios grupos), así que van al LLM en paralelo: el cuello de botella
@@ -126,8 +183,14 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
             pool.submit(
                 _classify_batch_with_retry,
                 codebook_payload,
-                [{"id": str(g["id"]), "text": g["sample_text"]} for g in batch],
+                [{
+                    "id": str(g["id"]), "text": g["sample_text"],
+                    "frequency": g.get("frequency_count"),
+                    "questions": g.get("questions") or [],
+                    "surface_forms": g.get("surface_forms") or [],
+                } for g in batch],
                 coding_type,
+                study_context,
             ): batch
             for batch in batches
         }
@@ -146,9 +209,13 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
     for batch, results in batch_results:
         if results is None:
             for g in batch:
-                update_anomalies_groups.append({"run": run_id, "id": g["id"]})
-                update_anomalies_verbatims.append({"id": g["id"]})
-                anomalies += 1
+                update_error_groups.append({"run": run_id, "id": g["id"]})
+                update_error_verbatims.append({"id": g["id"]})
+                engine_errors += 1
+                structured_decisions.append({
+                    "group_id": str(g["id"]), "decision": "engine_error",
+                    "code_numbers": [], "confidence": None,
+                })
             continue
 
         for result in results:
@@ -156,6 +223,15 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
             if group is None:
                 continue
             group_id = group["id"]
+            structured_decisions.append({
+                "group_id": result["verbatim_id"],
+                "decision": result.get("decision"),
+                "code_numbers": result.get("code_numbers") or [],
+                "ordered_ideas": result.get("ordered_ideas") or [],
+                "evidence": result.get("evidence") or "",
+                "ambiguity_reason": result.get("ambiguity_reason"),
+                "confidence": result.get("confidence"),
+            })
             matched_code_ids = [codes_by_number[n] for n in result["code_numbers"] if n in codes_by_number]
             matched_rows = [
                 {"id": cid, "is_system": cid in system_code_ids}
@@ -177,24 +253,48 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
             below_threshold = confidence is None or confidence < confidence_threshold
             is_anomaly = any(cid in anomaly_code_ids for cid in matched_code_ids)
 
-            if not matched_code_ids or below_threshold or is_anomaly:
-                update_anomalies_groups.append({"run": run_id, "id": group_id})
-                update_anomalies_verbatims.append({"id": group_id})
-                anomalies += 1
+            if not matched_code_ids or is_anomaly:
+                update_abstained_groups.append({
+                    "run": run_id,
+                    "code": matched_code_ids[0] if matched_code_ids else None,
+                    "id": group_id,
+                })
+                update_abstained_verbatims.append({"id": group_id})
+                abstentions += 1
                 continue
 
-            update_groups_params.append({"code": matched_code_ids[0], "run": run_id, "id": group_id})
+            # Auto-cierre del LLM solo si: el flag está activo, la confianza
+            # declarada supera el umbral y NINGÚN código asignado es de sistema
+            # (regla dura: el 95 y los 96-99 nunca los auto-cierra un modelo; van
+            # a Resolución). Cualquier otro caso queda como sugerencia inactiva.
+            system_present = any(row["is_system"] for row in matched_rows)
+            auto_commit = (
+                settings.auto_commit_llm
+                and not below_threshold
+                and not system_present
+            )
+            state = "auto_coded" if auto_commit else "suggested"
+            update_groups_params.append({
+                "code": matched_code_ids[0], "run": run_id, "id": group_id,
+                "confidence": confidence, "below_threshold": below_threshold,
+                "state": state,
+            })
             for idx, code_id in enumerate(matched_code_ids, start=1):
                 insert_verbatim_codes_params.append({
                     "code": code_id,
                     "idx": idx,
                     "run": run_id,
-                    "group_id": group_id
+                    "group_id": group_id,
+                    "confidence": confidence,
+                    "active": auto_commit,
                 })
-            update_verbatims_params.append({"id": group_id})
-            auto_coded += 1
+            update_verbatims_params.append({"id": group_id, "state": state})
+            if auto_commit:
+                auto_coded += 1
+            else:
+                suggestions += 1
 
-            if confidence >= settings.llm_promotion_confidence_threshold:
+            if confidence is not None and confidence >= settings.llm_promotion_confidence_threshold:
                 if coding_type == "brands":
                     # Para razones el fuzzy da falsos positivos (ver fuzzy/matcher.py)
                     # — esas van al caché semántico, no al catálogo fuzzy.
@@ -215,33 +315,59 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
         db.execute(
             text("""
                 update mention_groups
-                set status = 'auto_coded', suggested_code_id = :code, created_by_run_id = :run
+                set status = :state, suggested_code_id = :code, created_by_run_id = :run
                 where id = :id
             """),
             update_groups_params,
         )
         db.execute(
             text("""
-                insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, processing_run_id)
-                select gen_random_uuid(), v.id, :code, :idx, 'llm_classified', :run
+                insert into verbatim_codes (
+                  id, verbatim_id, code_id, output_index, source,
+                  confidence_score, processing_run_id, is_active
+                )
+                select gen_random_uuid(), v.id, :code, :idx, 'llm_suggestion',
+                       :confidence, :run, :active
                 from verbatims v where v.mention_group_id = :group_id
-                on conflict (verbatim_id, code_id) do nothing
+                on conflict (verbatim_id, code_id) do update set
+                  confidence_score = excluded.confidence_score,
+                  processing_run_id = excluded.processing_run_id,
+                  is_active = excluded.is_active
             """),
             insert_verbatim_codes_params,
         )
         db.execute(
-            text("update verbatims set coding_status = 'auto_coded' where mention_group_id = :id"),
+            text("update verbatims set coding_status = :state where mention_group_id = :id"),
             update_verbatims_params,
         )
 
-    if update_anomalies_groups:
+    if update_abstained_groups:
         db.execute(
-            text("update mention_groups set status = 'anomaly', created_by_run_id = :run where id = :id"),
-            update_anomalies_groups,
+            text("""
+                update mention_groups
+                   set status = 'abstained', suggested_code_id = :code,
+                       created_by_run_id = :run
+                 where id = :id
+            """),
+            update_abstained_groups,
         )
         db.execute(
-            text("update verbatims set coding_status = 'needs_review' where mention_group_id = :id"),
-            update_anomalies_verbatims,
+            text("update verbatims set coding_status = 'abstained' where mention_group_id = :id"),
+            update_abstained_verbatims,
+        )
+
+    if update_error_groups:
+        db.execute(
+            text("""
+                update mention_groups
+                   set status = 'engine_error', created_by_run_id = :run
+                 where id = :id
+            """),
+            update_error_groups,
+        )
+        db.execute(
+            text("update verbatims set coding_status = 'engine_error' where mention_group_id = :id"),
+            update_error_verbatims,
         )
 
     for promotion in promotions:
@@ -267,11 +393,33 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
         text("""
             update processing_runs
             set status = 'completed', finished_at = now(),
-                total_verbatims = :total, auto_coded_count = :auto, anomalies_count = :anom
+                total_verbatims = :verbatims, total_groups = :groups,
+                auto_coded_count = :auto, anomalies_count = :abstained,
+                metrics = jsonb_build_object(
+                  'suggestions', :suggestions,
+                  'auto_coded', :auto,
+                  'abstentions', :abstained,
+                  'engine_errors', :errors,
+                  'latency_ms', :latency_ms,
+                  'structured_decisions', cast(:decisions as jsonb)
+                )
             where id = :id
         """),
-        {"total": len(groups), "auto": auto_coded, "anom": anomalies, "id": run_id},
+        {
+            "verbatims": sum(g.get("frequency_count", 1) for g in groups),
+            "groups": len(groups),
+            "auto": auto_coded,
+            "suggestions": suggestions, "abstained": abstentions,
+            "errors": engine_errors,
+            "latency_ms": round((time.monotonic() - started_monotonic) * 1000),
+            "decisions": json.dumps(structured_decisions, ensure_ascii=False),
+            "id": run_id,
+        },
     )
     db.commit()
 
-    return {"run_id": str(run_id), "groups_classified": auto_coded, "anomalies": anomalies, "total": len(groups)}
+    return {
+        "run_id": str(run_id), "groups_classified": auto_coded,
+        "suggestions": suggestions, "anomalies": abstentions,
+        "engine_errors": engine_errors, "total": len(groups),
+    }

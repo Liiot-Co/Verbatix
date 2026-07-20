@@ -93,6 +93,7 @@ def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | Non
         return None
 
     i_resp = col("respondent id")
+    i_realid = col("realid", "real id")
     i_q = col("question id")
     # column_map.verbatim es explícito (usado por importaciones .dau, donde no
     # hay header "Verbatim" que adivinar); si no viene, cae al sniffing actual.
@@ -102,11 +103,13 @@ def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | Non
     i_out = col("output id 1", "output id")
 
     out = []
-    for r in rows[header_i + 1:]:
+    for source_row_number, r in enumerate(rows[header_i + 1:], start=header_i + 2):
         if not r or i_txt is None or not r[i_txt]:
             continue
         out.append({
             "respondent_external_id": str(r[i_resp]) if i_resp is not None and r[i_resp] else None,
+            "realid": str(r[i_realid]) if i_realid is not None and r[i_realid] else None,
+            "source_row_number": source_row_number,
             "question_key": str(r[i_q]) if i_q is not None and r[i_q] else None,
             "original_text": str(r[i_txt]).strip(),
             "input_code_number": int(r[i_in]) if i_in is not None and isinstance(r[i_in], (int, float)) else None,

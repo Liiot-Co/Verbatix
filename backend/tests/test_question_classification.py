@@ -43,6 +43,7 @@ class FakeSession:
         self.questions: dict[tuple, dict] = {}
         self.respondents: dict[tuple, uuid.UUID] = {}
         self.inserted_verbatims: list[dict] = []
+        self.inserted_respondents: list[dict] = []
 
     def execute(self, stmt, params=None):
         sql = " ".join(str(stmt).lower().split())
@@ -115,6 +116,7 @@ class FakeSession:
 
         if "insert into respondents" in sql:
             for p in params if isinstance(params, list) else [params]:
+                self.inserted_respondents.append(p)
                 key = (p["round"], p["resp"])
                 if key not in self.respondents:
                     self.respondents[key] = p["id"]
@@ -163,6 +165,34 @@ def test_classifying_then_retrying_inserts_the_verbatim():
     assert pending == []
     assert n_inserted == 1
     assert db.inserted_verbatims[0]["sp"] == SUBPROJECT_BRANDS
+
+
+def test_insert_preserves_realid_and_repeated_mentions_with_stable_positions():
+    db = FakeSession()
+    classify_question(db, PROJECT_ID, QUESTION_KEY, "brands")
+    rows = [
+        {
+            "respondent_external_id": "8", "realid": "persona-real-8",
+            "question_key": QUESTION_KEY, "original_text": "Gloria",
+            "source_row_number": 20,
+        },
+        {
+            "respondent_external_id": "8", "realid": "persona-real-8",
+            "question_key": QUESTION_KEY, "original_text": "Laive",
+            "source_row_number": 21,
+        },
+    ]
+
+    n_inserted, _, pending, _ = insert_verbatims(
+        db, ROUND_ID, PROJECT_ID, FILE_ID, rows
+    )
+
+    assert pending == []
+    assert n_inserted == 2
+    assert db.inserted_respondents[0]["realid"] == "persona-real-8"
+    assert [row["position"] for row in db.inserted_verbatims] == [1, 2]
+    assert [row["source_row"] for row in db.inserted_verbatims] == [20, 21]
+    assert [row["txt"] for row in db.inserted_verbatims] == ["Gloria", "Laive"]
 
 
 def test_classify_question_is_idempotent_per_project():

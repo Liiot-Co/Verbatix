@@ -22,7 +22,10 @@ from app.repositories import (
 
 router = APIRouter(prefix="/api/v1", tags=["resolution"])
 
-DEFAULT_STATUSES = ["anomaly", "below_threshold", "pending_review"]
+DEFAULT_STATUSES = [
+    "suggested", "abstained", "pending_review", "below_threshold",
+    "anomaly", "garbage", "engine_error", "conflict",
+]
 
 
 def _default_statuses() -> list[str]:

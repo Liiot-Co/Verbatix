@@ -91,6 +91,18 @@ def test_parse_records_rejects_empty():
         dau.parse_records(b"\xff\xfe")
 
 
+def test_parse_records_rejects_malformed_field_with_location():
+    malformed = "\ufeff##recstart 1\r\n##v campo roto\r\n##end 1\r\n".encode("utf-16le")
+    with pytest.raises(dau.DauFormatError, match=r"línea 2, registro 1"):
+        dau.parse_records(malformed)
+
+
+def test_parse_verbatims_preserves_source_record_number():
+    rows = dau.parse_verbatims(_content())
+    assert all(isinstance(row["source_row_number"], int) for row in rows)
+    assert min(row["source_row_number"] for row in rows) >= 1
+
+
 def test_guess_coding_type_known_patterns():
     assert dau.guess_coding_type("NBS_UNAIDBlock[{_1}].NBS_UNAID") == "reasons"
     assert dau.guess_coding_type("NBS_UNAID_FUPBlock[{_1}].NBS_UNAID_FUP") == "brands"

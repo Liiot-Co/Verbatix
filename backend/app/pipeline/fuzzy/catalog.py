@@ -4,9 +4,9 @@ como fallback).
 """
 from __future__ import annotations
 
+import json
 import uuid
 
-from rapidfuzz import fuzz, process as rf_process
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -14,10 +14,10 @@ from app.pipeline.normalize import normalize
 
 from .models import (
     SCORE_THRESHOLD,
-    SHORT_TEXT_EXACT_MAX_LEN,
     SYSTEM_ALIAS_VARIANTS,
     CodeAlias,
 )
+from .scoring import best_brand_candidate
 
 
 def load_catalog_aliases(db: Session, subproject_id: uuid.UUID) -> list[CodeAlias]:
@@ -25,8 +25,13 @@ def load_catalog_aliases(db: Session, subproject_id: uuid.UUID) -> list[CodeAlia
         text("""
             select ca.code_id::text as code_id, ca.alias_normalized
             from code_aliases ca
+            join codes c on c.id = ca.code_id
+            join codebooks cb on cb.id = ca.codebook_id
             join subprojects sp on sp.codebook_id = ca.codebook_id
             where sp.id = :sp
+              and cb.status in ('approved', 'exported')
+              and c.is_active and c.approval_status = 'approved'
+              and ca.status = 'approved' and ca.alias_kind in ('positive', 'system')
               and ca.alias_normalized is not null and ca.alias_normalized <> ''
         """),
         {"sp": subproject_id},
@@ -36,8 +41,11 @@ def load_catalog_aliases(db: Session, subproject_id: uuid.UUID) -> list[CodeAlia
         text("""
             select c.id::text as code_id, c.label
             from codes c
+            join codebooks cb on cb.id = c.codebook_id
             join subprojects sp on sp.codebook_id = c.codebook_id
             where sp.id = :sp
+              and cb.status in ('approved', 'exported')
+              and c.approval_status = 'approved'
               and c.is_active
               and coalesce(c.is_system, false) = false
               and c.label is not null
@@ -82,11 +90,15 @@ def promote_llm_result_to_alias(
     db.execute(
         text("""
             insert into code_aliases (id, codebook_id, code_id, alias_normalized,
-                                      alias_sample, occurrences, origin, match_score)
-            select gen_random_uuid(), c.codebook_id, :code, :norm, :sample, 1, 'llm_promoted', :score
+                                      alias_sample, occurrences, origin, match_score,
+                                      status, evidence)
+            select gen_random_uuid(), c.codebook_id, :code, :norm, :sample, 1,
+                   'llm_promoted', :score, 'pending',
+                   jsonb_build_object('source', 'deepseek', 'self_confidence', :score)
             from codes c where c.id = :code
             on conflict (codebook_id, alias_normalized, code_id) do update
-              set occurrences = code_aliases.occurrences + 1
+              set occurrences = code_aliases.occurrences + 1,
+                  evidence = excluded.evidence
         """),
         {"code": code_id, "norm": alias_normalized, "sample": alias_sample, "score": match_score},
     )
@@ -101,15 +113,6 @@ def _brand_code_numbers(start: int, occupied: set[int] | None = None):
             n += 1
         yield n
         n += 1
-
-
-def _best_match(text_value: str, aliases: list[str], threshold: float):
-    """extractOne con la misma guarda de texto corto que el matcher: un texto
-    de <= SHORT_TEXT_EXACT_MAX_LEN chars solo se acepta por match exacto."""
-    if not aliases:
-        return None
-    cutoff = 100.0 if len(text_value) <= SHORT_TEXT_EXACT_MAX_LEN else threshold
-    return rf_process.extractOne(text_value, aliases, scorer=fuzz.WRatio, score_cutoff=cutoff)
 
 
 def discover_catalog_from_frequency(
@@ -136,9 +139,9 @@ def discover_catalog_from_frequency(
       se vuelven aliases del código de sistema (96/98/99) y el fuzzy las codifica
       directo ahí. Sin esto, al ser de los textos más frecuentes, terminaban como
       marcas falsas en el codebook.
-    - Un candidato que ya matchea (>= threshold) contra el representante de un
-      cluster existente es un typo de esa marca: se une a ese cluster en vez de
-      abrir uno nuevo.
+    - Las variantes se agrupan con el scorer multiseñal conservador; WRatio
+      aislado no une clusters y los textos de hasta cuatro caracteres quedan
+      separados para evitar casos como Bone -> Bonlé.
 
     Con ese catálogo el fuzzy arrastra los typos poco frecuentes hacia las
     semillas; lo que no se parezca a ninguna sigue al LLM (flujo normal).
@@ -154,12 +157,24 @@ def discover_catalog_from_frequency(
     if codebook_id is None:
         return []
 
+    has_candidates = db.execute(
+        text("""
+            select exists(
+              select 1 from codes
+               where codebook_id = :cb and not is_system and is_active
+            )
+        """),
+        {"cb": codebook_id},
+    ).scalar()
+    if has_candidates:
+        return []
+
     # Sin el corte por frequency_count aquí: se necesita ver TODOS los
     # candidatos para poder agruparlos entre sí antes de decidir qué cluster
     # alcanza el mínimo (ver docstring).
     candidates = db.execute(
         text("""
-            select normalized_text, sample_text, frequency_count
+            select id, normalized_text, sample_text, frequency_count
             from mention_groups
             where subproject_id = :sp
               and status = 'pending_review'
@@ -171,17 +186,30 @@ def discover_catalog_from_frequency(
     if not candidates:
         return []
 
-    def _persist_alias(code_id, alias_normalized: str, alias_sample: str | None, occurrences: int | None) -> None:
+    def _persist_alias(
+        code_id,
+        alias_normalized: str,
+        alias_sample: str | None,
+        occurrences: int | None,
+        *,
+        approved_system: bool = False,
+    ) -> None:
         db.execute(
             text("""
                 insert into code_aliases (id, codebook_id, code_id, alias_normalized,
-                                          alias_sample, occurrences, origin)
-                values (:id, :cb, :code, :norm, :sample, :occ, 'engine_fuzzy')
+                                          alias_sample, occurrences, origin,
+                                          alias_kind, status, evidence, approved_at)
+                values (:id, :cb, :code, :norm, :sample, :occ, 'engine_fuzzy',
+                        :kind, :status, cast(:evidence as jsonb),
+                        case when :status = 'approved' then now() else null end)
                 on conflict (codebook_id, alias_normalized, code_id) do nothing
             """),
             {
                 "id": uuid.uuid4(), "cb": codebook_id, "code": code_id,
                 "norm": alias_normalized, "sample": alias_sample, "occ": occurrences,
+                "kind": "system" if approved_system else "positive",
+                "status": "approved" if approved_system else "pending",
+                "evidence": '{"source":"bootstrap_frequency"}',
             },
         )
 
@@ -200,7 +228,7 @@ def discover_catalog_from_frequency(
     system_aliases: list[str] = []
     for row in system_rows:
         for variant in SYSTEM_ALIAS_VARIANTS.get(row["system_type"], ()):
-            _persist_alias(row["code_id"], variant, None, None)
+            _persist_alias(row["code_id"], variant, None, None, approved_system=True)
             catalog.append(CodeAlias(code_id=row["code_id"], alias_normalized=variant))
             alias_to_code[variant] = row["code_id"]
             system_aliases.append(variant)
@@ -232,16 +260,21 @@ def discover_catalog_from_frequency(
 
         # Respuesta de sistema disfrazada de marca -> alias de 96/98/99, nunca
         # entra al clustering de marcas.
-        sys_hit = _best_match(norm, system_aliases, threshold)
-        if sys_hit:
-            code_id = alias_to_code[sys_hit[0]]
-            _persist_alias(code_id, norm, cand["sample_text"], cand["frequency_count"])
+        if norm in alias_to_code and norm in system_aliases:
+            code_id = alias_to_code[norm]
+            _persist_alias(
+                code_id, norm, cand["sample_text"], cand["frequency_count"],
+                approved_system=True,
+            )
             catalog.append(CodeAlias(code_id=code_id, alias_normalized=norm))
             continue
 
-        cluster_hit = _best_match(norm, cluster_reprs, threshold)
+        cluster_hit = best_brand_candidate(
+            norm,
+            [CodeAlias(code_id=representative, alias_normalized=representative) for representative in cluster_reprs],
+        )
         if cluster_hit:
-            clusters[cluster_hit[0]].append(cand)
+            clusters[cluster_hit.code_id].append(cand)
         else:
             clusters[norm] = [cand]
             cluster_reprs.append(norm)
@@ -262,12 +295,22 @@ def discover_catalog_from_frequency(
         formatted_label = raw_label.strip().capitalize() if raw_label else raw_label
         db.execute(
             text("""
-                insert into codes (id, codebook_id, code_number, label, origin)
-                values (:id, :cb, :n, :label, 'engine_auto')
+                insert into codes (
+                  id, codebook_id, code_number, label, definition, examples,
+                  origin, approval_status
+                )
+                values (
+                  :id, :cb, :n, :label, :definition, cast(:examples as jsonb),
+                  'engine_auto', 'pending'
+                )
             """),
             {
                 "id": code_id, "cb": codebook_id, "n": next(numbers),
                 "label": formatted_label,
+                "definition": f"Categoría candidata agrupada desde {total} menciones del DAU.",
+                "examples": json.dumps(
+                    [m["sample_text"] or m["normalized_text"] for m in members[:5]]
+                ),
             },
         )
         for m in members:
@@ -275,5 +318,13 @@ def discover_catalog_from_frequency(
             _persist_alias(code_id, norm, m["sample_text"], m["frequency_count"])
             catalog.append(CodeAlias(code_id=code_id, alias_normalized=norm))
             alias_to_code[norm] = code_id
+        db.execute(
+            text("""
+                update mention_groups
+                   set status = 'suggested', suggested_code_id = :code
+                 where id = any(:ids)
+            """),
+            {"code": code_id, "ids": [m["id"] for m in members]},
+        )
 
     return catalog

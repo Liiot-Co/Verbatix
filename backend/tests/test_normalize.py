@@ -60,6 +60,19 @@ def test_pipeline_reasons_keeps_full_phrase():
     assert df.row(0, named=True)["coding_type"] == "reasons"
 
 
+def test_pipeline_preserves_nonblank_punctuation_as_garbage_candidate():
+    rows = [{
+        "respondent_external_id": "141",
+        "question_key": "brand_4",
+        "original_text": "\\'>`",
+    }]
+
+    df = rows_to_normalized_df(rows, "brands")
+
+    assert df.height == 1
+    assert df.row(0, named=True)["normalized_text"] == ""
+
+
 def test_pipeline_stats():
     rows = [
         {"respondent_external_id": "1", "original_text": "GLORIA"},

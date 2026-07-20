@@ -12,6 +12,9 @@ import type {
   CatalogOriginSelection,
   CatalogPreview,
   CodebookSource,
+  CodebookDraft,
+  CodebookDraftApproval,
+  CodebookDraftDecision,
   ColumnMap,
   FieldPreview,
   FieldSelection,
@@ -56,10 +59,20 @@ const AUTH_BASE = "/api/auth";
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** Machine-readable code from the backend detail (e.g. "processing_required"). */
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    if (code !== undefined) this.code = code;
   }
+}
+
+/** True for the 403 the backend raises when a round hasn't reached a resolution
+ * phase yet (still importing/processing/awaiting codebook). Not a real error —
+ * the UI should show a "processing" state, not blow up. */
+export function isProcessingRequired(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "processing_required";
 }
 
 function getToken(): string | null {
@@ -88,14 +101,18 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       window.location.href = "/login";
     }
     let message = text;
+    let code: string | undefined;
     try {
       const parsed = JSON.parse(text);
       if (typeof parsed.detail === "string") message = parsed.detail;
-      else if (parsed.detail) message = JSON.stringify(parsed.detail);
+      else if (parsed.detail) {
+        message = JSON.stringify(parsed.detail);
+        if (typeof parsed.detail.code === "string") code = parsed.detail.code;
+      }
     } catch {
       // not JSON — keep raw text
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, code);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -437,6 +454,21 @@ export async function getVerbatimsSummary(
 
 export async function processRound(roundId: string): Promise<ProcessResult> {
   return request<ProcessResult>(`/rounds/${roundId}/process`, { method: "POST" });
+}
+
+export async function getCodebookDraft(subprojectId: string): Promise<CodebookDraft> {
+  return request<CodebookDraft>(`/subprojects/${subprojectId}/codebook-draft`);
+}
+
+export async function approveCodebookDraft(
+  subprojectId: string,
+  codes: CodebookDraftDecision[],
+): Promise<CodebookDraftApproval> {
+  return request<CodebookDraftApproval>(`/subprojects/${subprojectId}/codebook-draft/approve`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ codes }),
+  });
 }
 
 export async function getPreliminary(roundId: string): Promise<PreliminarySummary> {

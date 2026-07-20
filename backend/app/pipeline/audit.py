@@ -18,12 +18,12 @@ from sqlalchemy.orm import Session
 
 from app.repositories import (
     approve_scratch_codebooks_for_round,
-    assign_codes_to_verbatim,
+    assign_codes_to_group,
     create_audit_code_review,
     create_audit_item,
     create_audit_session,
     create_code,
-    deactivate_verbatim_codes,
+    deactivate_group_codes,
     finalize_audit_session,
     get_audit_code_review,
     get_audit_item,
@@ -35,12 +35,14 @@ from app.repositories import (
     get_round_audit_percentage,
     increment_review_corrections,
     log_action,
+    mark_audit_group_items_reassigned,
+    mark_group_resolved,
     mark_review_items_correct,
     refresh_audit_session_progress,
+    reopen_group_after_audit,
     set_code_review_result,
     set_run_random_seed,
     set_round_status,
-    set_verbatim_coding_status,
     update_audit_item_review,
 )
 from app.services.notifications import emit
@@ -69,13 +71,14 @@ def _subproject_context(db: Session, subproject_id: uuid.UUID) -> dict | None:
 
 
 def select_sample(population: list[dict], pct: float, seed: int) -> list[dict]:
-    """Muestra GLOBAL sobre toda la población codificada: n = ceil(total * pct/100).
+    """Muestra estratificada reproducible: n = ceil(total * pct/100).
 
     Determinista: ordena por sha256(verbatim_id:seed) — no por hash() de Python,
     que va salteado por proceso y rompería la reproducibilidad entre reinicios.
     Con pct==0 la muestra es vacía (auditoría trivialmente satisfecha); no se
-    aplica "mínimo 1 por código": un código chico puede no salir sorteado y eso
-    es el comportamiento correcto de un muestreo global.
+    Intercala código primario, fuente y banda de confianza. Así un código/fuente
+    minoritario puede entrar antes que el segundo caso de un estrato masivo, sin
+    aumentar el porcentaje pactado.
     """
     if not population or pct <= 0:
         return []
@@ -84,7 +87,56 @@ def select_sample(population: list[dict], pct: float, seed: int) -> list[dict]:
     def sample_key(item: dict) -> str:
         return hashlib.sha256(f"{item['verbatim_id']}:{seed}".encode()).hexdigest()
 
-    return sorted(population, key=sample_key)[:n]
+    def confidence_band(value) -> str:
+        if value is None:
+            return "unknown"
+        score = float(value)
+        if score >= 0.95:
+            return "very_high"
+        if score >= 0.8:
+            return "high"
+        return "review_priority"
+
+    strata: dict[tuple[str, str, str], list[dict]] = {}
+    for item in population:
+        primary = item["codes"][0]
+        key = (
+            str(primary["code_id"]),
+            str(primary.get("source") or "unknown"),
+            confidence_band(primary.get("confidence_score")),
+        )
+        strata.setdefault(key, []).append(item)
+
+    for items in strata.values():
+        items.sort(key=sample_key)
+    ordered_keys = sorted(
+        strata,
+        key=lambda key: hashlib.sha256(f"{key}:{seed}".encode()).hexdigest(),
+    )
+
+    mandatory = sorted(
+        [item for item in population if item.get("high_risk")],
+        key=sample_key,
+    )
+    selected: list[dict] = list(mandatory)
+    selected_ids = {item["verbatim_id"] for item in selected}
+    target = max(n, len(selected))
+    depth = 0
+    while len(selected) < target:
+        advanced = False
+        for key in ordered_keys:
+            if depth < len(strata[key]):
+                advanced = True
+                candidate = strata[key][depth]
+                if candidate["verbatim_id"] not in selected_ids:
+                    selected.append(candidate)
+                    selected_ids.add(candidate["verbatim_id"])
+                if len(selected) == target:
+                    break
+        if not advanced:
+            break
+        depth += 1
+    return selected
 
 
 def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resample: bool = False) -> dict:
@@ -142,7 +194,7 @@ def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resam
         db, subproject_id, run["id"] if run else None, pct, len(sample)
     )
 
-    # La muestra es global; los audit_code_reviews son la capa de agrupación para
+    # Los audit_code_reviews son la capa de agrupación para
     # la UI. Cada verbatim muestreado se cuelga de su código PRIMARIO
     # (output_index=1) — colgarlo de todos duplicaría items y rompería
     # total_items == tamaño de la muestra. El snapshot igual guarda todos.
@@ -166,6 +218,7 @@ def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resam
         new_value={
             "target_percentage": pct, "total_items": len(sample),
             "population": len(population), "random_seed": seed,
+            "sample_strategy": "primary_code_source_confidence_round_robin_v1",
             "processing_run_id": run["id"] if run else None,
         },
     )
@@ -222,6 +275,9 @@ def review_item(
     action = decision.get("action")
     comment = decision.get("comment")
     new_code_result = None
+    group_id = uuid.UUID(item["mention_group_id"]) if item.get("mention_group_id") else None
+    if group_id is None:
+        raise AuditPrecondition("El verbatim auditado no pertenece a un mention_group")
 
     if action == "reassign":
         code_ids = [uuid.UUID(c) for c in (decision.get("code_ids") or [])]
@@ -235,21 +291,25 @@ def review_item(
             code_ids.append(uuid.UUID(new_code_result["id"]))
         if not code_ids:
             raise ValueError("Reasignar requiere al menos un código (code_ids o new_code)")
-        deactivate_verbatim_codes(db, uuid.UUID(item["verbatim_id"]))
-        assign_codes_to_verbatim(db, uuid.UUID(item["verbatim_id"]), code_ids, user_id)
-        set_verbatim_coding_status(db, uuid.UUID(item["verbatim_id"]), "manually_coded")
-        update_audit_item_review(db, item_id, "reassigned", comment, user_id)
+        deactivate_group_codes(db, group_id)
+        affected_verbatims = assign_codes_to_group(
+            db, group_id, code_ids, "audit_correction", user_id
+        )
+        mark_group_resolved(db, group_id, user_id)
+        affected_items = mark_audit_group_items_reassigned(
+            db, item["session_id"], group_id, comment, user_id
+        )
         # Una corrección por transición: re-revisar un item ya corregido no re-cuenta.
         if item["status"] != "reassigned":
             increment_review_corrections(db, item["review_id"])
         new_status = "reassigned"
 
     elif action == "remove":
-        deactivate_verbatim_codes(db, uuid.UUID(item["verbatim_id"]))
-        set_verbatim_coding_status(db, uuid.UUID(item["verbatim_id"]), "needs_review")
-        update_audit_item_review(
-            db, item_id, "reassigned",
-            comment or "Asignación eliminada en auditoría", user_id,
+        deactivate_group_codes(db, group_id)
+        affected_verbatims = reopen_group_after_audit(db, group_id)
+        affected_items = mark_audit_group_items_reassigned(
+            db, item["session_id"], group_id,
+            comment or "Asignación de grupo eliminada en auditoría", user_id,
         )
         if item["status"] != "reassigned":
             increment_review_corrections(db, item["review_id"])
@@ -269,6 +329,9 @@ def review_item(
             "code_ids": decision.get("code_ids") or [],
             "new_code": new_code_result,
             "comment": comment,
+            "mention_group_id": str(group_id),
+            "affected_verbatims": affected_verbatims,
+            "affected_audit_items": affected_items,
         },
     )
     db.commit()
@@ -278,6 +341,9 @@ def review_item(
         "status": new_status,
         "already_reviewed": False,
         "new_code": new_code_result,
+        "mention_group_id": str(group_id),
+        "affected_verbatims": affected_verbatims,
+        "affected_audit_items": affected_items,
         "summary": {**get_audit_summary(db, subproject_id), **progress},
     }
 

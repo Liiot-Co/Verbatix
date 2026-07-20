@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from openpyxl import load_workbook
 
 from app.pipeline.export import build_codebook_excel, build_export_zip
-from app.repositories import get_round_report
+from unittest.mock import patch
+
+from app.repositories import get_round_report, round_export_blockers
 
 ROUND_ID = uuid.uuid4()
 CODE_A = uuid.uuid4()
@@ -80,6 +82,49 @@ class FakeSession:
             code_id = params.get("code_id")
             return FakeResult(mappings_list=self.samples.get(code_id, []))
         return FakeResult()
+
+
+class ExportBlockerSession:
+    def __init__(self, state):
+        self.state = state
+
+    def execute(self, stmt, params=None):
+        return FakeResult(mappings_list=[self.state])
+
+
+def test_export_blockers_require_every_integrity_gate():
+    state = {
+        "source_files": 0,
+        "ready_source_files": 0,
+        "unapproved_codebooks": 1,
+        "unresolved_groups": 4,
+        "conflicts": 2,
+        "missing_or_stale_audits": 1,
+    }
+    with patch("app.repositories.round_processing_blockers", return_value=["1 flag pendiente"]):
+        blockers = round_export_blockers(ExportBlockerSession(state), ROUND_ID)
+
+    assert blockers == [
+        "1 flag pendiente",
+        "la ronda no tiene un snapshot de población de origen",
+        "1 libros de códigos sin aprobar",
+        "4 grupos sin decisión final",
+        "2 conflictos de clasificación o memoria",
+        "1 auditorías faltantes o desactualizadas",
+    ]
+
+
+def test_export_blockers_allow_only_closed_round_data():
+    state = {
+        "source_files": 1,
+        "ready_source_files": 1,
+        "unapproved_codebooks": 0,
+        "unresolved_groups": 0,
+        "conflicts": 0,
+        "missing_or_stale_audits": 0,
+    }
+    with patch("app.repositories.round_processing_blockers", return_value=[]):
+        assert round_export_blockers(ExportBlockerSession(state), ROUND_ID) == []
 
 
 def test_get_round_report_auto_manual_pct():

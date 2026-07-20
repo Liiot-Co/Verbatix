@@ -1,0 +1,39 @@
+{
+  "rounds": [
+    {
+      "round": 1,
+      "coding_type": "brands",
+      "rows": [
+        {"text": "Bonlé", "code": 2},
+        {"text": "Gloria", "code": 1},
+        {"text": "Bone", "code": 95}
+      ]
+    },
+    {
+      "round": 2,
+      "coding_type": "brands",
+      "rows": [
+        {"text": "bonle", "code": 2},
+        {"text": "Gloria", "code": 1},
+        {"text": "Bone", "code": 95},
+        {"text": "bomle", "code": 2}
+      ]
+    },
+    {
+      "round": 1,
+      "coding_type": "reasons",
+      "rows": [
+        {"text": "sabor", "code": 1},
+        {"text": "sin sal", "code": 17}
+      ]
+    },
+    {
+      "round": 2,
+      "coding_type": "reasons",
+      "rows": [
+        {"text": "Sabor", "code": 1},
+        {"text": "no sea salado", "code": 19}
+      ]
+    }
+  ]
+}
