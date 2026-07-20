@@ -2148,6 +2148,7 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
     verbatim_rows = db.execute(
         text("""
             select resp.respondent_external_id, v.source_question_key, v.original_text,
+                   sp.coding_type,
                    coalesce(
                      jsonb_agg(
                        jsonb_build_object(
@@ -2164,7 +2165,7 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
             left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             left join codes c on c.id = vc.code_id
             where sp.round_id = :round
-            group by v.id, resp.respondent_external_id, v.source_question_key, v.original_text
+            group by v.id, resp.respondent_external_id, v.source_question_key, v.original_text, sp.coding_type
             order by v.created_at
         """),
         {"round": round_id},
@@ -2190,6 +2191,7 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
             "respondent_external_id": row["respondent_external_id"],
             "question_key": row["source_question_key"],
             "original_text": row["original_text"],
+            "coding_type": row["coding_type"],
             "codes": raw_codes or [],
         })
 

@@ -52,7 +52,7 @@
 
 ## Phase 2: Text-format generators
 
-### Task 3: `dictionary.py::build_metadata_txt()` — CB_# dictionary
+### Task 3: `dictionary.py::build_metadata_txt()` — CB_# dictionary [DONE]
 **Description:** Build the shared CB_# definitions file (`CB_<var> "<Label>" define { CB_1 "...", CB_2 "...", ... }`), grouped by variable, from `nets_by_coding_type` — same content needed by both the OnNextCase and MDD-estructura checkboxes.
 
 **Acceptance criteria:**
