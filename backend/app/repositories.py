@@ -726,9 +726,15 @@ def insert_verbatims(
             # Solo auto-clasifica si el tipo adivinado existe en esta ronda;
             # si no, queda pendiente para que el analista elija entre los tipos
             # configurados (nunca se inventa un subproyecto a ciegas).
+            # Excel mínimo (Respondent ID + Verbatim, sin Question ID) usa la
+            # clave sintética "verbatim": si la ronda tiene un solo tipo, se
+            # asigna ahí sin pedir clasificación.
             if guessed is None or guessed not in configured_types:
-                pending.add(qk)
-                continue
+                if len(configured_types) == 1:
+                    guessed = next(iter(configured_types))
+                else:
+                    pending.add(qk)
+                    continue
             qid = classify_question(db, project_id, qk, guessed)
             q_info = {
                 "id": qid,
@@ -842,7 +848,10 @@ def insert_verbatims(
 
 
 def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
-    """Agrupa verbatims ya normalizados por texto exacto (dedup para el paso 2)."""
+    """Agrupa verbatims ya normalizados por texto exacto (dedup para el paso 2).
+
+    REQ-05: excluye encuestados con profile_status = 'excluded_confirmed'
+    (aprobados para exclusión; el registro sigue existiendo)."""
     db.execute(
         text("""
             insert into mention_groups (id, subproject_id, normalized_text, sample_text,
@@ -850,7 +859,9 @@ def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
             select gen_random_uuid(), :sp, v.normalized_text, min(v.original_text),
                    count(*), 'pending_review'
             from verbatims v
+            left join respondents r on r.id = v.respondent_id
             where v.subproject_id = :sp and v.normalized_text <> ''
+              and coalesce(r.profile_status, 'not_checked') <> 'excluded_confirmed'
             group by v.normalized_text
             on conflict (subproject_id, normalized_text)
             do update set frequency_count = excluded.frequency_count
@@ -866,6 +877,11 @@ def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
             where g.subproject_id = :sp
               and v.subproject_id = :sp
               and v.normalized_text = g.normalized_text
+              and not exists (
+                select 1 from respondents r
+                 where r.id = v.respondent_id
+                   and r.profile_status = 'excluded_confirmed'
+              )
         """),
         {"sp": subproject_id},
     )

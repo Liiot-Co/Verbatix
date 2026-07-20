@@ -148,6 +148,10 @@ class FakeSession:
                         })
             return FakeResult(rows=rows)
 
+        if "select flag_type from import_review_flags" in sql:
+            f = self.flags.get(params["id"])
+            return FakeResult(scalar=f["flag_type"] if f else None)
+
         if "select id, status from import_review_flags" in sql:
             rows = [
                 {"id": f["id"], "status": f["status"]}

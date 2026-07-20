@@ -56,6 +56,10 @@ _ALREADY_PRESENT = {
         "where table_schema = 'public' and table_name = 'rounds' "
         "and column_name = 'expected_max_mentions'"
     ),
+    "007_req05_profile_match.sql": (
+        "select 1 from pg_indexes "
+        "where schemaname = 'public' and indexname = 'profile_entries_serial_idx'"
+    ),
 }
 
 

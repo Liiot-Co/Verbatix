@@ -239,6 +239,7 @@ def analyze_new_load(db: Session, round_id: uuid.UUID, file_id: uuid.UUID) -> di
     return {
         "duplicates": [entry for _, entry in duplicates],
         "serial_collisions": serial_collisions,
+        "profile_candidates": [],
     }
 
 
@@ -258,17 +259,24 @@ def get_load_review(db: Session, round_id: uuid.UUID, file_id: uuid.UUID) -> dic
     ).mappings().all()
 
     duplicates = []
+    profile_candidates = []
     for row in flags:
-        if row["flag_type"] != "possible_duplicate":
-            continue
         detail = _load_detail(row["detail"])
-        duplicates.append({
-            "flag_id": str(row["id"]),
-            "status": row["status"],
-            "serial": row["serial"] or detail.get("serial"),
-            "realid": row["realid"] or detail.get("realid"),
-            "matches": detail.get("matches", []),
-        })
+        if row["flag_type"] == "possible_duplicate":
+            duplicates.append({
+                "flag_id": str(row["id"]),
+                "status": row["status"],
+                "serial": row["serial"] or detail.get("serial"),
+                "realid": row["realid"] or detail.get("realid"),
+                "matches": detail.get("matches", []),
+            })
+        elif row["flag_type"] == "not_in_profile":
+            profile_candidates.append({
+                "flag_id": str(row["id"]),
+                "status": row["status"],
+                "serial": row["serial"] or detail.get("serial"),
+                "realid": row["realid"] or detail.get("realid"),
+            })
 
     # Los avisos de Serial no se persisten: se recomputan con la misma consulta.
     serial_collisions = db.execute(
@@ -291,9 +299,12 @@ def get_load_review(db: Session, round_id: uuid.UUID, file_id: uuid.UUID) -> dic
         {"round": round_id, "file": file_id},
     ).mappings().all()
 
-    pending = sum(1 for d in duplicates if d["status"] == "pending")
+    pending = sum(
+        1 for d in duplicates + profile_candidates if d["status"] == "pending"
+    )
     return {
         "duplicates": duplicates,
+        "profile_candidates": profile_candidates,
         "serial_collisions": [
             {
                 "serial": r["serial"],
@@ -326,16 +337,31 @@ def resolve_flag(
     user_id,
     note: str | None = None,
 ) -> dict:
-    """Decisión humana sobre un posible duplicado:
+    """Decisión humana sobre un flag de importación:
 
-      keep   -> ambos registros se conservan (personas distintas o duplicado aceptado)
-      remove -> se quitan los verbatims de la carga NUEVA para ese encuestado
-                (aún sin codificar: el motor está bloqueado hasta resolver la cola);
-                el flag conserva la constancia con el detalle y los textos.
-      edit   -> se conserva, con nota del analista (status 'edited').
+      possible_duplicate (REQ-03):
+        keep   -> ambos registros se conservan
+        remove -> se quitan los verbatims de la carga NUEVA
+        edit   -> se conserva, con nota
+
+      not_in_profile (REQ-05):
+        keep   -> se procesa con normalidad (sin borrar nada)
+        remove -> excluido del procesamiento; registro intacto
 
     El `realid` y el Serial NUNCA se modifican (regla dura de REQ-03).
     """
+    kind = db.execute(
+        text("select flag_type from import_review_flags where id = :id"),
+        {"id": flag_id},
+    ).scalar()
+    if kind == "not_in_profile":
+        from app.pipeline.profile import resolve_profile_flag
+        return resolve_profile_flag(
+            db, flag_id, action, user_id=user_id, note=note,
+        )
+    if kind != "possible_duplicate":
+        raise LookupError("Flag de revisión no encontrado")
+
     flag = db.execute(
         text("""
             select f.id, f.status, f.respondent_id, f.detail, f.imported_file_id,

@@ -12,7 +12,7 @@ coding_type que aparezca en un import sin haber pasado por `catalog_origins`
 import hashlib
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -1038,9 +1038,32 @@ def import_file(
     # Comparación contra las cargas previas: duplicados reales por realid quedan
     # insertados Y marcados en import_review_flags ('pending'); los Serial
     # repetidos con realid distinto son solo informativos.
-    review = {"duplicates": [], "serial_collisions": []}
+    review = {"duplicates": [], "serial_collisions": [], "profile_candidates": []}
     if is_additional_load:
         review = load_review.analyze_new_load(db, round_id, file_id)
+
+    # REQ-05: cruce por Respondent ID vs perfil pactado (si hay uno en la ronda).
+    # No toca realid / duplicados (REQ-03). Sin perfil → no-op.
+    from app.pipeline import profile as profile_mod
+    profile_review = profile_mod.match_file_against_profile(
+        db, round_id=round_id, imported_file_id=file_id,
+    )
+    if profile_review.get("has_profile"):
+        # Releer candidatos desde flags para unificar con get_load_review.
+        full_review = load_review.get_load_review(db, round_id, file_id)
+        review["duplicates"] = full_review["duplicates"] if is_additional_load else review.get("duplicates", [])
+        if is_additional_load:
+            review["serial_collisions"] = full_review["serial_collisions"]
+        review["profile_candidates"] = full_review["profile_candidates"]
+        review["profile"] = {
+            "expected": profile_review["expected"],
+            "arrived": profile_review["arrived"],
+            "extra": profile_review["extra"],
+            "summary": profile_review.get("summary"),
+            "has_profile": True,
+        }
+    else:
+        review["profile"] = {"has_profile": False, "expected": 0, "arrived": 0, "extra": 0}
 
     db.execute(
         text("update imported_files set status = 'validated' where id = :id"),
@@ -1061,12 +1084,12 @@ def import_file(
     # Si hay preguntas pendientes de clasificar, NO se procesa todavía — el
     # analista debe responder Marcas/Razones primero (Tarea 9), y el caller
     # reintenta el import (mismo archivo) una vez resueltas.
-    # REQ-03: con duplicados pendientes de decisión humana tampoco — el motor se
-    # dispara al resolver el último flag (POST /import-review/{id}/resolve).
-    pending_duplicates = sum(1 for d in review["duplicates"] if d["status"] == "pending")
+    # REQ-03 / REQ-05: con flags pendientes (duplicados o candidatos a exclusión)
+    # tampoco — el motor se dispara al resolver el último flag.
+    pending_flags = load_review.count_pending_flags(db, file_id)
     if pending_questions:
         processing_status = "blocked_on_classification"
-    elif pending_duplicates:
+    elif pending_flags:
         processing_status = "blocked_on_review"
     else:
         processing_status = "queued"
@@ -1083,11 +1106,126 @@ def import_file(
         "processing": {"status": processing_status},
         "warnings": warnings,
         "is_additional_load": is_additional_load,
-        "review": {**review, "pending_flags": pending_duplicates},
+        "review": {**review, "pending_flags": pending_flags},
         "round_status": db.execute(
             text("select status from rounds where id = :id"), {"id": round_id}
         ).scalar(),
     }
+
+
+@router.post("/rounds/{round_id}/profile", status_code=201)
+def upload_profile(
+    round_id: uuid.UUID,
+    file: UploadFile = File(...),
+    sheet: str | None = Query(None),
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """REQ-05: sube el Excel de perfil pactado (opcional). Cruza por Respondent ID
+    al importar data; sin perfil la ronda funciona igual que antes."""
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    content = file.file.read()
+    from app.pipeline import profile as profile_mod
+    try:
+        sheet_name, entries = profile_mod.parse_profile_rows(content, sheet)
+    except profile_mod.ProfileFormatError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    profile_id = uuid.uuid4()
+    path = f"{round_id}/profile/{profile_id}/{file.filename}"
+    storage.upload("uploads", path, content)
+    saved = profile_mod.save_profile_file(
+        db,
+        round_id=round_id,
+        original_filename=file.filename or "perfil.xlsx",
+        storage_path=f"uploads/{path}",
+        entries=entries,
+        uploaded_by=user["id"],
+    )
+    # Si ya hay encuestados importados, re-cruza contra el perfil nuevo.
+    rematch = []
+    file_ids = db.execute(
+        text("""
+            select id from imported_files
+             where round_id = :round
+               and file_type in ('verbatims_xlsx', 'combined_xlsx', 'dau')
+               and status = 'validated'
+        """),
+        {"round": round_id},
+    ).scalars().all()
+    for fid in file_ids:
+        rematch.append(profile_mod.match_file_against_profile(
+            db, round_id=round_id, imported_file_id=fid,
+            profile_file_id=uuid.UUID(saved["profile_file_id"]),
+        ))
+    db.commit()
+    return {
+        **saved,
+        "sheet": sheet_name,
+        "rematch": rematch,
+    }
+
+
+class ResolveAllProfileIn(BaseModel):
+    action: str  # 'keep' | 'remove'
+
+
+@router.post("/rounds/{round_id}/files/{file_id}/profile-review/resolve-all")
+def resolve_all_profile_for_file(
+    round_id: uuid.UUID,
+    file_id: uuid.UUID,
+    payload: ResolveAllProfileIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Mantener/excluir TODOS los candidatos a exclusión de una carga (REQ-05)
+    en UNA sola transacción — no N peticiones por Respondent ID."""
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    if payload.action not in ("keep", "remove"):
+        raise HTTPException(400, "action debe ser 'keep' o 'remove'")
+
+    exists = db.execute(
+        text("select 1 from imported_files where id = :id and round_id = :round"),
+        {"id": file_id, "round": round_id},
+    ).scalar()
+    if not exists:
+        raise HTTPException(404, "Archivo no encontrado")
+
+    from app.pipeline import profile as profile_mod
+    try:
+        result = profile_mod.resolve_all_pending_profile_flags(
+            db,
+            round_id=round_id,
+            imported_file_id=file_id,
+            action=payload.action,
+            user_id=user["id"],
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+
+    processing_status = _maybe_queue_after_review(
+        db,
+        round_id,
+        result["pending_flags"],
+        already_resolved=bool(result.get("already_resolved")),
+    )
+    return {**result, "processing": {"status": processing_status}}
+
+
+@router.get("/rounds/{round_id}/profile")
+def get_profile(
+    round_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """REQ-05: resumen del perfil más reciente de la ronda (o null)."""
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    from app.pipeline import profile as profile_mod
+    return profile_mod.get_profile_summary(db, round_id)
 
 
 @router.get("/rounds/{round_id}/loads")
@@ -1157,6 +1295,84 @@ class ResolveFlagIn(BaseModel):
     note: str | None = None
 
 
+class BulkResolveProfileIn(BaseModel):
+    flag_ids: list[uuid.UUID]
+    action: str  # 'keep' | 'remove'
+
+
+def _maybe_queue_after_review(
+    db: Session,
+    round_id: uuid.UUID,
+    pending_flags: int,
+    *,
+    already_resolved: bool,
+) -> str:
+    """Dispara el motor una sola vez cuando ya no quedan flags pendientes."""
+    if pending_flags > 0:
+        return "blocked_on_review"
+    if already_resolved:
+        return "queued"
+    # Los 'remove' pudieron dejar grupos pendientes vacíos y frecuencias
+    # desactualizadas: se limpia y recalcula antes de disparar el motor.
+    load_review.cleanup_orphan_groups(db, round_id)
+    subproject_ids = db.execute(
+        text("select id from subprojects where round_id = :round"),
+        {"round": round_id},
+    ).scalars().all()
+    for sp_id in subproject_ids:
+        build_mention_groups(db, sp_id)
+    db.commit()
+    scheduler.submit(round_id)
+    return "queued"
+
+
+@router.post("/import-review/bulk-resolve")
+def bulk_resolve_profile_flags(
+    payload: BulkResolveProfileIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Mantener todos / excluir todos (REQ-05) en una sola transacción."""
+    from app.pipeline import profile as profile_mod
+
+    if payload.action not in ("keep", "remove"):
+        raise HTTPException(400, "action debe ser 'keep' o 'remove'")
+    if not payload.flag_ids:
+        raise HTTPException(400, "flag_ids vacío")
+
+    first = db.execute(
+        text("""
+            select i.round_id from import_review_flags f
+            join imported_files i on i.id = f.imported_file_id
+            where f.id = :id
+        """),
+        {"id": payload.flag_ids[0]},
+    ).mappings().first()
+    if not first:
+        raise HTTPException(404, "Flag de revisión no encontrado")
+    require_round(db, first["round_id"], user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+
+    try:
+        result = profile_mod.resolve_profile_flags_bulk(
+            db, payload.flag_ids, payload.action, user_id=user["id"],
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+
+    processing_status = "blocked_on_review"
+    if result.get("round_id") is not None:
+        processing_status = _maybe_queue_after_review(
+            db,
+            result["round_id"],
+            result["pending_flags"],
+            already_resolved=bool(result.get("already_resolved")),
+        )
+
+    return {**result, "processing": {"status": processing_status}}
+
+
 @router.post("/import-review/{flag_id}/resolve")
 def resolve_import_flag(
     flag_id: uuid.UUID,
@@ -1164,10 +1380,9 @@ def resolve_import_flag(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Decisión humana sobre un posible duplicado (REQ-03). Al resolver el
-    ÚLTIMO flag pendiente de la carga se dispara el motor sobre la ronda —
-    el mismo disparador de siempre: los verbatims nuevos están 'pending' y los
-    ya codificados no se tocan."""
+    """Decisión humana sobre un flag de importación (REQ-03 duplicados o
+    REQ-05 candidatos a exclusión por perfil). Al resolver el ÚLTIMO flag
+    pendiente de la carga se dispara el motor sobre la ronda."""
     flag_round = db.execute(
         text("""
             select i.round_id, i.id as file_id from import_review_flags f
@@ -1192,23 +1407,12 @@ def resolve_import_flag(
         db.rollback()
         raise HTTPException(400, str(exc)) from exc
 
-    processing_status = "blocked_on_review"
-    if result["pending_flags"] == 0 and not result.get("already_resolved"):
-        round_id = flag_round["round_id"]
-        # Los 'remove' pudieron dejar grupos pendientes vacíos y frecuencias
-        # desactualizadas: se limpia y recalcula antes de disparar el motor.
-        load_review.cleanup_orphan_groups(db, round_id)
-        subproject_ids = db.execute(
-            text("select id from subprojects where round_id = :round"),
-            {"round": round_id},
-        ).scalars().all()
-        for sp_id in subproject_ids:
-            build_mention_groups(db, sp_id)
-        db.commit()
-        scheduler.submit(round_id)
-        processing_status = "queued"
-    elif result["pending_flags"] == 0:
-        processing_status = "queued"
+    processing_status = _maybe_queue_after_review(
+        db,
+        flag_round["round_id"],
+        result["pending_flags"],
+        already_resolved=bool(result.get("already_resolved")),
+    )
 
     return {**result, "processing": {"status": processing_status}}
 
