@@ -166,7 +166,7 @@
 
 ---
 
-### Task 8: `client.ts::downloadCodebookExport(roundId, formats)`
+### Task 8: `client.ts::downloadCodebookExport(roundId, formats)` [DONE]
 **Description:** Extend the frontend API function to pass the selected formats through as a query param.
 
 **Acceptance criteria:**
@@ -185,7 +185,7 @@
 
 ---
 
-### Task 9: Export modal component
+### Task 9: Export modal component [DONE]
 **Description:** Replace the instant "Exportar ZIP" button in `ReportView.tsx` with a modal offering checkboxes for Excel, SQL, OnNextCase (MDD checkbox present but disabled with a "próximamente" note until Phase 4). "Descargar ZIP" button confirms and triggers `downloadCodebookExport` with the selection.
 
 **Acceptance criteria:**

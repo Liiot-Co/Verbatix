@@ -592,9 +592,10 @@ export async function getRoundReport(roundId: string): Promise<RoundReport> {
   return request<RoundReport>(`/rounds/${roundId}/report`);
 }
 
-export async function downloadCodebookExport(roundId: string): Promise<void> {
+export async function downloadCodebookExport(roundId: string, formats: string[]): Promise<void> {
   const token = getToken();
-  const res = await fetch(`${BASE}/rounds/${roundId}/report/export`, {
+  const query = formats.length ? `?formats=${formats.join(",")}` : "";
+  const res = await fetch(`${BASE}/rounds/${roundId}/report/export${query}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) {
