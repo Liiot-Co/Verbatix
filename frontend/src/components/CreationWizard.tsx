@@ -1627,9 +1627,24 @@ export default function CreationWizard() {
                                         </label>
                                       ) : (
                                         <>
-                                          <div className="flex items-center gap-2 text-sm font-medium text-p-text">
-                                            <FileSpreadsheet className="w-4 h-4 shrink-0 text-p-accent" />
-                                            <span className="truncate">{catalogFile.original_filename}</span>
+                                          <div className="flex items-center justify-between gap-2">
+                                            <div className="flex items-center gap-2 text-sm font-medium text-p-text min-w-0">
+                                              <FileSpreadsheet className="w-4 h-4 shrink-0 text-p-accent" />
+                                              <span className="truncate">{catalogFile.original_filename}</span>
+                                            </div>
+                                            {!confirmed && (
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  setCatalogUploads(prev => ({ ...prev, [codingType]: null }));
+                                                  setCatalogPreviews(prev => ({ ...prev, [codingType]: null }));
+                                                  setCatalogConfirmed(prev => ({ ...prev, [codingType]: false }));
+                                                }}
+                                                className="text-[11px] font-medium text-p-text-muted hover:text-p-text underline shrink-0"
+                                              >
+                                                Cambiar
+                                              </button>
+                                            )}
                                           </div>
                                           <select
                                             className="input w-full text-sm bg-p-surface"
