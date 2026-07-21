@@ -431,7 +431,19 @@ export default function CreationWizard() {
     Promise.all([
       getCodebookSources(project.id, "brands"),
       getCodebookSources(project.id, "reasons"),
-    ]).then(([brands, reasons]) => setCodebookSources({ brands, reasons }));
+    ]).then(([brands, reasons]) => {
+      setCodebookSources({ brands, reasons });
+      setCatalogOrigins((current) => {
+        const next = { ...current };
+        if (next.brands.origin === "inherited_round" && !next.brands.source_subproject_id && brands.length > 0) {
+          next.brands = { ...next.brands, source_subproject_id: brands[0].source_subproject_id };
+        }
+        if (next.reasons.origin === "inherited_round" && !next.reasons.source_subproject_id && reasons.length > 0) {
+          next.reasons = { ...next.reasons, source_subproject_id: reasons[0].source_subproject_id };
+        }
+        return next;
+      });
+    });
   }, [step, project, isAddLoadMode]);
 
   // Si el alcance deja fuera el tipo que estaba abierto, cierra el acordeón
@@ -1465,7 +1477,13 @@ export default function CreationWizard() {
                                             onClick={() => {
                                               setCatalogOrigins((current) => ({
                                                 ...current,
-                                                [codingType]: { origin: option.value, source_subproject_id: null },
+                                                [codingType]: {
+                                                  origin: option.value,
+                                                  source_subproject_id:
+                                                    option.value === "inherited_round" && codebookSources[codingType].length > 0
+                                                      ? codebookSources[codingType][0].source_subproject_id
+                                                      : null,
+                                                },
                                               }));
                                               playTick();
                                             }}
@@ -1508,29 +1526,14 @@ export default function CreationWizard() {
                                               el libro de códigos del cliente.
                                             </p>
                                           ) : (
-                                            <select
-                                              className="input w-full text-sm mt-1"
-                                              aria-label={`Libro oficial a heredar para ${CODING_LABELS[codingType]}`}
-                                              value={selection.source_subproject_id ?? ""}
-                                              disabled={subprojectsCreated}
-                                              onChange={(event) => setCatalogOrigins((current) => ({
-                                                ...current,
-                                                [codingType]: {
-                                                  origin: "inherited_round",
-                                                  source_subproject_id: event.target.value || null,
-                                                },
-                                              }))}
-                                            >
-                                              <option value="">Elegir libro...</option>
-                                              {codebookSources[codingType].map((candidate) => (
-                                                <option
-                                                  key={candidate.source_subproject_id}
-                                                  value={candidate.source_subproject_id}
-                                                >
-                                                  {candidate.project_name} · R{candidate.round_number} ({candidate.round_name})
-                                                </option>
-                                              ))}
-                                            </select>
+                                            <div className="mt-1 flex items-center justify-between p-2.5 rounded-lg border border-p-border bg-p-bg-subtle">
+                                              <div className="text-sm font-medium text-p-text">
+                                                {codebookSources[codingType][0].project_name} · R{codebookSources[codingType][0].round_number} ({codebookSources[codingType][0].round_name})
+                                              </div>
+                                              <span className="text-[10px] uppercase font-bold text-p-accent bg-p-accent/10 px-2 py-0.5 rounded-full">
+                                                Último
+                                              </span>
+                                            </div>
                                           )}
                                           {source && (
                                             <p className="mt-2 text-xs text-p-text-muted">

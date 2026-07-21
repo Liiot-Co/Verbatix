@@ -425,31 +425,35 @@ def list_codebook_sources(
 
     rows = db.execute(
         text("""
-            select distinct on (cb.id)
-                   sp.id as source_subproject_id, sp.round_id, cb.id as codebook_id,
-                   cb.version, p.id as project_id, p.name as project_name,
-                   r.name as round_name, r.round_number,
-                   (select count(*) from codes c
-                     where c.codebook_id = cb.id and c.is_active) as codes,
-                   (select count(*) from code_aliases a
-                     join codes c on c.id = a.code_id
-                    where a.codebook_id = cb.id and c.is_active) as aliases,
-                   (select count(*) from nets n
-                     where n.codebook_id = cb.id) as nets
-              from projects target
-              join projects p
-                on p.id = target.id
-                or (
-                  target.proyecto_id is not null
-                  and p.proyecto_id = target.proyecto_id
-                )
-              join rounds r on r.project_id = p.id
-              join subprojects sp on sp.round_id = r.id
-              join codebooks cb on cb.id = sp.codebook_id
-             where target.id = :project
-               and sp.coding_type = :coding_type
-               and cb.status = 'approved'
-             order by cb.id, r.round_number desc, r.created_at desc
+            with distinct_cb as (
+                select distinct on (cb.id)
+                       sp.id as source_subproject_id, sp.round_id, cb.id as codebook_id,
+                       cb.version, p.id as project_id, p.name as project_name,
+                       r.name as round_name, r.round_number, r.created_at,
+                       (select count(*) from codes c
+                         where c.codebook_id = cb.id and c.is_active) as codes,
+                       (select count(*) from code_aliases a
+                         join codes c on c.id = a.code_id
+                        where a.codebook_id = cb.id and c.is_active) as aliases,
+                       (select count(*) from nets n
+                         where n.codebook_id = cb.id) as nets
+                  from projects target
+                  join projects p
+                    on p.id = target.id
+                    or (
+                      target.proyecto_id is not null
+                      and p.proyecto_id = target.proyecto_id
+                    )
+                  join rounds r on r.project_id = p.id
+                  join subprojects sp on sp.round_id = r.id
+                  join codebooks cb on cb.id = sp.codebook_id
+                 where target.id = :project
+                   and sp.coding_type = :coding_type
+                   and cb.status = 'approved'
+                 order by cb.id, r.round_number desc, r.created_at desc
+            )
+            select * from distinct_cb
+            order by round_number desc, created_at desc
         """),
         {"project": project_id, "coding_type": coding_type},
     ).mappings().all()
