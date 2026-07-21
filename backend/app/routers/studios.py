@@ -1076,16 +1076,11 @@ def import_file(
             {"label": payload.source_label.strip(), "id": file_id},
         )
 
-    # Comparación contra las cargas previas: duplicados reales por realid quedan
-    # insertados Y marcados en import_review_flags ('pending'); los Serial
-    # repetidos con realid distinto son solo informativos.
+    # REQ-03 (duplicados por Respondent ID) y REQ-05 (cruce de perfil) ya no
+    # corren acá — ambos usan Respondent ID y se disparan juntos, explícitamente,
+    # desde POST .../files/{file_id}/profile-match, después de que el analista
+    # confirma los campos seleccionados.
     review = {"duplicates": [], "serial_collisions": [], "profile_candidates": []}
-    if is_additional_load:
-        review = load_review.analyze_new_load(db, round_id, file_id)
-
-    # REQ-05: el cruce por Respondent ID vs perfil ya no corre acá — se dispara
-    # explícitamente desde POST .../files/{file_id}/profile-match, después de
-    # que el analista confirma los campos seleccionados.
     review["profile"] = {"has_profile": False, "expected": 0, "arrived": 0, "extra": 0}
 
     db.execute(
@@ -1197,10 +1192,12 @@ def profile_match(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """REQ-05: cruce explícito por Respondent ID vs el perfil pactado, sobre
-    una carga ya importada. Se dispara desde el wizard después de que el
-    analista confirma los campos seleccionados (ya no corre dentro de
-    POST .../import)."""
+    """REQ-03 + REQ-05: una sola pasada sobre Respondent ID — duplicados por
+    realid contra cargas previas y cruce contra el perfil pactado — sobre una
+    carga ya importada. Se dispara desde el wizard después de que el analista
+    confirma los campos seleccionados (ya no corre dentro de POST .../import).
+    Con "continuar sin perfil" el analista puede volver a llamar este endpoint
+    después para revisar duplicados igual."""
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
 
@@ -1211,24 +1208,31 @@ def profile_match(
     if not exists:
         raise HTTPException(404, "Archivo no encontrado")
 
+    is_additional_load = load_review.round_has_previous_load(db, round_id, file_id)
+    duplicates: list = []
+    serial_collisions: list = []
+    if is_additional_load:
+        dup_review = load_review.analyze_new_load(db, round_id, file_id)
+        duplicates = dup_review["duplicates"]
+        serial_collisions = dup_review["serial_collisions"]
+
     from app.pipeline import profile as profile_mod
     profile_review = profile_mod.match_file_against_profile(
         db, round_id=round_id, imported_file_id=file_id,
     )
     db.commit()
 
-    if not profile_review.get("has_profile"):
-        return {"has_profile": False, "expected": 0, "arrived": 0, "extra": 0, "profile_candidates": []}
-
     full_review = load_review.get_load_review(db, round_id, file_id)
     return {
-        "has_profile": True,
-        "profile_file_id": profile_review["profile_file_id"],
-        "expected": profile_review["expected"],
-        "arrived": profile_review["arrived"],
-        "extra": profile_review["extra"],
-        "summary": profile_review.get("summary"),
+        "duplicates": full_review["duplicates"] if is_additional_load else duplicates,
+        "serial_collisions": serial_collisions,
         "profile_candidates": full_review["profile_candidates"],
+        "has_profile": profile_review.get("has_profile", False),
+        "profile_file_id": profile_review.get("profile_file_id"),
+        "expected": profile_review.get("expected", 0),
+        "arrived": profile_review.get("arrived", 0),
+        "extra": profile_review.get("extra", 0),
+        "summary": profile_review.get("summary"),
         "pending_flags": load_review.count_pending_flags(db, file_id),
     }
 
