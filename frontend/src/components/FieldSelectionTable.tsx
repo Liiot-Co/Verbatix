@@ -70,9 +70,6 @@ export default function FieldSelectionTable({
                     <label htmlFor={`field-${preview.field}`} className="block truncate text-sm font-medium text-p-text cursor-pointer select-none" title={preview.field}>
                       {preview.field}
                     </label>
-                    {preview.reason && (
-                      <p className="mt-0.5 text-xs text-p-text-muted">{preview.reason}</p>
-                    )}
                   </td>
                   {showTypeColumn && (
                     <td className="px-3 py-2.5">
@@ -94,7 +91,7 @@ export default function FieldSelectionTable({
                           <span
                             key={i}
                             title={sample}
-                            className="max-w-[14rem] truncate rounded bg-white/50 dark:bg-black/20 border border-p-border px-2 py-1 text-xs text-p-text"
+                            className="max-w-[14rem] truncate rounded-md bg-p-bg-subtle border border-p-border/60 px-2 py-0.5 text-xs text-p-text-muted"
                           >
                             {sample}
                           </span>
