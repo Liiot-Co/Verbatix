@@ -101,7 +101,7 @@ def find_checksum_duplicate(db: Session, round_id: uuid.UUID, checksum: str) -> 
         text("""
             select id, original_filename, source_label, status
             from imported_files
-            where round_id = :round and checksum = :sum
+            where round_id = :round and checksum = :sum and status != 'uploaded'
             order by created_at
             limit 1
         """),
