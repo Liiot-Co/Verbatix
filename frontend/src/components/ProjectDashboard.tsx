@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronLeft, ChevronRight, FolderOpen, Plus, Search, Sparkles } from "lucide-react";
-import { getProjects } from "@/api/client";
+import { createProject, getProjects } from "@/api/client";
 import type { ProjectListItem } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts, type PageShortcut } from "@/hooks/useKeyboardShortcuts";
 import GlowCard, { GlowCardGrid, glowVariantForIndex } from "@/components/GlowCard";
@@ -54,6 +54,11 @@ export default function ProjectDashboard() {
   const [page, setPage] = useState(1);
   const [presenceOpen, setPresenceOpen] = useState(false);
   const presenceStatus: PresenceStatus = user?.presence_status ?? "disponible";
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createExternalCode, setCreateExternalCode] = useState("");
+  const [createName, setCreateName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   useEffect(() => {
     if (user && isWaitingForAssignments(user)) {
@@ -96,6 +101,29 @@ export default function ProjectDashboard() {
     }
   };
 
+  const openCreateModal = () => {
+    setCreateExternalCode("");
+    setCreateName("");
+    setCreateError(null);
+    setShowCreateModal(true);
+  };
+
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!createExternalCode.trim() || !createName.trim()) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const project = await createProject(createExternalCode.trim(), createName.trim());
+      setShowCreateModal(false);
+      navigate(`/wizard?projectId=${project.id}`);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "No se pudo crear el proyecto");
+    } finally {
+      setCreating(false);
+    }
+  };
+
   useEffect(() => {
     const shortcuts: PageShortcut[] = [
     ];
@@ -114,7 +142,7 @@ export default function ProjectDashboard() {
         key: "n",
         meta: true,
         shift: true,
-        action: () => navigate("/wizard"),
+        action: () => openCreateModal(),
         description: "Nuevo proyecto",
         category: "Acciones",
       });
@@ -140,10 +168,10 @@ export default function ProjectDashboard() {
             </p>
           </div>
           <div className="flex items-start gap-3 shrink-0">
-            {canManageProjects && <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full shrink-0">
+            {canManageProjects && <button type="button" onClick={openCreateModal} className="btn-primary text-xs py-1.5 px-3.5 rounded-full shrink-0">
               <Plus className="w-3.5 h-3.5" />
               Nuevo proyecto
-            </Link>}
+            </button>}
           </div>
         </div>
 
@@ -201,9 +229,9 @@ export default function ProjectDashboard() {
                 Crea el primero para empezar a codificar verbatims.
               </p>
             </div>
-            {canManageProjects && <Link to="/wizard" className="btn-primary text-xs py-1.5 px-3.5 rounded-full mt-1">
+            {canManageProjects && <button type="button" onClick={openCreateModal} className="btn-primary text-xs py-1.5 px-3.5 rounded-full mt-1">
               <Plus className="w-3.5 h-3.5" /> Nuevo proyecto
-            </Link>}
+            </button>}
           </motion.div>
         ) : (
           <motion.div
@@ -322,6 +350,72 @@ export default function ProjectDashboard() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {showCreateModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-p-text/20 backdrop-blur-[2px]"
+          onMouseDown={() => !creating && setShowCreateModal(false)}
+        >
+          <motion.form
+            initial={{ opacity: 0, scale: 0.96, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="w-full max-w-md glow-card glow-card-3 p-5 sm:p-6 space-y-4"
+            onMouseDown={(e) => e.stopPropagation()}
+            onSubmit={handleCreateProject}
+          >
+            <div className="space-y-1">
+              <h2 className="font-heading text-lg font-semibold text-p-text tracking-tight">
+                Nuevo proyecto
+              </h2>
+              <p className="text-sm text-p-text-muted">Datos mínimos para crear el proyecto.</p>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block space-y-1">
+                <span className="text-xs font-semibold text-p-text-muted">Código externo</span>
+                <input
+                  type="text"
+                  className="input text-sm rounded-xl w-full"
+                  value={createExternalCode}
+                  onChange={(e) => setCreateExternalCode(e.target.value)}
+                  autoFocus
+                  required
+                />
+              </label>
+              <label className="block space-y-1">
+                <span className="text-xs font-semibold text-p-text-muted">Nombre</span>
+                <input
+                  type="text"
+                  className="input text-sm rounded-xl w-full"
+                  value={createName}
+                  onChange={(e) => setCreateName(e.target.value)}
+                  required
+                />
+              </label>
+            </div>
+
+            {createError && <p className="text-xs text-p-error">{createError}</p>}
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="btn-ghost text-xs py-1.5 px-3.5 rounded-full"
+                onClick={() => setShowCreateModal(false)}
+                disabled={creating}
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="btn-primary text-xs py-1.5 px-3.5 rounded-full"
+                disabled={creating || !createExternalCode.trim() || !createName.trim()}
+              >
+                {creating ? "Creando..." : "Crear proyecto"}
+              </button>
+            </div>
+          </motion.form>
+        </div>
+      )}
     </div>
   );
 }
