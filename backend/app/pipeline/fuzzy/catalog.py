@@ -10,6 +10,7 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.pipeline.normalize import normalize, strip_leading_article
 
 from .models import (
@@ -460,11 +461,25 @@ def discover_new_brands(
     residual 95. Esta función corre DESPUÉS del fuzzy — sobre lo que quedó
     `pending_review`, es decir, lo que el catálogo existente NO reconoció — agrupa
     por similitud y, para cada cluster cuya frecuencia sumada alcanza el mínimo,
-    crea un código nuevo `pending` (propuesta, nunca auto-aprobado) y deja sus
-    menciones `suggested` para que un humano lo confirme. Los singletons y clusters
-    chicos siguen `pending_review` hacia el LLM. Devuelve cuántas menciones agrupó.
+    crea un código nuevo con sus menciones ya clasificadas.
 
-    No hace commit: el caller cierra la transacción del subproyecto.
+    Paridad con el path DE CERO: una ronda scratch descubre su catálogo por
+    frecuencia y, si `auto_approve_scratch_codebook` está activo (default), lo
+    auto-aprueba y auto-codifica. Sin esto, una ronda HEREDADA era estrictamente
+    PEOR que la misma ronda procesada de cero: las marcas que la de cero
+    auto-cerraba, la heredada solo las dejaba `suggested` (sin clasificar). Por eso
+    `discover_new_brands` honra la MISMA política:
+
+    - con `auto_approve_scratch_codebook` (default): el código nace `approved`, sus
+      aliases `approved` y sus menciones `auto_coded` con `verbatim_codes` activos —
+      igual que en scratch. Además los aliases quedan aprobados, así que la SIGUIENTE
+      ronda que herede este libro también los reconoce (aprendizaje acumulado).
+    - sin el flag (gate humano): el código nace `pending` y sus menciones quedan
+      `suggested` para revisión, como antes.
+
+    Los singletons y clusters chicos siguen `pending_review` hacia el LLM. Devuelve
+    cuántas menciones agrupó. No hace commit: el caller cierra la transacción del
+    subproyecto.
     """
     row = db.execute(
         text("""
@@ -541,6 +556,14 @@ def discover_new_brands(
     }
     known_single_brands |= {rep for rep in cluster_reprs if len(_brandish_tokens(rep)) == 1}
 
+    # Misma política que el path de cero: si el motor auto-aprueba los catálogos
+    # descubiertos por frecuencia, también auto-cierra estas marcas (paridad con
+    # scratch); si hay gate humano, quedan como propuesta pendiente.
+    auto = settings.auto_approve_scratch_codebook
+    code_approval = "approved" if auto else "pending"
+    alias_status = "approved" if auto else "pending"
+    group_status = "auto_coded" if auto else "suggested"
+
     grouped = 0
     for representative, members in clusters.items():
         total = sum(m["frequency_count"] for m in members)
@@ -557,6 +580,12 @@ def discover_new_brands(
         ):
             continue
         code_id = str(uuid.uuid4())
+        member_ids = [m["id"] for m in members]
+        definition = (
+            f"Marca nueva detectada por frecuencia: {total} menciones no reconocidas "
+            f"por el catálogo heredado."
+            + ("" if auto else " Pendiente de confirmación.")
+        )
         db.execute(
             text("""
                 insert into codes (
@@ -565,35 +594,34 @@ def discover_new_brands(
                 )
                 values (
                   :id, :cb, :n, :label, :definition, cast(:examples as jsonb),
-                  'engine_auto', 'pending'
+                  'engine_auto', :approval
                 )
             """),
             {
                 "id": code_id, "cb": codebook_id, "n": next(numbers),
                 "label": _clean_seed_label(representative, members),
-                "definition": (
-                    f"Marca nueva propuesta: {total} menciones no reconocidas por el "
-                    f"catálogo heredado. Pendiente de confirmación."
-                ),
+                "definition": definition,
                 "examples": json.dumps(
                     [m["sample_text"] or m["normalized_text"] for m in members[:5]]
                 ),
+                "approval": code_approval,
             },
         )
         db.execute(
             text("""
                 insert into code_aliases (id, codebook_id, code_id, alias_normalized,
                                           alias_sample, occurrences, origin,
-                                          alias_kind, status, evidence)
+                                          alias_kind, status, evidence, approved_at)
                 values (:id, :cb, :code, :norm, :sample, :occ, 'engine_fuzzy',
-                        'positive', 'pending', '{"source":"discover_new_brands"}'::jsonb)
+                        'positive', :status, '{"source":"discover_new_brands"}'::jsonb,
+                        case when :status = 'approved' then now() else null end)
                 on conflict (codebook_id, alias_normalized, code_id) do nothing
             """),
             [
                 {
                     "id": uuid.uuid4(), "cb": codebook_id, "code": code_id,
                     "norm": m["normalized_text"], "sample": m["sample_text"],
-                    "occ": m["frequency_count"],
+                    "occ": m["frequency_count"], "status": alias_status,
                 }
                 for m in members
             ],
@@ -601,11 +629,33 @@ def discover_new_brands(
         db.execute(
             text("""
                 update mention_groups
-                   set status = 'suggested', suggested_code_id = :code
+                   set status = :status, suggested_code_id = :code
                  where id = any(:ids)
             """),
-            {"code": code_id, "ids": [m["id"] for m in members]},
+            {"status": group_status, "code": code_id, "ids": member_ids},
         )
+        if auto:
+            # Escribe la clasificación activa (igual que _process_brands): así cuenta
+            # como auto-codificada y no cae al residual 95 ni la re-toma el LLM.
+            db.execute(
+                text("""
+                    insert into verbatim_codes (id, verbatim_id, code_id, output_index,
+                                                source, confidence_score, matched_alias,
+                                                is_active)
+                    select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', 1.0,
+                           v.normalized_text, true
+                    from verbatims v where v.mention_group_id = any(:ids)
+                    on conflict (verbatim_id, code_id) do update set is_active = true
+                """),
+                {"code": code_id, "ids": member_ids},
+            )
+            db.execute(
+                text("""
+                    update verbatims set coding_status = 'auto_coded'
+                     where mention_group_id = any(:ids)
+                """),
+                {"ids": member_ids},
+            )
         grouped += len(members)
 
     return grouped

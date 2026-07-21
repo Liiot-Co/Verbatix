@@ -410,6 +410,8 @@ class _NewBrandSession:
         self.inserted_codes = []
         self.inserted_aliases = []
         self.suggested = []
+        self.inserted_verbatim_codes = []
+        self.coded_verbatims = []
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
@@ -430,10 +432,19 @@ class _NewBrandSession:
             self.inserted_aliases.append(params)
         elif sql.strip().startswith("update mention_groups"):
             self.suggested.append(params)
+        elif sql.strip().startswith("insert into verbatim_codes"):
+            self.inserted_verbatim_codes.append(params)
+        elif sql.strip().startswith("update verbatims"):
+            self.coded_verbatims.append(params)
         return _NBResult()
 
 
-def test_discover_new_brands_creates_pending_brand_when_cluster_reaches_minimum():
+def test_discover_new_brands_auto_codes_when_scratch_auto_approve_on(monkeypatch):
+    # Paridad con el path DE CERO: con auto_approve_scratch_codebook (default) la
+    # marca redescubierta nace 'approved' y sus menciones 'auto_coded' con
+    # verbatim_codes activos — no queda como mera sugerencia.
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "auto_approve_scratch_codebook", True)
     candidates = [
         {"id": uuid.uuid4(), "normalized_text": "wong", "sample_text": "Wong", "frequency_count": 4},
         {"id": uuid.uuid4(), "normalized_text": "metro", "sample_text": "Metro", "frequency_count": 1},
@@ -446,8 +457,33 @@ def test_discover_new_brands_creates_pending_brand_when_cluster_reaches_minimum(
     assert grouped == 1
     assert len(db.inserted_codes) == 1
     assert db.inserted_codes[0]["label"] == "Wong"
-    # Un alias 'pending' por cada mención del cluster, listo para confirmación.
+    assert db.inserted_codes[0]["approval"] == "approved"
     assert len(db.inserted_aliases) == 1  # un execute (lista de params) por code
+    assert db.inserted_aliases[0][0]["status"] == "approved"
+    assert db.suggested[0]["status"] == "auto_coded"
+    # Escribe la clasificación activa (cuenta como auto-codificada, no cae al 95).
+    assert len(db.inserted_verbatim_codes) == 1
+    assert len(db.coded_verbatims) == 1
+
+
+def test_discover_new_brands_stays_pending_when_human_gate(monkeypatch):
+    # Sin auto-aprobación (gate humano): la marca nueva queda como propuesta
+    # 'pending'/'suggested' para revisión, sin escribir clasificación activa.
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "auto_approve_scratch_codebook", False)
+    candidates = [
+        {"id": uuid.uuid4(), "normalized_text": "wong", "sample_text": "Wong", "frequency_count": 4},
+    ]
+    db = _NewBrandSession(origin="inherited", candidates=candidates)
+
+    grouped = discover_new_brands(db, uuid.uuid4(), min_mentions=3)
+
+    assert grouped == 1
+    assert db.inserted_codes[0]["approval"] == "pending"
+    assert db.inserted_aliases[0][0]["status"] == "pending"
+    assert db.suggested[0]["status"] == "suggested"
+    assert db.inserted_verbatim_codes == []
+    assert db.coded_verbatims == []
 
 
 def test_discover_new_brands_is_noop_for_scratch_round():
