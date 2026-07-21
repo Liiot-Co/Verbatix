@@ -381,7 +381,8 @@ export default function CreationWizard() {
   useEffect(() => {
     if (isAddLoadMode) return;
     const projectId = searchParams.get("projectId");
-    if (!projectId) return;
+    const roundId = searchParams.get("roundId");
+    if (!projectId || roundId) return;
     getProject(projectId).then((detail) => {
       setProject(detail);
       setActiveProjectId(detail.id);
