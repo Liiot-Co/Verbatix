@@ -119,6 +119,10 @@ export default function ResolutionSidebar({
   const [confirmNewCode, setConfirmNewCode] = useState<string | null>(null);
   const [addAlias, setAddAlias] = useState(true);
   const [codeFilter, setCodeFilter] = useState("");
+  // Ref para reintentar creación bajo mínimo desde el toast (evita closure stale).
+  const createAndAssignRef = useRef<((label: string, force?: boolean) => void) | null>(null);
+  // Conserva la confirmación bajo-mínimo aunque un rollback cambie la cola.
+  const pendingBelowThresholdRef = useRef<{ groupId: string; label: string } | null>(null);
   // Zonas de foco tipo Excel: "header" = tarjeta de la mención (←/→ descartan/crean),
   // "list" = grilla de códigos (las 4 flechas navegan). ↓ baja a la lista, ↑ desde la primera fila vuelve.
   const [zone, setZone] = useState<"header" | "list">("header");
@@ -224,13 +228,21 @@ export default function ResolutionSidebar({
       setDetail(null);
       return;
     }
+    // Solo al cambiar de tarjeta (por id). No pisar una confirmación "crear bajo
+    // el mínimo" en curso (p.ej. tras rollback de un 422 que restaura la misma tarjeta).
+    if (pendingBelowThresholdRef.current?.groupId === currentCard.id) {
+      getMentionGroup(currentCard.id).then(setDetail);
+      return;
+    }
     setShowDiscardMenu(false);
     setShowNewCodeInput(false);
+    setConfirmNewCode(null);
     setNewCodeLabel("");
     setCodeFilter("");
     setZone("header");
     getMentionGroup(currentCard.id).then(setDetail);
-  }, [currentCard]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity by id
+  }, [currentCard?.id]);
 
   const filteredCodes = useMemo(() => {
     const q = codeFilter.trim().toLowerCase();
@@ -303,30 +315,30 @@ export default function ResolutionSidebar({
           parts.push(`${result.similar_suggestions.length} grupo(s) parecido(s) para confirmar`);
         }
         if (parts.length > 0) showToast(parts.join(" · "), "success");
+        else if (decision.force_below_threshold && decision.new_code) {
+          showToast(`“${decision.new_code.label}” creada`, "success");
+        }
         lastResolvedRef.current = groupId;
         loadSummary();
         onResolved?.();
       } catch (err) {
         rollback();
         setResolvedThisSession((n) => Math.max(0, n - 1));
+        setResolving(false);
         if (err instanceof ApiError && err.status === 422 && decision.new_code) {
-          // Bajo el mínimo: red de seguridad reactiva por si la alerta proactiva
-          // no alcanzó a tener el umbral. En vez de un error seco, se ofrece
-          // "Crear igual" y se reenvía forzando la creación.
-          showToast(`${err.message}. ¿Crear igual?`, "error", {
+          const label = decision.new_code.label;
+          pendingBelowThresholdRef.current = { groupId, label };
+          // Tras el rollback React re-renderiza y puede correr efectos: diferir
+          // la UI de confirmación un tick para que no la borren.
+          window.setTimeout(() => {
+            setShowNewCodeInput(true);
+            setConfirmNewCode(label);
+            setNewCodeLabel(label);
+          }, 0);
+          showToast(`${err.message}. Confirma abajo para crear igual.`, "error", {
             label: "Crear igual",
-            onAction: async () => {
-              try {
-                await resolveMentionGroup(groupId, { ...decision, force_below_threshold: true });
-                setQueue((q) => q.filter((g) => g.id !== groupId));
-                setTotal((t) => Math.max(0, t - 1));
-                setResolvedThisSession((n) => n + 1);
-                showToast("Marca creada", "success");
-                loadSummary();
-                onResolved?.();
-              } catch {
-                showToast("No se pudo crear la marca.", "error");
-              }
+            onAction: () => {
+              createAndAssignRef.current?.(label, true);
             },
           });
         } else if (err instanceof ApiError && (err.status === 409 || err.status === 422)) {
@@ -392,6 +404,15 @@ export default function ResolutionSidebar({
       flushPending();
       const rollback = applyOptimisticRemoval(groupId);
       setResolvedThisSession((n) => n + 1);
+
+      // Tras confirmar "crear bajo el mínimo", enviar ya: el analista ya dio
+      // el OK explícito y un delay de 4s solo confunde (parece "Resuelto" y luego falla).
+      if (decision.force_below_threshold === true) {
+        pendingRef.current = null;
+        void sendResolve(groupId, decision, rollback);
+        return;
+      }
+
       const timer = setTimeout(() => {
         pendingRef.current = null;
         sendResolve(groupId, decision, rollback);
@@ -472,33 +493,135 @@ export default function ResolutionSidebar({
         /\b\w+\b/g,
         (w) => w.charAt(0).toUpperCase() + w.slice(1),
       );
-      // Bajo el mínimo el motor no crea la marca solo; un humano SÍ puede, pero
-      // con un aviso breve y no invasivo — se confirma con intención, no por error.
-      // El umbral es el de la ronda (mismo que valida el backend); si aún no cargó
-      // el summary, se deja pasar y el backend responde 422 como red de seguridad.
-      const threshold = summary?.min_mentions_threshold;
-      if (
-        !force &&
-        threshold != null &&
-        currentCard.frequency_count < threshold
-      ) {
-        setConfirmNewCode(capitalized);
-        return;
+      // frequency_count a veces llega undefined/NaN → tratar como 0 para no
+      // saltarse la confirmación. Umbral: summary o 3 (default DB).
+      const rawFreq = currentCard.frequency_count ?? detail?.frequency_count ?? 0;
+      const frequency = Number.isFinite(Number(rawFreq)) ? Number(rawFreq) : 0;
+      const rawThr = summary?.min_mentions_threshold;
+      const threshold = Number.isFinite(Number(rawThr)) && Number(rawThr) > 0
+        ? Number(rawThr)
+        : 3;
+
+      let confirmedForce = force;
+      if (!confirmedForce && frequency < threshold) {
+        // window.confirm: no depende del panel React (que se borraba por
+        // carreras de cola/efectos). Si el usuario cancela, no hay POST.
+        const ok = window.confirm(
+          `“${capitalized}” tiene solo ${frequency} ${frequency === 1 ? "mención" : "menciones"}.\n` +
+            `El mínimo del estudio es ${threshold}.\n\n` +
+            `¿Crear la marca de todas formas?`,
+        );
+        if (!ok) {
+          setShowNewCodeInput(true);
+          setNewCodeLabel(capitalized);
+          return;
+        }
+        confirmedForce = true;
       }
+
+      pendingBelowThresholdRef.current = null;
       setConfirmNewCode(null);
-      playAndResolve("down", currentCard.id, {
+      setShowNewCodeInput(false);
+      const decision: ResolveDecision = {
         action: "approve",
         code_ids: [],
         new_code: { label: capitalized },
         add_alias: addAlias,
-        force_below_threshold: force,
-      });
+        // Tras confirmación explícita (o frecuencia ya suficiente) el humano puede crear.
+        force_below_threshold: confirmedForce || frequency < threshold,
+      };
+      setResolving(true);
+      void (async () => {
+        const groupId = currentCard.id;
+        try {
+          const result = await resolveMentionGroup(groupId, {
+            ...decision,
+            force_below_threshold: confirmedForce || frequency < threshold,
+          });
+          setQueue((q) => q.filter((g) => g.id !== groupId));
+          setTotal((t) => Math.max(0, t - 1));
+          setResolvedThisSession((n) => n + 1);
+          lastResolvedRef.current = groupId;
+          if (result.codes_assigned?.length) {
+            setCodes((prev) => {
+              const existingIds = new Set(prev.map((c) => c.id));
+              const fresh = result.codes_assigned.filter(
+                (c) => !c.is_system && !existingIds.has(c.id),
+              );
+              return fresh.length ? [...prev, ...fresh] : prev;
+            });
+          }
+          showToast(`“${capitalized}” creada`, "success");
+          loadSummary();
+          onResolved?.();
+        } catch (err) {
+          // Red de seguridad: si el backend aún rechaza (desfase de umbral/
+          // frecuencia), ofrecer confirm nativo y reintentar forzado.
+          if (err instanceof ApiError && err.status === 422) {
+            const ok = window.confirm(
+              `${err.message}\n\n¿Crear “${capitalized}” de todas formas?`,
+            );
+            if (ok) {
+              try {
+                const result = await resolveMentionGroup(groupId, {
+                  ...decision,
+                  force_below_threshold: true,
+                });
+                setQueue((q) => q.filter((g) => g.id !== groupId));
+                setTotal((t) => Math.max(0, t - 1));
+                setResolvedThisSession((n) => n + 1);
+                lastResolvedRef.current = groupId;
+                if (result.codes_assigned?.length) {
+                  setCodes((prev) => {
+                    const existingIds = new Set(prev.map((c) => c.id));
+                    const fresh = result.codes_assigned.filter(
+                      (c) => !c.is_system && !existingIds.has(c.id),
+                    );
+                    return fresh.length ? [...prev, ...fresh] : prev;
+                  });
+                }
+                showToast(`“${capitalized}” creada`, "success");
+                loadSummary();
+                onResolved?.();
+                return;
+              } catch (retryErr) {
+                showToast(
+                  retryErr instanceof ApiError ? retryErr.message : "No se pudo crear la marca.",
+                  "error",
+                );
+                return;
+              }
+            }
+            setShowNewCodeInput(true);
+            setNewCodeLabel(capitalized);
+            return;
+          }
+          if (err instanceof ApiError) {
+            showToast(err.message, "error");
+          } else {
+            showToast("No se pudo crear la marca.", "error");
+          }
+        } finally {
+          setResolving(false);
+        }
+      })();
     },
-    [currentCard, addAlias, playAndResolve, summary]
+    [
+      currentCard,
+      detail?.frequency_count,
+      addAlias,
+      summary?.min_mentions_threshold,
+      showToast,
+      loadSummary,
+      onResolved,
+    ],
   );
+
+  createAndAssignRef.current = createAndAssign;
 
   const openNewCodeInput = useCallback(() => {
     if (!currentCard || cardExiting) return;
+    pendingBelowThresholdRef.current = null;
     setShowNewCodeInput(true);
     setShowDiscardMenu(false);
     setConfirmNewCode(null);
@@ -511,6 +634,11 @@ export default function ResolutionSidebar({
       { 
         key: "Enter", 
         action: () => {
+          if (showNewCodeInput) {
+            if (confirmNewCode) createAndAssign(confirmNewCode, true);
+            else createAndAssign(newCodeLabel);
+            return;
+          }
           if (showDiscardMenu) {
             const sc = systemCodes[navDiscardIndex];
             if (sc) assignCode(sc.id);
@@ -618,8 +746,10 @@ export default function ResolutionSidebar({
       {
         key: "Escape",
         action: () => {
+          pendingBelowThresholdRef.current = null;
           setShowDiscardMenu(false);
           setShowNewCodeInput(false);
+          setConfirmNewCode(null);
           setCodeFilter("");
           setZone("header");
         },
@@ -636,7 +766,7 @@ export default function ResolutionSidebar({
         category: "Acciones",
       },
     ]);
-  }, [assignHighlighted, discardCurrent, openNewCodeInput, filteredCodes, systemCodes, assignCode, showDiscardMenu, zone, navCodeIndex, navDiscardIndex, gridCols, newCodeHint, codingType, doUndo, showToast, loadQueue, loadSummary, onResolved]);
+  }, [assignHighlighted, discardCurrent, openNewCodeInput, filteredCodes, systemCodes, assignCode, showDiscardMenu, showNewCodeInput, confirmNewCode, newCodeLabel, createAndAssign, zone, navCodeIndex, navDiscardIndex, gridCols, newCodeHint, codingType, doUndo, showToast, loadQueue, loadSummary, onResolved]);
 
   useKeyboardShortcuts("resolution-sidebar");
 
@@ -762,23 +892,30 @@ export default function ResolutionSidebar({
                 {showNewCodeInput ? (
                   confirmNewCode ? (
                     <div className="flex flex-col gap-2">
-                      <div className="rounded-lg border border-p-border bg-p-bg-subtle px-3 py-2.5">
-                        <p className="text-xs text-p-text-muted leading-relaxed">
+                      <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 flex gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <p className="text-xs text-p-text leading-relaxed">
                           Vas a crear{" "}
-                          <span className="font-semibold text-p-text">“{confirmNewCode}”</span>{" "}
+                          <span className="font-semibold">“{confirmNewCode}”</span>{" "}
                           con solo{" "}
-                          <span className="font-semibold text-p-text">{currentCard?.frequency_count}</span>{" "}
-                          {currentCard?.frequency_count === 1 ? "mención" : "menciones"}
-                          {summary?.min_mentions_threshold != null
-                            ? ` (el mínimo del estudio es ${summary.min_mentions_threshold})`
-                            : ""}
-                          . Suele ser el motor quien agrupa estas menciones —
-                          ¿seguro que quieres crearla igual?
+                          <span className="font-semibold">
+                            {Number(currentCard?.frequency_count ?? detail?.frequency_count ?? 0)}
+                          </span>{" "}
+                          {Number(currentCard?.frequency_count ?? detail?.frequency_count ?? 0) === 1
+                            ? "mención"
+                            : "menciones"}
+                          {" "}
+                          (mínimo del estudio:{" "}
+                          {Number(summary?.min_mentions_threshold ?? 3)}).
+                          ¿Crearla de todas formas?
                         </p>
                       </div>
                       <div className="flex gap-1.5">
                         <button
-                          onClick={() => setConfirmNewCode(null)}
+                          onClick={() => {
+                            pendingBelowThresholdRef.current = null;
+                            setConfirmNewCode(null);
+                          }}
                           className="btn-ghost-sm flex-1 justify-center"
                         >
                           Mejor no
@@ -786,9 +923,9 @@ export default function ResolutionSidebar({
                         <button
                           onClick={() => createAndAssign(confirmNewCode, true)}
                           disabled={resolving}
-                          className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg project-row-icon-5 text-sm font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150"
+                          className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg project-row-icon-5 text-sm font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150 disabled:opacity-60"
                         >
-                          <Plus className="w-3.5 h-3.5" /> Crear igual
+                          <Plus className="w-3.5 h-3.5" /> {resolving ? "Creando…" : "Crear igual"}
                         </button>
                       </div>
                     </div>
@@ -807,6 +944,7 @@ export default function ResolutionSidebar({
                           e.preventDefault();
                           createAndAssign(newCodeLabel);
                         } else if (e.key === "Escape") {
+                          pendingBelowThresholdRef.current = null;
                           setShowNewCodeInput(false);
                           setNewCodeLabel("");
                           setConfirmNewCode(null);
@@ -817,6 +955,7 @@ export default function ResolutionSidebar({
                     <div className="flex gap-1.5">
                       <button
                         onClick={() => {
+                          pendingBelowThresholdRef.current = null;
                           setShowNewCodeInput(false);
                           setNewCodeLabel("");
                           setConfirmNewCode(null);

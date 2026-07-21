@@ -220,6 +220,22 @@ def test_client_quesos_bone_never_collapses_into_bonle():
     assert "2" not in matrix.get("95", {})
 
 
+def test_client_quesos_edan_and_edam_share_the_same_historical_code():
+    brand_rows = [
+        item
+        for round_data in _client_rounds().values()
+        for item in round_data["brands"]
+        if item.normalized_text in {"edan", "edam"}
+    ]
+    codes_by_text = {
+        text: {item.code_number for item in brand_rows if item.normalized_text == text}
+        for text in ("edan", "edam")
+    }
+
+    assert codes_by_text["edan"]
+    assert codes_by_text["edan"] == codes_by_text["edam"]
+
+
 def test_historical_conflicts_are_exposed_instead_of_overwritten():
     memory = TemporalMemory()
     memory.add(

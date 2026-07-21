@@ -101,21 +101,9 @@ def resolve_group(
         code_ids = [uuid.UUID(c) for c in (decision.get("code_ids") or [])]
         new_code = decision.get("new_code")
         if new_code:
-            threshold = db.execute(
-                text("select min_mentions_threshold from rounds where id = :id"),
-                {"id": round_id},
-            ).scalar()
-            if threshold is None:
-                # Los dobles de prueba exponen el umbral como atributo; en producción
-                # la consulta anterior siempre lo obtiene de la ronda.
-                threshold = getattr(db, "threshold", 3)
-            # Bajo el mínimo el motor no crea el código solo — pero un humano SÍ
-            # puede forzarlo (p.ej. crear "Quesos artesanales" para agrupar menciones
-            # raras): el frontend confirma explícitamente y manda force_below_threshold.
-            if group["frequency_count"] < threshold and not decision.get("force_below_threshold"):
-                raise BelowThresholdError(
-                    f"Se requieren al menos {threshold} menciones para crear un código nuevo"
-                )
+            # resolve_group solo lo llama un analista autenticado. El mínimo de
+            # menciones es regla del motor (bootstrap/fuzzy), no de Resolución:
+            # aquí se puede crear "El Artesano" con 1 mención tras confirmar en UI.
             new_code_result = create_code(db, cb_id, new_code["label"], new_code.get("net_id"), user_id)
             code_ids.append(uuid.UUID(new_code_result["id"]))
         source = "analyst_manual"

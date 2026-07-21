@@ -115,11 +115,15 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
         {"sp": subproject_id},
     ).mappings().all()
     codes_by_number = {c["code_number"]: c["id"] for c in codes}
-    system_code_ids = {c["id"] for c in codes if c.get("is_system")}
-    # system_type 'anomaly' (code 95, "Menciones confusas/Incorrectas") means the LLM itself
-    # isn't sure the mention belongs to this question — that's exactly the case that needs a
-    # human to confirm, so it must never auto-code no matter how confident the model claims to be.
-    anomaly_code_ids = {c["id"] for c in codes if c.get("system_type") == "anomaly"}
+    system_code_ids = {
+        c["id"] for c in codes if c.get("is_system") or c.get("system_type")
+    }
+    # Códigos universales (95-99): el LLM puede auto-cerrarlos cuando declara
+    # confianza alta — "no se"→96, teclazo→95, "otros"→97. Antes se abstenían
+    # o quedaban solo como sugerencia y el analista perdía tiempo en ruido.
+    system_type_by_id = {
+        c["id"]: c.get("system_type") for c in codes if c.get("system_type")
+    }
     codebook_payload = [
         {
             "code_number": c["code_number"], 
@@ -248,30 +252,25 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
                 if coding_type == "brands"
                 else settings.llm_confidence_threshold_reasons
             )
-            # No confidence in the response is treated as low confidence, not high — a case
-            # the LLM won't rate shouldn't get auto-coded any more than one it rates poorly.
+            # Sin confianza declarada = baja confianza: no auto-cerrar.
             below_threshold = confidence is None or confidence < confidence_threshold
-            is_anomaly = any(cid in anomaly_code_ids for cid in matched_code_ids)
-
-            if not matched_code_ids or is_anomaly:
+            # Sin códigos → abstención (revisión humana / residual).
+            # Con códigos de sistema (95-99) o de contenido: auto-cierre si la
+            # confianza supera el umbral. Los universales son deterministas
+            # cuando el modelo está seguro (ahorra cola en Resolución).
+            if not matched_code_ids:
                 update_abstained_groups.append({
                     "run": run_id,
-                    "code": matched_code_ids[0] if matched_code_ids else None,
+                    "code": None,
                     "id": group_id,
                 })
                 update_abstained_verbatims.append({"id": group_id})
                 abstentions += 1
                 continue
 
-            # Auto-cierre del LLM solo si: el flag está activo, la confianza
-            # declarada supera el umbral y NINGÚN código asignado es de sistema
-            # (regla dura: el 95 y los 96-99 nunca los auto-cierra un modelo; van
-            # a Resolución). Cualquier otro caso queda como sugerencia inactiva.
-            system_present = any(row["is_system"] for row in matched_rows)
             auto_commit = (
                 settings.auto_commit_llm
                 and not below_threshold
-                and not system_present
             )
             state = "auto_coded" if auto_commit else "suggested"
             update_groups_params.append({
@@ -294,7 +293,15 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
             else:
                 suggestions += 1
 
-            if confidence is not None and confidence >= settings.llm_promotion_confidence_threshold:
+            # No promover aliases fuzzy desde códigos de sistema (ruido → 95, etc.).
+            only_system = all(
+                system_type_by_id.get(cid) is not None for cid in matched_code_ids
+            )
+            if (
+                confidence is not None
+                and confidence >= settings.llm_promotion_confidence_threshold
+                and not only_system
+            ):
                 if coding_type == "brands":
                     # Para razones el fuzzy da falsos positivos (ver fuzzy/matcher.py)
                     # — esas van al caché semántico, no al catálogo fuzzy.

@@ -60,36 +60,39 @@ def test_classify_round_suggests_matches_and_abstains_without_autoclose():
     group_matched = {"id": uuid.uuid4(), "sample_text": "muy caro"}
     group_unmatched = {"id": uuid.uuid4(), "sample_text": "asdf"}
     group_low_confidence = {"id": uuid.uuid4(), "sample_text": "algo raro"}
-    group_anomaly = {"id": uuid.uuid4(), "sample_text": "Edan"}
+    group_anomaly = {"id": uuid.uuid4(), "sample_text": "kjsdañfdsk"}
+    group_no_se = {"id": uuid.uuid4(), "sample_text": "no se"}
     codes = [
         {"id": uuid.uuid4(), "code_number": 1, "label": "Precio", "net_name": None, "system_type": None, "aliases": []},
         {"id": uuid.uuid4(), "code_number": 97, "label": "Otras menciones", "net_name": None, "system_type": "other_mentions", "aliases": []},
         {"id": uuid.uuid4(), "code_number": 95, "label": "Menciones confusas/Incorrectas", "net_name": None, "system_type": "anomaly", "aliases": []},
+        {"id": uuid.uuid4(), "code_number": 96, "label": "No sabe", "net_name": None, "system_type": "no_answer", "aliases": []},
     ]
-    db = FakeSession(codes=codes, groups=[group_matched, group_unmatched, group_low_confidence, group_anomaly])
+    db = FakeSession(
+        codes=codes,
+        groups=[group_matched, group_unmatched, group_low_confidence, group_anomaly, group_no_se],
+    )
 
     fake_results = [
         {"verbatim_id": str(group_matched["id"]), "code_numbers": [1], "confidence": 0.95},
         {"verbatim_id": str(group_unmatched["id"]), "code_numbers": [], "confidence": 0.1},
         # Matched a code, but below llm_confidence_threshold — should still go to human review.
         {"verbatim_id": str(group_low_confidence["id"]), "code_numbers": [1], "confidence": 0.3},
-        # High confidence but the code itself is the "anomaly" system code — a human should
-        # still confirm it rather than it auto-closing as a confusing/incorrect mention.
+        # Alta confianza en código universal 95: auto-cierra (teclazo / confusa).
         {"verbatim_id": str(group_anomaly["id"]), "code_numbers": [95], "confidence": 0.9},
+        # Alta confianza en 96: auto-cierra "no se".
+        {"verbatim_id": str(group_no_se["id"]), "code_numbers": [96], "confidence": 0.95},
     ]
 
     with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
          patch.object(settings, "auto_commit_llm", True):
         summary = classify_round(db, uuid.uuid4())
 
-    # Con auto_commit_llm activo: el código de contenido con confianza sobre el
-    # umbral auto-cierra; el de baja confianza sigue a Resolución; el 95 (código
-    # de sistema) NUNCA auto-cierra aunque la confianza sea alta; y lo no matcheado
-    # se abstiene.
-    assert summary["groups_classified"] == 1
+    # Contenido + 95 + 96 auto-cierran; baja confianza queda sugerida; vacío se abstiene.
+    assert summary["groups_classified"] == 3
     assert summary["suggestions"] == 1
-    assert summary["anomalies"] == 2
-    assert summary["total"] == 4
+    assert summary["anomalies"] == 1
+    assert summary["total"] == 5
 
     def has_param(key, value, stmt_filter=""):
         for sql, p in db.executed:
@@ -104,10 +107,10 @@ def test_classify_round_suggests_matches_and_abstains_without_autoclose():
         return False
 
     assert has_param("id", group_unmatched["id"], "abstained")
-    assert has_param("id", group_anomaly["id"], "abstained")
+    assert has_param("id", group_anomaly["id"])  # auto_coded via update_groups
     assert has_param("code", codes[0]["id"])
-    # El match de contenido auto-cierra (state auto_coded, is_active True); el de
-    # baja confianza queda como sugerencia inactiva.
+    assert has_param("code", codes[2]["id"])  # anomaly 95
+    assert has_param("code", codes[3]["id"])  # no_answer 96
     assert has_param("state", "auto_coded")
     assert has_param("state", "suggested")
     assert has_param("active", True)
