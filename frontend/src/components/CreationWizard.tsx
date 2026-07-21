@@ -186,7 +186,7 @@ const stepVariants = {
 export default function CreationWizard() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { roundId: existingRoundId } = useParams<{ roundId: string }>();
+  const { roundId: existingRoundId, step: urlStep } = useParams<{ roundId: string; step?: string }>();
   const isAddLoadMode = Boolean(existingRoundId);
   // round-sequence-and-homologation (Task 11/12): /wizard?projectId=&roundId=
   // reanuda una ronda YA creada pero con configuración incompleta — distinto
@@ -197,8 +197,9 @@ export default function CreationWizard() {
 
   const wizardPrefsRef = useRef<WizardPrefs>(loadWizardPrefs());
 
-  const [step, setStep] = useState<WizardStep>("setup");
-  const prevStepIndexRef = useRef(0);
+  const initialStep = urlStep && WIZARD_STEPS.some((s) => s.key === urlStep) ? (urlStep as WizardStep) : "setup";
+  const [step, setStep] = useState<WizardStep>(initialStep);
+  const prevStepIndexRef = useRef(WIZARD_STEPS.findIndex((s) => s.key === initialStep));
   const [direction, setDirection] = useState(1);
 
   // Proyecto: ya existe al entrar acá (modal del dashboard crea el proyecto
@@ -414,15 +415,19 @@ export default function CreationWizard() {
   // preseleccionado (desde localStorage) era "scratch", cambia al primero
   // disponible sin forzar uno en particular.
   useEffect(() => {
-    if (!hasExistingRounds) return;
     setCatalogOrigins((current) => {
       const next = { ...current };
+      let changed = false;
       (Object.keys(next) as CodingType[]).forEach((codingType) => {
-        if (next[codingType].origin === "scratch") {
+        if (hasExistingRounds && next[codingType].origin === "scratch") {
           next[codingType] = { origin: "inherited_round", source_subproject_id: null };
+          changed = true;
+        } else if (!hasExistingRounds && next[codingType].origin === "inherited_round") {
+          next[codingType] = { origin: "scratch", source_subproject_id: null };
+          changed = true;
         }
       });
-      return next;
+      return changed ? next : current;
     });
   }, [hasExistingRounds]);
 
@@ -459,7 +464,33 @@ export default function CreationWizard() {
     setDirection(nextIndex >= prevStepIndexRef.current ? 1 : -1);
     prevStepIndexRef.current = nextIndex;
     setStep(next);
+    const params = new URLSearchParams(searchParams.toString());
+    const qs = params.toString();
+    navigate(`/wizard/${next}${qs ? `?${qs}` : ""}`);
   };
+
+  // Normmalize URL on mount — if no step segment, redirect to /wizard/setup
+  useEffect(() => {
+    if (!urlStep) {
+      const params = new URLSearchParams(searchParams.toString());
+      const qs = params.toString();
+      navigate(`/wizard/setup${qs ? `?${qs}` : ""}`, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync URL → step when URL changes externally (browser back/forward)
+  useEffect(() => {
+    const validated =
+      urlStep && WIZARD_STEPS.some((s) => s.key === urlStep) ? (urlStep as WizardStep) : "setup";
+    if (validated !== step) {
+      const nextIndex = WIZARD_STEPS.findIndex((s) => s.key === validated);
+      setDirection(nextIndex >= prevStepIndexRef.current ? 1 : -1);
+      prevStepIndexRef.current = nextIndex;
+      setStep(validated);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlStep]);
 
   // La ronda se crea sola (sin subprojects) al soltar el primer archivo —
   // Tarea 1/2: la sección "Libro de códigos" (dentro de Configuración) crea
@@ -1419,7 +1450,7 @@ export default function CreationWizard() {
                           // fijar un único origen.
                           const originOptions = hasExistingRounds
                             ? ORIGIN_OPTIONS.filter((option) => option.value !== "scratch")
-                            : ORIGIN_OPTIONS;
+                            : ORIGIN_OPTIONS.filter((option) => option.value !== "inherited_round");
 
                           return (
                             <div key={codingType} className="rounded-xl border border-p-border overflow-hidden">
