@@ -1447,7 +1447,7 @@ export default function CreationWizard() {
                         </div>
 
                         {activeCodingTypes.length > 1 && (
-                          <div className="flex gap-4 border-b border-p-border mb-3" role="tablist">
+                          <div className="flex gap-1 p-1 bg-p-bg-subtle border border-p-border rounded-lg mb-4" role="tablist">
                             {activeCodingTypes.map((codingType) => {
                               const active = (expandedCodingType || activeCodingTypes[0]) === codingType;
                               return (
@@ -1461,10 +1461,10 @@ export default function CreationWizard() {
                                     playTick();
                                   }}
                                   className={[
-                                    "pb-2 text-sm font-medium border-b-2 transition-colors",
+                                    "flex-1 py-1.5 text-sm font-medium rounded-md transition-all duration-200",
                                     active
-                                      ? "border-p-accent text-p-text"
-                                      : "border-transparent text-p-text-muted hover:text-p-text hover:border-p-border-mid",
+                                      ? "bg-p-surface text-p-text shadow-sm"
+                                      : "text-p-text-muted hover:text-p-text hover:bg-p-surface/50",
                                   ].join(" ")}
                                 >
                                   {CODING_LABELS[codingType]}
@@ -1474,87 +1474,105 @@ export default function CreationWizard() {
                           </div>
                         )}
 
-                        {(() => {
-                          const codingType = (expandedCodingType && activeCodingTypes.includes(expandedCodingType))
-                            ? expandedCodingType
-                            : activeCodingTypes[0];
-                          if (!codingType) return null;
+                        <AnimatePresence mode="wait">
+                          {(() => {
+                            const codingType = (expandedCodingType && activeCodingTypes.includes(expandedCodingType))
+                              ? expandedCodingType
+                              : activeCodingTypes[0];
+                            if (!codingType) return null;
 
-                          const selection = catalogOrigins[codingType];
-                          const source = codebookSources[codingType].find(
-                            (candidate) => candidate.source_subproject_id === selection.source_subproject_id
-                          );
-                          const originOptions = hasExistingRounds
-                            ? ORIGIN_OPTIONS.filter((option) => option.value !== "scratch")
-                            : ORIGIN_OPTIONS.filter((option) => option.value !== "inherited_round");
+                            const selection = catalogOrigins[codingType];
+                            const source = codebookSources[codingType].find(
+                              (candidate) => candidate.source_subproject_id === selection.source_subproject_id
+                            );
+                            const originOptions = hasExistingRounds
+                              ? ORIGIN_OPTIONS.filter((option) => option.value !== "scratch")
+                              : ORIGIN_OPTIONS.filter((option) => option.value !== "inherited_round");
 
-                          return (
-                            <div key={codingType} role="tabpanel" className="animate-in fade-in slide-in-from-bottom-2">
-                              <div role="radiogroup" className="space-y-2">
-                                {originOptions.map((option) => {
-                                  const active = selection.origin === option.value;
-                                  return (
-                                    <button
-                                      key={option.value}
-                                      type="button"
-                                      role="radio"
-                                      aria-checked={active}
-                                      disabled={subprojectsCreated}
-                                      onClick={() => {
-                                        setCatalogOrigins((current) => ({
-                                          ...current,
-                                          [codingType]: {
-                                            origin: option.value,
-                                            source_subproject_id:
-                                              option.value === "inherited_round" && codebookSources[codingType].length > 0
-                                                ? codebookSources[codingType][0]?.source_subproject_id ?? null
-                                                : null,
-                                          },
-                                        }));
-                                        playTick();
-                                      }}
-                                      className={[
-                                        "w-full flex items-start gap-2.5 text-left rounded-lg border p-3 transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
-                                        active
-                                          ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
-                                          : "border-p-border hover:bg-p-bg-subtle",
-                                      ].join(" ")}
-                                    >
-                                      <span
+                            const catalogFile = catalogUploads[codingType];
+                            const preview = catalogPreviews[codingType];
+                            const confirmed = catalogConfirmed[codingType];
+
+                            return (
+                              <motion.div 
+                                key={codingType}
+                                initial={{ opacity: 0, y: 5 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -5 }}
+                                transition={{ duration: 0.15 }}
+                                role="tabpanel" 
+                                className="space-y-3"
+                              >
+                                {activeCodingTypes.length > 1 && (
+                                  <p className="text-xs font-semibold text-p-text flex items-center gap-1.5 uppercase tracking-wide">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-p-accent"></span>
+                                    Origen para {CODING_LABELS[codingType]}
+                                  </p>
+                                )}
+                                <div role="radiogroup" className="space-y-2">
+                                  {originOptions.map((option) => {
+                                    const active = selection.origin === option.value;
+                                    return (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        role="radio"
+                                        aria-checked={active}
+                                        disabled={subprojectsCreated}
+                                        onClick={() => {
+                                          setCatalogOrigins((current) => ({
+                                            ...current,
+                                            [codingType]: {
+                                              origin: option.value,
+                                              source_subproject_id:
+                                                option.value === "inherited_round" && codebookSources[codingType].length > 0
+                                                  ? codebookSources[codingType][0]?.source_subproject_id ?? null
+                                                  : null,
+                                            },
+                                          }));
+                                          playTick();
+                                        }}
                                         className={[
-                                          "mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full border flex items-center justify-center",
-                                          active ? "border-p-accent" : "border-p-border-mid",
+                                          "w-full flex items-start gap-2.5 text-left rounded-lg border p-3 transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
+                                          active
+                                            ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
+                                            : "border-p-border hover:bg-p-bg-subtle",
                                         ].join(" ")}
                                       >
-                                        {active && <span className="w-2 h-2 rounded-full bg-p-accent" />}
-                                      </span>
-                                      <span className="min-w-0">
-                                        <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
-                                          {option.label}
+                                        <span
+                                          className={[
+                                            "mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full border flex items-center justify-center",
+                                            active ? "border-p-accent" : "border-p-border-mid",
+                                          ].join(" ")}
+                                        >
+                                          {active && <span className="w-2 h-2 rounded-full bg-p-accent" />}
                                         </span>
-                                        <span className="block text-xs text-p-text-muted mt-0.5">
-                                          {option.description}
+                                        <span className="min-w-0">
+                                          <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
+                                            {option.label}
+                                          </span>
+                                          <span className="block text-xs text-p-text-muted mt-0.5">
+                                            {option.description}
+                                          </span>
                                         </span>
-                                      </span>
-                                    </button>
-                                  );
-                                })}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
 
                                 {selection.origin === "inherited_round" && (
-                                  <div className="pt-2">
+                                  <div className="pt-2 animate-in fade-in zoom-in-95 duration-200">
                                     <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
                                       Libro oficial a heredar
                                     </label>
                                     {codebookSources[codingType].length === 0 ? (
                                       <p className="mt-1.5 text-xs text-p-text-muted rounded-lg bg-p-bg-subtle p-2.5">
                                         Aún no hay libros oficiales de {CODING_LABELS[codingType]} disponibles.
-                                        Un libro queda oficial cuando su ronda cierra la auditoría, o cuando se homologa
-                                        el libro de códigos del cliente.
                                       </p>
                                     ) : (
                                       <div className="mt-1.5 flex items-center justify-between p-3 rounded-lg border border-p-border bg-p-bg-subtle">
                                         <div className="text-sm font-medium text-p-text">
-                                          {codebookSources[codingType][0]?.project_name} · R{codebookSources[codingType][0]?.round_number} ({codebookSources[codingType][0]?.round_name})
+                                          {codebookSources[codingType][0]?.project_name} · R{codebookSources[codingType][0]?.round_number}
                                         </div>
                                         <span className="text-[10px] uppercase font-bold text-p-accent bg-p-accent/10 px-2 py-0.5 rounded-full">
                                           Último
@@ -1568,113 +1586,94 @@ export default function CreationWizard() {
                                     )}
                                   </div>
                                 )}
-                                {selection.origin === "imported_client_catalog" && (
-                                  <p className="text-xs text-p-text-muted pt-1">
-                                    Sube el archivo del cliente abajo y revisa códigos, alias y netos antes de confirmarlo.
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })()}
-
-                        {importedCatalogTypes.length > 0 && round && (
-                          <div className="space-y-3 pt-1">
-                            <div>
-                              <h3 className="text-sm font-semibold text-p-text">Homologación · Libro de códigos del cliente</h3>
-                              <p className="text-xs text-p-text-muted">
-                                Sube el libro del cliente, revisa el resumen y confírmalo antes de continuar.
-                              </p>
-                            </div>
-                            {importedCatalogTypes.map((codingType) => {
-                              const catalogFile = catalogUploads[codingType];
-                              const preview = catalogPreviews[codingType];
-                              const confirmed = catalogConfirmed[codingType];
-                              return (
-                                <div key={codingType} className="rounded-xl border border-p-border p-3 space-y-2.5">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="text-sm font-semibold text-p-text">
-                                      {CODING_LABELS[codingType]}
-                                    </span>
-                                    {confirmed && (
-                                      <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-p-success/10 text-p-success">
-                                        <Check className="w-3 h-3" /> Homologado
-                                      </span>
-                                    )}
-                                  </div>
-                                  {!catalogFile ? (
-                                    <label
-                                      className={[
-                                        "flex items-center justify-center gap-2 rounded-lg border border-dashed border-p-border-mid",
-                                        "px-3 py-4 text-sm text-p-text-muted cursor-pointer",
-                                        "hover:border-p-accent/50 hover:bg-p-accent-soft/50 hover:text-p-text",
-                                        "transition-all duration-200",
-                                      ].join(" ")}
-                                    >
-                                      <UploadCloud className="w-4 h-4 text-p-text-faint" />
-                                      <span>
-                                        Subir el libro de códigos{" "}
-                                        <span className="text-p-text-faint">(.xlsx, .xls)</span>
-                                      </span>
-                                      <input
-                                        type="file"
-                                        accept=".xlsx,.xls"
-                                        aria-label={`Libro de códigos de ${CODING_LABELS[codingType]}`}
-                                        className="sr-only"
-                                        onChange={(event) => {
-                                          const file = event.target.files?.[0];
-                                          if (file) void handleCatalogUpload(codingType, file);
-                                        }}
-                                      />
-                                    </label>
-                                  ) : (
-                                    <>
-                                      <div className="flex items-center gap-2 text-sm font-medium text-p-text">
-                                        <FileSpreadsheet className="w-4 h-4 shrink-0 text-p-accent" />
-                                        <span className="truncate">{catalogFile.original_filename}</span>
-                                      </div>
-                                      <select
-                                        className="input w-full text-sm"
-                                        aria-label={`Hoja del libro de códigos de ${CODING_LABELS[codingType]}`}
-                                        value={catalogSheets[codingType] ?? ""}
-                                        disabled={confirmed}
-                                        onChange={(event) => void loadCatalogPreview(
-                                          codingType, catalogFile, event.target.value
+                                
+                                {selection.origin === "imported_client_catalog" && round && (
+                                  <div className="pt-2 animate-in fade-in zoom-in-95 duration-200">
+                                    <div className="rounded-xl border border-p-accent/20 bg-p-accent-soft/30 p-3 space-y-2.5">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="text-sm font-semibold text-p-text">
+                                          Archivo de homologación
+                                        </span>
+                                        {confirmed && (
+                                          <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-p-success/10 text-p-success">
+                                            <Check className="w-3 h-3" /> Homologado
+                                          </span>
                                         )}
-                                      >
-                                        {catalogFile.detected_sheets.map((sheet) => (
-                                          <option key={sheet.name} value={sheet.name}>
-                                            {sheet.name} ({sheet.rows} filas)
-                                          </option>
-                                        ))}
-                                      </select>
-                                      {preview && (
-                                        <div className="rounded-lg bg-p-bg-subtle p-2.5 text-xs text-p-text-muted">
-                                          Vas a homologar {preview.codes} códigos, {preview.aliases} alias y {preview.nets} netos.
-                                          {preview.system_codes_overflow && (
-                                            <span className="block mt-1">
-                                              El cliente ocupa 95–99: los códigos de sistema nacerán como 995–999.
-                                            </span>
-                                          )}
-                                        </div>
-                                      )}
-                                      {!confirmed && (
-                                        <button
-                                          type="button"
-                                          className="btn-primary text-sm py-2 w-full justify-center"
-                                          disabled={!preview || submitting}
-                                          onClick={() => void handleConfirmCatalog(codingType)}
+                                      </div>
+                                      
+                                      {!catalogFile ? (
+                                        <label
+                                          className={[
+                                            "flex items-center justify-center gap-2 rounded-lg border border-dashed border-p-border-mid bg-p-surface",
+                                            "px-3 py-4 text-sm text-p-text-muted cursor-pointer",
+                                            "hover:border-p-accent/50 hover:bg-p-accent-soft hover:text-p-text",
+                                            "transition-all duration-200",
+                                          ].join(" ")}
                                         >
-                                          Confirmar libro de códigos
-                                        </button>
+                                          <UploadCloud className="w-4 h-4 text-p-text-faint" />
+                                          <span>
+                                            Subir el libro de códigos{" "}
+                                            <span className="text-p-text-faint">(.xlsx)</span>
+                                          </span>
+                                          <input
+                                            type="file"
+                                            accept=".xlsx,.xls"
+                                            className="sr-only"
+                                            onChange={(event) => {
+                                              const file = event.target.files?.[0];
+                                              if (file) void handleCatalogUpload(codingType, file);
+                                            }}
+                                          />
+                                        </label>
+                                      ) : (
+                                        <>
+                                          <div className="flex items-center gap-2 text-sm font-medium text-p-text">
+                                            <FileSpreadsheet className="w-4 h-4 shrink-0 text-p-accent" />
+                                            <span className="truncate">{catalogFile.original_filename}</span>
+                                          </div>
+                                          <select
+                                            className="input w-full text-sm bg-p-surface"
+                                            value={catalogSheets[codingType] ?? ""}
+                                            disabled={confirmed}
+                                            onChange={(event) => void loadCatalogPreview(
+                                              codingType, catalogFile, event.target.value
+                                            )}
+                                          >
+                                            {catalogFile.detected_sheets.map((sheet) => (
+                                              <option key={sheet.name} value={sheet.name}>
+                                                {sheet.name} ({sheet.rows} filas)
+                                              </option>
+                                            ))}
+                                          </select>
+                                          {preview && (
+                                            <div className="rounded-lg bg-p-surface border border-p-border p-2.5 text-xs text-p-text-muted">
+                                              Vas a homologar {preview.codes} códigos, {preview.aliases} alias y {preview.nets} netos.
+                                              {preview.system_codes_overflow && (
+                                                <span className="block mt-1">
+                                                  El cliente ocupa 95–99: los códigos de sistema nacerán como 995–999.
+                                                </span>
+                                              )}
+                                            </div>
+                                          )}
+                                          {!confirmed && (
+                                            <button
+                                              type="button"
+                                              className="btn-primary text-sm py-2 w-full justify-center"
+                                              disabled={!preview || submitting}
+                                              onClick={() => void handleConfirmCatalog(codingType)}
+                                            >
+                                              Confirmar libro de códigos
+                                            </button>
+                                          )}
+                                        </>
                                       )}
-                                    </>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
+                                    </div>
+                                  </div>
+                                )}
+                              </motion.div>
+                            );
+                          })()}
+                        </AnimatePresence>
 
                         {!catalogsReady && importedCatalogTypes.length > 0 && (
                           <div className="rounded-lg border border-p-warning/40 bg-p-warning/10 p-3 text-xs text-p-text-muted">
