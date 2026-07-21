@@ -70,6 +70,7 @@ class FakeSession:
         self.has_own_codes = has_own_codes
         self.candidates = candidates or []
         self.inserted_codes: list[dict] = []
+        self.group_updates: list[dict] = []
 
     def execute(self, stmt, params=None):
         sql = str(stmt)
@@ -84,6 +85,9 @@ class FakeSession:
             return FakeResult(scalar=1)
         if "insert into codes" in sql:
             self.inserted_codes.append(params)
+            return FakeResult()
+        if "update mention_groups" in sql:
+            self.group_updates.append(params)
             return FakeResult()
         return FakeResult()
 
@@ -105,12 +109,15 @@ def test_discover_reason_catalog_creates_codes_only_for_clusters_above_threshold
     ]
     db = FakeSession(codebook_id=uuid.uuid4(), has_own_codes=False, candidates=candidates)
 
-    def fake_embed(text):
+    def fake_embed_many(texts):
         # "sabor" cluster comparte vector; "compro la" queda aparte y bajo el umbral.
-        return [1.0, 0.0] if "rico" in text or "sabor" in text else [0.0, 1.0]
+        return [
+            [1.0, 0.0] if ("rico" in t or "sabor" in t) else [0.0, 1.0]
+            for t in texts
+        ]
 
     with (
-        patch("app.pipeline.semantic.cluster.embed", side_effect=fake_embed),
+        patch("app.pipeline.semantic.cluster.embed_many", side_effect=fake_embed_many),
         patch("app.pipeline.semantic.cluster.propose_reason_codes", return_value=[{
             "net": "Experiencia sensorial",
             "label": "Buen sabor",
@@ -127,6 +134,44 @@ def test_discover_reason_catalog_creates_codes_only_for_clusters_above_threshold
     assert db.inserted_codes[0]["label"] == "Buen sabor"
     assert db.inserted_codes[0]["definition"] == "Valora positivamente el sabor."
     assert db.inserted_codes[0]["n"] == 1
+
+
+def test_discover_reason_catalog_dedupes_codes_with_same_label():
+    """DeepSeek puede etiquetar dos clusters distintos con la misma categoría
+    ("Nutrición"). El bootstrap debe crear UN solo código y apuntar ambos
+    clusters a él — no duplicar el código en el codebook."""
+    candidates = [
+        {"id": uuid.uuid4(), "normalized_text": "es nutritivo", "sample_text": "Es nutritivo", "frequency_count": 4},
+        {"id": uuid.uuid4(), "normalized_text": "alimenta bien", "sample_text": "Alimenta bien", "frequency_count": 4},
+    ]
+    db = FakeSession(codebook_id=uuid.uuid4(), has_own_codes=False, candidates=candidates)
+
+    def fake_embed_many(texts):
+        # dos clusters ortogonales, ambos >= min_mentions.
+        return [[1.0, 0.0] if "nutritivo" in t else [0.0, 1.0] for t in texts]
+
+    same_label = {
+        "net": "Nutrición",
+        "label": "Nutrición",
+        "definition": "Menciona aporte nutricional.",
+        "inclusion_criteria": ["Habla de nutrición"],
+        "exclusion_criteria": ["Solo precio"],
+        "examples": ["Es nutritivo", "Alimenta bien"],
+    }
+
+    with (
+        patch("app.pipeline.semantic.cluster.embed_many", side_effect=fake_embed_many),
+        patch("app.pipeline.semantic.cluster.propose_reason_codes", return_value=[same_label, dict(same_label)]),
+    ):
+        n = discover_reason_catalog(db, uuid.uuid4(), min_mentions=3)
+
+    # Un solo código creado pese a dos clusters con el mismo label.
+    assert n == 1
+    assert len(db.inserted_codes) == 1
+    # Ambos clusters quedan apuntados a un único code_id.
+    assigned_codes = {u["code"] for u in db.group_updates}
+    assert len(assigned_codes) == 1
+    assert assigned_codes == {db.inserted_codes[0]["id"]}
 
 
 def test_discover_reason_catalog_noop_when_no_pending_candidates():
