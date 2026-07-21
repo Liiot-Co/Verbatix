@@ -1083,28 +1083,10 @@ def import_file(
     if is_additional_load:
         review = load_review.analyze_new_load(db, round_id, file_id)
 
-    # REQ-05: cruce por Respondent ID vs perfil pactado (si hay uno en la ronda).
-    # No toca realid / duplicados (REQ-03). Sin perfil → no-op.
-    from app.pipeline import profile as profile_mod
-    profile_review = profile_mod.match_file_against_profile(
-        db, round_id=round_id, imported_file_id=file_id,
-    )
-    if profile_review.get("has_profile"):
-        # Releer candidatos desde flags para unificar con get_load_review.
-        full_review = load_review.get_load_review(db, round_id, file_id)
-        review["duplicates"] = full_review["duplicates"] if is_additional_load else review.get("duplicates", [])
-        if is_additional_load:
-            review["serial_collisions"] = full_review["serial_collisions"]
-        review["profile_candidates"] = full_review["profile_candidates"]
-        review["profile"] = {
-            "expected": profile_review["expected"],
-            "arrived": profile_review["arrived"],
-            "extra": profile_review["extra"],
-            "summary": profile_review.get("summary"),
-            "has_profile": True,
-        }
-    else:
-        review["profile"] = {"has_profile": False, "expected": 0, "arrived": 0, "extra": 0}
+    # REQ-05: el cruce por Respondent ID vs perfil ya no corre acá — se dispara
+    # explícitamente desde POST .../files/{file_id}/profile-match, después de
+    # que el analista confirma los campos seleccionados.
+    review["profile"] = {"has_profile": False, "expected": 0, "arrived": 0, "extra": 0}
 
     db.execute(
         text("update imported_files set status = 'validated' where id = :id"),
@@ -1205,6 +1187,49 @@ def upload_profile(
         **saved,
         "sheet": sheet_name,
         "rematch": rematch,
+    }
+
+
+@router.post("/rounds/{round_id}/files/{file_id}/profile-match", status_code=201)
+def profile_match(
+    round_id: uuid.UUID,
+    file_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """REQ-05: cruce explícito por Respondent ID vs el perfil pactado, sobre
+    una carga ya importada. Se dispara desde el wizard después de que el
+    analista confirma los campos seleccionados (ya no corre dentro de
+    POST .../import)."""
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+
+    exists = db.execute(
+        text("select 1 from imported_files where id = :id and round_id = :round"),
+        {"id": file_id, "round": round_id},
+    ).scalar()
+    if not exists:
+        raise HTTPException(404, "Archivo no encontrado")
+
+    from app.pipeline import profile as profile_mod
+    profile_review = profile_mod.match_file_against_profile(
+        db, round_id=round_id, imported_file_id=file_id,
+    )
+    db.commit()
+
+    if not profile_review.get("has_profile"):
+        return {"has_profile": False, "expected": 0, "arrived": 0, "extra": 0, "profile_candidates": []}
+
+    full_review = load_review.get_load_review(db, round_id, file_id)
+    return {
+        "has_profile": True,
+        "profile_file_id": profile_review["profile_file_id"],
+        "expected": profile_review["expected"],
+        "arrived": profile_review["arrived"],
+        "extra": profile_review["extra"],
+        "summary": profile_review.get("summary"),
+        "profile_candidates": full_review["profile_candidates"],
+        "pending_flags": load_review.count_pending_flags(db, file_id),
     }
 
 
