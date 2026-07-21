@@ -3,7 +3,7 @@ services:
     volumes:
       - ./backend:/app
       - ./data:/app/data
-    command: uvicorn app.main:app --reload --host ${KLASS_HOST} --port ${KLASS_PORT}
+    command: uvicorn app.main:app --reload --host ${KLASS_HOST:-0.0.0.0} --port ${KLASS_PORT:-8001}
 
   frontend:
     build:
@@ -16,6 +16,6 @@ services:
       - ./frontend/index.html:/app/index.html
     command: bun run dev -- --host 0.0.0.0
     ports:
-      - "${FRONTEND_PORT}:5173"
+      - "${FRONTEND_PORT:-5173}:5173"
     environment:
       VITE_BACKEND_URL: http://backend:8001

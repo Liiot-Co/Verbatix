@@ -91,7 +91,10 @@ export default function ResolutionCenter({
           action: "approve",
           code_ids: [codeId],
           new_code: null,
-          add_alias: false,
+          // El motor aprende de cada confirmación humana: en marcas, la mención se
+          // vuelve un alias aprobado y rondas futuras la clasifican sola (en razones
+          // el aprendizaje va por el caché semántico, no por alias fuzzy).
+          add_alias: codingType === "brands",
         });
         setSelected(new Set());
         if (result.failed.length > 0) {
@@ -112,7 +115,7 @@ export default function ResolutionCenter({
         setBulkAssigning(false);
       }
     },
-    [selected, subprojectId, showToast, loadQueue]
+    [selected, subprojectId, codingType, showToast, loadQueue]
   );
 
   return createPortal(

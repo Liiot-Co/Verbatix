@@ -50,13 +50,30 @@ def _signals(value: str, alias: str) -> dict[str, float]:
     wratio = fuzz.WRatio(value, alias) / 100
     ngram = _jaccard(_ngrams(value), _ngrams(alias))
     token = _jaccard(set(value.split()), set(alias.split()))
-    score = 100 * (
-        0.34 * damerau
-        + 0.24 * ratio
-        + 0.20 * ngram
-        + 0.12 * token
-        + 0.10 * length_ratio
-    )
+    # token_jaccard es estructuralmente 0 para un typo de marca de UNA sola
+    # palabra: los conjuntos de tokens son disjuntos salvo coincidencia exacta,
+    # que ya la resuelve el match exacto (score 100). Dejar su peso fijo (0.12)
+    # capaba el score de esas marcas en 88 — justo el umbral de auto-cierre —, así
+    # que un typo de una palabra jamás podía auto-cerrarse (schugur->chugur,
+    # gloriq->gloria, etc. solo se sugerían). Cuando ambos lados son de una sola
+    # palabra ese peso se redistribuye a las señales de carácter, que sí
+    # discriminan al typo del falso positivo; multipalabra conserva la fórmula.
+    multiword = (" " in value.strip()) or (" " in alias.strip())
+    if multiword:
+        score = 100 * (
+            0.34 * damerau
+            + 0.24 * ratio
+            + 0.20 * ngram
+            + 0.12 * token
+            + 0.10 * length_ratio
+        )
+    else:
+        score = 100 * (
+            0.40 * damerau
+            + 0.28 * ratio
+            + 0.22 * ngram
+            + 0.10 * length_ratio
+        )
     return {
         "score": score,
         "damerau_similarity": damerau,

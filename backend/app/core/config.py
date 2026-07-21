@@ -53,11 +53,20 @@ class Settings(BaseSettings):
     # corrido a clasificación (el analista corrige en Resolución). En False se
     # conserva el gate humano: la ronda se detiene en 'codebook_review'.
     auto_approve_scratch_codebook: bool = True
+    # En rondas que HEREDAN el libro (no scratch), crear marcas nuevas por
+    # frecuencia sobre lo que el catálogo heredado no reconoció: un cluster que
+    # alcanza el mínimo de menciones (p.ej. 'wong' con 4 >= 3) nace como código
+    # 'pending' (propuesta a confirmar), en vez de caer al residual 95.
+    discover_new_brands_in_inherited_rounds: bool = True
     # Gate de AUTO-CIERRE del fuzzy de marcas (distinto del filtro de recall de
     # fuzzy/scoring.py, que solo decide si un candidato es elegible). Un candidato
     # fuzzy solo se auto-cierra si su score y su margen top1-top2 superan estos
-    # pisos; si no, queda como sugerencia para Resolución.
-    brand_fuzzy_autocommit_score: float = 88.0
+    # pisos; si no, queda como sugerencia para Resolución. Bajado de 88 -> 82 junto
+    # con el arreglo del scoring de palabra única: los typos claros con margen
+    # fuerte (schugur->chugur, cajamarquina->cajamarquino) se cierran solos; los de
+    # score medio o con dos candidatos parecidos siguen como sugerencia (el margen
+    # top1-top2 corta la ambigüedad) y el aprendizaje de aliases los captura luego.
+    brand_fuzzy_autocommit_score: float = 82.0
     brand_fuzzy_autocommit_margin: float = 5.0
     # Bucket residual estilo Ascribe: al terminar todas las etapas, cada grupo que
     # quedó sin decisión (pending/anomaly/abstained/engine_error, sin sugerencia de

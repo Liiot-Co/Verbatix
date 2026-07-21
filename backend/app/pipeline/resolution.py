@@ -109,7 +109,10 @@ def resolve_group(
                 # Los dobles de prueba exponen el umbral como atributo; en producción
                 # la consulta anterior siempre lo obtiene de la ronda.
                 threshold = getattr(db, "threshold", 3)
-            if group["frequency_count"] < threshold:
+            # Bajo el mínimo el motor no crea el código solo — pero un humano SÍ
+            # puede forzarlo (p.ej. crear "Quesos artesanales" para agrupar menciones
+            # raras): el frontend confirma explícitamente y manda force_below_threshold.
+            if group["frequency_count"] < threshold and not decision.get("force_below_threshold"):
                 raise BelowThresholdError(
                     f"Se requieren al menos {threshold} menciones para crear un código nuevo"
                 )
@@ -162,6 +165,24 @@ def resolve_group(
         assert_single_code_assignment(ordered, single_code=single_code)
 
     verbatims_updated = assign_codes_to_group(db, group_id, code_ids, source, user_id) if code_ids else 0
+
+    if action == "approve" and code_ids:
+        # Una marca nueva propuesta por el motor en una ronda heredada
+        # (discover_new_brands) nace 'pending'. Confirmar una mención suya la
+        # aprueba: así la propuesta se materializa por decisión humana, sin dejar
+        # códigos 'pending' huérfanos en un libro ya aprobado. Solo afecta códigos
+        # no-sistema que el humano asignó explícitamente.
+        db.execute(
+            text("""
+                update codes
+                   set approval_status = 'approved',
+                       created_by = coalesce(created_by, :user)
+                 where id = any(:ids)
+                   and approval_status = 'pending'
+                   and coalesce(is_system, false) = false
+            """),
+            {"ids": list(code_ids), "user": user_id},
+        )
 
     if action == "approve" and ctx["coding_type"] == "reasons" and len(code_ids) == 1:
         # Solo una decisión humana inequívoca alimenta el caché aprobado. Un

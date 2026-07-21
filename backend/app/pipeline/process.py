@@ -26,13 +26,14 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.pipeline.fuzzy import (
     discover_catalog_from_frequency,
+    discover_new_brands,
     load_catalog_aliases,
 )
 from app.pipeline.fuzzy.models import SCORE_THRESHOLD, SYSTEM_ALIAS_VARIANTS
 from app.pipeline.fuzzy.scoring import best_brand_candidate
 from app.pipeline.llm import classify_round
 from app.pipeline.llm.client import propose_brand_codes
-from app.pipeline.normalize import normalize
+from app.pipeline.normalize import normalize, strip_leading_article
 from app.pipeline.semantic import cache as semantic_cache
 from app.pipeline.semantic.cluster import discover_reason_catalog
 
@@ -201,7 +202,12 @@ def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> 
     matched_by_group: dict[str, dict] = {}
     for group in groups:
         normalized = group["normalized_text"]
+        # 'el paira'/'el prado': se prueba también la forma sin artículo inicial
+        # para que calce con el código 'Paira'/'El Prado' aunque difiera el 'el'.
+        stripped = strip_leading_article(normalized)
         exact_code = aliases_by_text.get(normalized)
+        if exact_code is None and stripped != normalized:
+            exact_code = aliases_by_text.get(stripped)
         if exact_code:
             matched_by_group[str(group["id"])] = {
                 "code_id": exact_code, "score": 100.0,
@@ -209,6 +215,8 @@ def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> 
             }
             continue
         candidate = best_brand_candidate(normalized, catalog)
+        if candidate is None and stripped != normalized:
+            candidate = best_brand_candidate(stripped, catalog)
         if candidate:
             matched_by_group[str(group["id"])] = {
                 "code_id": candidate.code_id, "score": candidate.score,
@@ -525,6 +533,32 @@ def _apply_brand_in_reason_rule(db: Session, subproject_id: uuid.UUID) -> dict:
     return {"groups_classified": 0, "suggestions": len(hits)}
 
 
+_VOWELS = set("aeiouáéíóúü")
+
+
+def _is_gibberish(text_value: str) -> bool:
+    """Teclazos aleatorios / cadenas sin estructura de palabra ('lñksadjfdshwhef').
+
+    Conservador a propósito: solo marca ruido evidente para NO tragarse marcas
+    reales (typos incluidos). Exige una sola palabra alfabética larga con muy
+    pocas vocales o una corrida de consonantes imposible en español; deja pasar
+    frases (llevan espacio), textos cortos y typos normales (schugur, gloriq),
+    que siguen su curso normal por fuzzy/LLM.
+    """
+    t = (text_value or "").strip().lower()
+    if not t or " " in t:
+        return False
+    letters = [ch for ch in t if ch.isalpha()]
+    if len(letters) < 6:
+        return False
+    vowel_ratio = sum(1 for ch in letters if ch in _VOWELS) / len(letters)
+    max_run = run = 0
+    for ch in letters:
+        run = 0 if ch in _VOWELS else run + 1
+        max_run = max(max_run, run)
+    return vowel_ratio < 0.22 or max_run >= 5
+
+
 def _prefilter_garbage(db: Session, subproject_id: uuid.UUID) -> int:
     # Ruido real (largo <= 2 o números sueltos): no hay nada que resolver, a revisión manual.
     garbage_res = db.execute(
@@ -594,6 +628,97 @@ def _prefilter_garbage(db: Session, subproject_id: uuid.UUID) -> int:
                 {"ids": group_ids},
             )
             resolved += len(group_ids)
+
+        # Typos/variantes partidas de respuestas de sistema que el match exacto no
+        # pesca ('ni guno' -> ninguno, 'no se ' partido): match difuso conservador
+        # (sin espacios) contra las variantes canónicas. Bar alto y textos cortos
+        # para no arrastrar marcas reales al 96/98/99.
+        variant_to_code = [
+            (variant.replace(" ", ""), code_by_type[system_type])
+            for system_type, variants in SYSTEM_ALIAS_VARIANTS.items()
+            if code_by_type.get(system_type)
+            for variant in variants
+        ]
+        if variant_to_code:
+            from rapidfuzz.distance import DamerauLevenshtein
+            pending_sys = db.execute(
+                text("""
+                    select id, normalized_text from mention_groups
+                    where subproject_id = :sp and status = 'pending_review'
+                      and normalized_text <> '' and length(normalized_text) <= 15
+                """),
+                {"sp": subproject_id},
+            ).mappings().all()
+            fuzzy_sys: dict[object, list] = {}
+            for g in pending_sys:
+                despaced = g["normalized_text"].replace(" ", "")
+                if len(despaced) < 4:
+                    continue
+                best_code, best_sim = None, 0.0
+                for variant_ds, code_id in variant_to_code:
+                    sim = DamerauLevenshtein.normalized_similarity(despaced, variant_ds)
+                    if sim > best_sim:
+                        best_sim, best_code = sim, code_id
+                if best_code is not None and best_sim >= 0.85:
+                    fuzzy_sys.setdefault(best_code, []).append(g["id"])
+            for code_id, ids in fuzzy_sys.items():
+                db.execute(
+                    text("update mention_groups set status = 'auto_coded', suggested_code_id = :code where id = any(:ids)"),
+                    {"code": code_id, "ids": ids},
+                )
+                db.execute(
+                    text("""
+                        insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias)
+                        select gen_random_uuid(), v.id, :code, 1, 'engine_fuzzy', 0.9, v.normalized_text
+                        from verbatims v where v.mention_group_id = any(:ids)
+                        on conflict (verbatim_id, code_id) do nothing
+                    """),
+                    {"code": code_id, "ids": ids},
+                )
+                db.execute(
+                    text("update verbatims set coding_status = 'auto_coded' where mention_group_id = any(:ids)"),
+                    {"ids": ids},
+                )
+                resolved += len(ids)
+
+        # Basura evidente (teclazos aleatorios) -> código 95 "Menciones confusas/
+        # Incorrectas" (system_type 'anomaly'), auto_coded, para que el analista no
+        # pierda tiempo con ruido. Si el libro no tiene el código 95 (p.ej. razones
+        # con solo 96-99), se deja pasar a fuzzy/LLM/residual sin tocar.
+        anomaly_code_id = code_by_type.get("anomaly")
+        if anomaly_code_id is not None:
+            pending = db.execute(
+                text("""
+                    select id, normalized_text from mention_groups
+                    where subproject_id = :sp and status = 'pending_review'
+                      and normalized_text <> ''
+                """),
+                {"sp": subproject_id},
+            ).mappings().all()
+            gibberish_ids = [g["id"] for g in pending if _is_gibberish(g["normalized_text"])]
+            if gibberish_ids:
+                db.execute(
+                    text("""
+                        update mention_groups
+                        set status = 'auto_coded', suggested_code_id = :code
+                        where id = any(:ids)
+                    """),
+                    {"code": anomaly_code_id, "ids": gibberish_ids},
+                )
+                db.execute(
+                    text("""
+                        insert into verbatim_codes (id, verbatim_id, code_id, output_index, source, confidence_score, matched_alias, is_active)
+                        select gen_random_uuid(), v.id, :code, 1, 'engine_rule', 1.0, v.normalized_text, true
+                        from verbatims v where v.mention_group_id = any(:ids)
+                        on conflict (verbatim_id, code_id) do update set is_active = true
+                    """),
+                    {"code": anomaly_code_id, "ids": gibberish_ids},
+                )
+                db.execute(
+                    text("update verbatims set coding_status = 'auto_coded' where mention_group_id = any(:ids)"),
+                    {"ids": gibberish_ids},
+                )
+                resolved += len(gibberish_ids)
 
     return garbage_res.rowcount + resolved
 
@@ -678,6 +803,18 @@ def _process_subproject(db: Session, subproject_id: uuid.UUID, coding_type: str,
         # Para razones el fuzzy da falsos positivos (ver fuzzy/matcher.py) — esas
         # van directo al caché semántico + LLM, nunca al catálogo fuzzy.
         fuzzy_result = _process_brands(db, subproject_id, threshold)
+        # Sobre lo que el catálogo heredado NO reconoció, proponer marcas nuevas por
+        # frecuencia (wong 4>=3): nacen como código 'pending' a confirmar, no caen
+        # al 95. En rondas scratch es no-op (ya descubrieron su catálogo).
+        if settings.discover_new_brands_in_inherited_rounds:
+            min_mentions = db.execute(
+                text("select min_mentions_threshold from subprojects where id = :sp"),
+                {"sp": subproject_id},
+            ).scalar()
+            new_brand_suggestions = discover_new_brands(db, subproject_id, min_mentions or 2)
+            fuzzy_result["suggestions"] = (
+                fuzzy_result.get("suggestions", 0) + new_brand_suggestions
+            )
     else:
         # Si el codebook de razones arranca vacío (from_scratch), poblarlo con
         # categorías reales antes del LLM — si no, classify_round solo tiene los

@@ -1,7 +1,24 @@
 import polars as pl
 import pytest
 
-from app.pipeline.normalize import normalization_stats, normalize, rows_to_normalized_df
+from app.pipeline.normalize import (
+    normalization_stats,
+    normalize,
+    rows_to_normalized_df,
+    strip_leading_article,
+)
+
+
+def test_strip_leading_article():
+    # Quita el artículo inicial para el matcheo de marcas ('el prado' -> 'prado').
+    assert strip_leading_article("el prado") == "prado"
+    assert strip_leading_article("el paira") == "paira"
+    assert strip_leading_article("la iberica") == "iberica"
+    assert strip_leading_article("las palmas") == "palmas"
+    # Sin artículo, o marca de una palabra: se conserva igual.
+    assert strip_leading_article("gloria") == "gloria"
+    # No rompe una marca corta si al quitar el artículo quedaría <3 chars.
+    assert strip_leading_article("el xy") == "el xy"
 
 
 @pytest.mark.parametrize(

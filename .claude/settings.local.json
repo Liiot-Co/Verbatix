@@ -17,7 +17,18 @@
       "Bash(git -C /root/Verbatix show --stat d2ee4501)",
       "Bash(git -C /root/Verbatix show d2ee4501)",
       "Bash(file /root/Verbatix/img/*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(command -v graphify)",
+      "Bash(python -m pytest tests/test_brand_scoring.py tests/test_fuzzy.py -q)",
+      "PowerShell(docker exec verbatix-frontend-1 sh -lc \"cd /app 2>/dev/null || cd /frontend; pwd; ls package.json; bunx tsc --noEmit 2>&1 | head -40; echo EXIT=$?\")",
+      "PowerShell(docker exec verbatix-frontend-1 sh -lc \"cd /app && bun run lint 2>&1 | tail -30\")",
+      "PowerShell(docker exec verbatix-frontend-1 sh -lc \"cd /app && bunx eslint src/components/ResolutionSidebar.tsx src/components/ResolutionCenter.tsx src/api/types.ts 2>&1 | head -40\")",
+      "PowerShell(docker exec verbatix-backend-1 sh -lc \"cd /app && python -m pytest tests/ -q 2>&1 | tail -15\")",
+      "Bash(MSYS_NO_PATHCONV=1 docker exec verbatix-db-1 psql -U verbatix -d verbatix -tc \"select pg_get_constraintdef\\(oid\\) from pg_constraint where conname='verbatim_codes_source_check';\")",
+      "PowerShell(docker exec verbatix-backend-1 sh -lc \"cd /app && python -m pytest tests/test_fuzzy.py tests/test_process.py -q 2>&1 | tail -20\")",
+      "PowerShell(docker exec verbatix-backend-1 sh -lc \"cd /app && python -m pytest tests/ -q 2>&1 | tail -8\")",
+      "PowerShell(docker exec verbatix-backend-1 sh -lc \"cd /app && python -m pytest tests/test_process.py tests/test_fuzzy.py tests/test_brand_scoring.py tests/test_resolution.py -q 2>&1 | tail -25\")",
+      "PowerShell(docker exec verbatix-backend-1 sh -lc \"cd /app && python _diag2.py && rm -f _diag2.py\")"
     ],
     "additionalDirectories": [
       "/mnt/h/Mi unidad/Liiot"

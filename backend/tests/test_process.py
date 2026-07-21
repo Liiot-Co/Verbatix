@@ -346,7 +346,9 @@ def test_process_subproject_skips_fuzzy_for_reasons():
     assert result["groups_classified"] == 2
 
 
-NO_SABE_VARIANTS = ["no sabe", "no se", "nose", "no sabria decir", "no conozco"]
+from app.pipeline.fuzzy.models import SYSTEM_ALIAS_VARIANTS
+
+NO_SABE_VARIANTS = list(SYSTEM_ALIAS_VARIANTS["no_answer"])
 
 
 def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
@@ -374,6 +376,16 @@ def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
     assert any("status = 'auto_coded'" in sql for sql, _ in updates)
     insert_sql, insert_params = next((s, p) for s, p in updates if s.strip().startswith("insert into verbatim_codes"))
     assert insert_params["code"] == "code-96"
+
+
+def test_is_gibberish_flags_random_mash_but_not_real_brands():
+    from app.pipeline.process import _is_gibberish
+
+    assert _is_gibberish("lñksadjfdsflkdsfdshwhef") is True
+    assert _is_gibberish("mgxqzptlv") is True
+    # Marcas, typos y no-respuestas reales NO son basura: siguen su curso normal.
+    for real in ["gloria", "schugur", "philadelphia", "wong", "queso paira", "no se", "kfc"]:
+        assert _is_gibberish(real) is False
 
 
 def test_semantic_cache_skipped_for_brands():

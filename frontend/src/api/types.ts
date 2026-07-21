@@ -522,6 +522,9 @@ export interface ResolutionSummary {
   resolved: number;
   progress_pct: number;
   can_close: boolean;
+  /** Umbral de menciones de la ronda; el frontend avisa antes de crear un código
+   *  por debajo de él. Nulo si la ronda no lo definió. */
+  min_mentions_threshold?: number | null;
 }
 
 export interface MentionGroupDetail {
@@ -546,6 +549,9 @@ export interface ResolveDecision {
   code_ids: string[];
   new_code?: NewCodeInput | null;
   add_alias?: boolean;
+  /** Permite crear un código aunque el grupo no llegue al mínimo de menciones,
+   *  previa confirmación explícita del codificador. */
+  force_below_threshold?: boolean;
   expected_status?: MentionGroupStatus | null;
 }
 

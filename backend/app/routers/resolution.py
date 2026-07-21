@@ -128,6 +128,10 @@ class ResolveDecision(BaseModel):
     code_ids: list[uuid.UUID] = []
     new_code: NewCodeIn | None = None
     add_alias: bool = False
+    # Un humano puede crear un código aunque el grupo no llegue al mínimo de
+    # menciones (previa confirmación explícita en el frontend). El motor nunca lo
+    # hace solo; solo esta bandera, enviada tras confirmar, lo permite.
+    force_below_threshold: bool = False
     expected_status: str | None = None
 
 

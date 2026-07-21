@@ -10,14 +10,55 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.pipeline.normalize import normalize
+from app.pipeline.normalize import normalize, strip_leading_article
 
 from .models import (
     SCORE_THRESHOLD,
     SYSTEM_ALIAS_VARIANTS,
     CodeAlias,
 )
-from .scoring import best_brand_candidate
+from .scoring import COMMON_WORDS, best_brand_candidate
+
+
+def _brandish_tokens(text_value: str) -> list[str]:
+    """Tokens con pinta de nombre de marca: descarta stopwords y partículas
+    cortas ('de', 'la'), que no distinguen marcas."""
+    return [
+        t for t in (text_value or "").split()
+        if len(t) >= 3 and t not in COMMON_WORDS
+    ]
+
+
+_VOWELS_SET = set("aeiouáéíóúü")
+
+
+def _is_junk_brand_seed(text_value: str) -> bool:
+    """Un texto que NO debe volverse un código de marca: demasiado corto,
+    stopword/artículo ('a', 'no', 'el', 'la'), o teclazo sin vocales. Evita los
+    códigos basura como 'A' o 'No' que el descubrimiento creaba desde textos muy
+    frecuentes de una o dos letras (el descubrimiento corre antes del prefiltro)."""
+    t = (text_value or "").strip()
+    if len(t) <= 2 or t in COMMON_WORDS:
+        return True
+    if " " not in t:
+        letters = [c for c in t if c.isalpha()]
+        if len(letters) >= 4 and not any(c in _VOWELS_SET for c in letters):
+            return True
+    return False
+
+
+def _looks_like_multiple_brands(representative: str, known_single_brands: set[str]) -> bool:
+    """Un candidato multipalabra cuyos tokens son, cada uno, una marca por
+    separado (p.ej. 'edam laive' = Edam + Laive, 'edan laive') NO debe volverse un
+    código fusionado: es una respuesta con dos marcas y quién la resuelve es un
+    humano. Se exige que al menos 2 de sus tokens de marca coincidan con marcas ya
+    conocidas (del catálogo o de respuestas de una sola palabra en el mismo DAU).
+    Una marca legítima de dos palabras ('otto kunz', 'cuisine and co') no dispara
+    esto porque sus tokens no aparecen como marcas sueltas."""
+    tokens = _brandish_tokens(representative)
+    if len(tokens) < 2:
+        return False
+    return sum(1 for t in tokens if t in known_single_brands) >= 2
 
 
 def load_catalog_aliases(db: Session, subproject_id: uuid.UUID) -> list[CodeAlias]:
@@ -54,6 +95,40 @@ def load_catalog_aliases(db: Session, subproject_id: uuid.UUID) -> list[CodeAlia
         {"sp": subproject_id},
     ).mappings().all()
 
+    # Aprendizaje ENTRE RONDAS del mismo proyecto: aliases aprobados en OTRAS
+    # rondas de marcas (confirmados por un humano o heredados) se traen al catálogo
+    # de esta ronda, remapeados al código actual que comparte el mismo label
+    # normalizado. Así una escritura que ya se resolvió antes ("schugur" -> Chugur)
+    # se captura sin volver a molestar al analista, aunque la ronda no haya sido
+    # homologada explícitamente (la homologación ya los copia vía clone_codebook;
+    # esto cubre el resto). Solo suma recall: nunca quita candidatos.
+    cross_round_rows = db.execute(
+        text("""
+            select cur.id::text as code_id, a.alias_normalized
+              from subprojects sp
+              join rounds r on r.id = sp.round_id
+              join codes cur on cur.codebook_id = sp.codebook_id
+                            and cur.is_active and cur.approval_status = 'approved'
+                            and coalesce(cur.is_system, false) = false
+                            and cur.label is not null and trim(cur.label) <> ''
+              join rounds r2 on r2.project_id = r.project_id and r2.id <> r.id
+              join subprojects sp2 on sp2.round_id = r2.id and sp2.coding_type = 'brands'
+              join codebooks cb2 on cb2.id = sp2.codebook_id
+                                and cb2.status in ('approved', 'exported')
+              join codes oc on oc.codebook_id = cb2.id and oc.is_active
+                           and oc.approval_status = 'approved'
+                           and coalesce(oc.is_system, false) = false
+                           and lower(trim(oc.label)) = lower(trim(cur.label))
+              join code_aliases a on a.code_id = oc.id and a.codebook_id = cb2.id
+                                 and a.status = 'approved'
+                                 and a.alias_kind in ('positive', 'system')
+                                 and a.alias_normalized is not null
+                                 and a.alias_normalized <> ''
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+
     seen: set[tuple[str, str]] = set()
     catalog: list[CodeAlias] = []
 
@@ -63,11 +138,20 @@ def load_catalog_aliases(db: Session, subproject_id: uuid.UUID) -> list[CodeAlia
             return
         seen.add((code_id, alias))
         catalog.append(CodeAlias(code_id=code_id, alias_normalized=alias))
+        # Variante sin artículo inicial: si el código es 'El Prado', también matchea
+        # la mención 'prado' (y viceversa). Solo agrega recall, apuntando al mismo
+        # código.
+        stripped = strip_leading_article(alias)
+        if stripped != alias and len(stripped) >= 3 and (code_id, stripped) not in seen:
+            seen.add((code_id, stripped))
+            catalog.append(CodeAlias(code_id=code_id, alias_normalized=stripped))
 
     for r in alias_rows:
         _add(r["code_id"], r["alias_normalized"])
     for r in label_rows:
         _add(r["code_id"], normalize(r["label"]))
+    for r in cross_round_rows:
+        _add(r["code_id"], r["alias_normalized"])
     return catalog
 
 
@@ -102,6 +186,23 @@ def promote_llm_result_to_alias(
         """),
         {"code": code_id, "norm": alias_normalized, "sample": alias_sample, "score": match_score},
     )
+
+
+def _clean_seed_label(representative: str, members: list) -> str:
+    """Label de la semilla: el texto normalizado del representante, o el
+    sample_text del encuestado SOLO si no agrega ruido (mismo número de palabras).
+    Evita labels sucios tipo 'Edn laive' cuando el encuestado escribió palabras de
+    más alrededor de la marca ('laive')."""
+    raw_label = representative
+    for m in members:
+        if (
+            m["normalized_text"] == representative
+            and m["sample_text"]
+            and len(m["sample_text"].split()) <= len(representative.split())
+        ):
+            raw_label = m["sample_text"]
+            break
+    return raw_label.strip().capitalize() if raw_label else raw_label
 
 
 def _brand_code_numbers(start: int, occupied: set[int] | None = None):
@@ -279,6 +380,11 @@ def discover_catalog_from_frequency(
             clusters[norm] = [cand]
             cluster_reprs.append(norm)
 
+    # Marcas de UNA sola palabra observadas como respuesta suelta: sirven para
+    # detectar respuestas que nombran dos marcas ('edam laive' = Edam + Laive) y
+    # NO fusionarlas en un código inventado.
+    single_word_brands = {rep for rep in cluster_reprs if len(_brandish_tokens(rep)) == 1}
+
     # Fase 2: solo se promueven a code nuevo los clusters cuya frecuencia
     # SUMADA alcanza el mínimo — el resto sigue como pending_review para el LLM.
     for representative, members in clusters.items():
@@ -286,13 +392,23 @@ def discover_catalog_from_frequency(
         if total < min_mentions:
             continue
 
+        # Basura/stopword ('a', 'no', teclazo): nunca es una marca; se deja para el
+        # prefiltro/residual, no se crea un código.
+        if _is_junk_brand_seed(representative):
+            continue
+
+        # Respuesta con dos marcas distintas ('edam laive'): no se crea un código
+        # fusionado; sus menciones siguen pending_review para que un humano las
+        # revise y elija a cuál marca van (o si son ambas). Se mira TODO el cluster,
+        # no solo el representante, por si la forma más frecuente es un typo.
+        if any(
+            _looks_like_multiple_brands(m["normalized_text"], single_word_brands)
+            for m in members
+        ):
+            continue
+
         code_id = str(uuid.uuid4())
-        raw_label = representative
-        for m in members:
-            if m["normalized_text"] == representative and m["sample_text"]:
-                raw_label = m["sample_text"]
-                break
-        formatted_label = raw_label.strip().capitalize() if raw_label else raw_label
+        formatted_label = _clean_seed_label(representative, members)
         db.execute(
             text("""
                 insert into codes (
@@ -328,3 +444,165 @@ def discover_catalog_from_frequency(
         )
 
     return catalog
+
+
+def discover_new_brands(
+    db: Session, subproject_id: uuid.UUID, min_mentions: int,
+) -> int:
+    """Crea marcas NUEVAS por frecuencia en rondas que HEREDAN el libro de códigos.
+
+    `discover_catalog_from_frequency` solo corre con libro vacío (scratch). En una
+    ronda que hereda/importa el catálogo, una marca real que nunca estuvo en él
+    (p.ej. 'wong' con 4 menciones >= mínimo 3) no tenía forma de nacer: caía al
+    residual 95. Esta función corre DESPUÉS del fuzzy — sobre lo que quedó
+    `pending_review`, es decir, lo que el catálogo existente NO reconoció — agrupa
+    por similitud y, para cada cluster cuya frecuencia sumada alcanza el mínimo,
+    crea un código nuevo `pending` (propuesta, nunca auto-aprobado) y deja sus
+    menciones `suggested` para que un humano lo confirme. Los singletons y clusters
+    chicos siguen `pending_review` hacia el LLM. Devuelve cuántas menciones agrupó.
+
+    No hace commit: el caller cierra la transacción del subproyecto.
+    """
+    row = db.execute(
+        text("""
+            select sp.codebook_id, sp.coding_type, cb.origin as codebook_origin
+              from subprojects sp
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().first()
+    if not row or row["coding_type"] != "brands":
+        return 0
+    # Las rondas scratch ya descubren su catálogo en discover_catalog_from_frequency.
+    if row["codebook_origin"] == "scratch":
+        return 0
+    codebook_id = row["codebook_id"]
+    if codebook_id is None:
+        return 0
+
+    candidates = db.execute(
+        text("""
+            select id, normalized_text, sample_text, frequency_count
+              from mention_groups
+             where subproject_id = :sp
+               and status = 'pending_review'
+               and normalized_text <> ''
+             order by frequency_count desc, normalized_text
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+    if not candidates:
+        return 0
+
+    # Agrupar los no reconocidos entre sí (mismo scorer conservador que el
+    # bootstrap): typos de la misma marca nueva suman su frecuencia.
+    cluster_reprs: list[str] = []
+    clusters: dict[str, list] = {}
+    for cand in candidates:
+        norm = cand["normalized_text"]
+        hit = best_brand_candidate(
+            norm,
+            [CodeAlias(code_id=r, alias_normalized=r) for r in cluster_reprs],
+        )
+        if hit:
+            clusters[hit.code_id].append(cand)
+        else:
+            clusters[norm] = [cand]
+            cluster_reprs.append(norm)
+
+    next_number = db.execute(
+        text("""
+            select coalesce(max(code_number), 0) + 1 from codes
+            where codebook_id = :cb and coalesce(is_system, false) = false
+        """),
+        {"cb": codebook_id},
+    ).scalar() or 1
+    occupied = {
+        r["code_number"]
+        for r in db.execute(
+            text("select code_number from codes where codebook_id = :cb"),
+            {"cb": codebook_id},
+        ).mappings().all()
+    }
+    numbers = _brand_code_numbers(next_number, occupied)
+
+    # Marcas ya conocidas (del catálogo heredado + respuestas de una sola palabra):
+    # sirven para no fusionar una respuesta con dos marcas ('edam laive') en un
+    # código nuevo. En rondas heredadas 'edam' y 'laive' suelen ser códigos que ya
+    # existen, así que se leen del catálogo, no solo de los candidatos sueltos.
+    known_single_brands = {
+        _brandish_tokens(a.alias_normalized)[0]
+        for a in load_catalog_aliases(db, subproject_id)
+        if len(_brandish_tokens(a.alias_normalized)) == 1
+    }
+    known_single_brands |= {rep for rep in cluster_reprs if len(_brandish_tokens(rep)) == 1}
+
+    grouped = 0
+    for representative, members in clusters.items():
+        total = sum(m["frequency_count"] for m in members)
+        if total < min_mentions:
+            continue
+        # Basura/stopword ('a', 'no', teclazo): no es una marca.
+        if _is_junk_brand_seed(representative):
+            continue
+        # Respuesta con dos marcas distintas ('edam laive'): no se crea un código
+        # fusionado; se deja pending_review para revisión humana (elegir cuál marca).
+        if any(
+            _looks_like_multiple_brands(m["normalized_text"], known_single_brands)
+            for m in members
+        ):
+            continue
+        code_id = str(uuid.uuid4())
+        db.execute(
+            text("""
+                insert into codes (
+                  id, codebook_id, code_number, label, definition, examples,
+                  origin, approval_status
+                )
+                values (
+                  :id, :cb, :n, :label, :definition, cast(:examples as jsonb),
+                  'engine_auto', 'pending'
+                )
+            """),
+            {
+                "id": code_id, "cb": codebook_id, "n": next(numbers),
+                "label": _clean_seed_label(representative, members),
+                "definition": (
+                    f"Marca nueva propuesta: {total} menciones no reconocidas por el "
+                    f"catálogo heredado. Pendiente de confirmación."
+                ),
+                "examples": json.dumps(
+                    [m["sample_text"] or m["normalized_text"] for m in members[:5]]
+                ),
+            },
+        )
+        db.execute(
+            text("""
+                insert into code_aliases (id, codebook_id, code_id, alias_normalized,
+                                          alias_sample, occurrences, origin,
+                                          alias_kind, status, evidence)
+                values (:id, :cb, :code, :norm, :sample, :occ, 'engine_fuzzy',
+                        'positive', 'pending', '{"source":"discover_new_brands"}'::jsonb)
+                on conflict (codebook_id, alias_normalized, code_id) do nothing
+            """),
+            [
+                {
+                    "id": uuid.uuid4(), "cb": codebook_id, "code": code_id,
+                    "norm": m["normalized_text"], "sample": m["sample_text"],
+                    "occ": m["frequency_count"],
+                }
+                for m in members
+            ],
+        )
+        db.execute(
+            text("""
+                update mention_groups
+                   set status = 'suggested', suggested_code_id = :code
+                 where id = any(:ids)
+            """),
+            {"code": code_id, "ids": [m["id"] for m in members]},
+        )
+        grouped += len(members)
+
+    return grouped

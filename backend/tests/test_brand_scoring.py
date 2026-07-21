@@ -29,3 +29,15 @@ def test_typo_can_recover_gloria_without_authorizing_autoclose():
     candidate = best_brand_candidate("glorai", CATALOG)
     assert candidate is not None
     assert candidate.code_id == "gloria"
+
+
+def test_single_word_typo_scores_above_autocommit_band():
+    # Regresión: el peso fijo de token_jaccard (0.12) capaba el score de un typo
+    # de marca de UNA palabra en 88 — justo el gate de auto-cierre —, así que
+    # jamás se auto-cerraba. Redistribuido ese peso, un typo claro supera 82.
+    candidate = best_brand_candidate(
+        "schugur", [CodeAlias(code_id="chugur", alias_normalized="chugur")]
+    )
+    assert candidate is not None
+    assert candidate.code_id == "chugur"
+    assert candidate.score >= 82.0

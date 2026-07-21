@@ -149,6 +149,29 @@ def test_new_code_below_min_mentions_threshold_fails():
     mocks.create_code.assert_not_called()
 
 
+def test_force_below_threshold_lets_human_create_code_under_minimum():
+    """Bajo el mínimo el motor no crea el código solo, pero un humano SÍ puede
+    forzarlo con confirmación explícita (crear 'Quesos artesanales' para agrupar
+    menciones raras)."""
+    group = _group(frequency_count=1)  # 1 < threshold 3
+    new_id = uuid.uuid4()
+    with ExitStack() as stack:
+        mocks = Mocks(stack, group)
+        mocks.create_code.return_value = {"id": str(new_id)}
+        result = resolve_group(
+            FakeSession(threshold=3), SUBPROJECT_ID, GROUP_ID,
+            {
+                "action": "approve", "code_ids": [],
+                "new_code": {"label": "Quesos artesanales"},
+                "force_below_threshold": True,
+            },
+            user_id=USER_ID,
+        )
+
+    mocks.create_code.assert_called_once()
+    assert result["status"] == "resolved"
+
+
 def test_multi_code_preserves_selection_order_for_output_index():
     group = _group()
     code_a, code_b = uuid.uuid4(), uuid.uuid4()

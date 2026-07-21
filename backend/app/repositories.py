@@ -1849,12 +1849,24 @@ def get_resolution_summary(db: Session, subproject_id: uuid.UUID) -> dict:
     auto_coded = by_status.get("auto_coded", 0)
     resolved = by_status.get("resolved", 0)
     total = pending + auto_coded + resolved
+    # El umbral de menciones vive en la ronda (es el que valida resolve_group al
+    # crear un código nuevo); se expone para que el frontend avise ANTES de enviar
+    # cuando el analista intenta crear una marca por debajo del mínimo.
+    min_mentions_threshold = db.execute(
+        text("""
+            select r.min_mentions_threshold
+              from subprojects sp join rounds r on r.id = sp.round_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).scalar()
     return {
         "pending": pending,
         "auto_coded": auto_coded,
         "resolved": resolved,
         "progress_pct": round((resolved + auto_coded) / total * 100, 1) if total else 0.0,
         "can_close": pending == 0,
+        "min_mentions_threshold": min_mentions_threshold,
     }
 
 
