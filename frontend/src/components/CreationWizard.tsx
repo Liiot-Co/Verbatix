@@ -1932,15 +1932,54 @@ export default function CreationWizard() {
                       <ChevronLeft className="w-3.5 h-3.5" /> {showProfileStep ? "Perfil" : "Datos"}
                     </motion.button>
 
-                    <div className="card p-4 space-y-1">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-p-text">
-                        <Check className="w-4 h-4 text-p-success" />
-                        {importedCount} verbatims importados
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                      <div className="card p-3 space-y-1.5 border-p-border-mid bg-p-surface shadow-sm hover:border-p-accent/30 transition-colors">
+                        <div className="text-[10px] uppercase font-bold text-p-text-muted tracking-wide flex items-center gap-1.5">
+                          <Check className="w-3.5 h-3.5 text-p-success" /> Importación
+                        </div>
+                        <div className="text-xl font-bold text-p-text leading-none">{importedCount} <span className="text-[11px] font-medium text-p-text-muted uppercase tracking-wider">Muestras</span></div>
                       </div>
-                      <p className="text-xs text-p-text-muted">
-                        El motor ya está codificando en segundo plano.
+
+                      <div className="card p-3 space-y-1.5 border-p-border-mid bg-p-surface shadow-sm hover:border-p-accent/30 transition-colors">
+                        <div className="text-[10px] uppercase font-bold text-p-text-muted tracking-wide flex items-center gap-1.5">
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-p-accent" /> Datos de origen
+                        </div>
+                        <div className="text-sm font-medium text-p-text truncate" title={uploaded?.original_filename ?? "Archivo importado"}>
+                          {uploaded?.original_filename ?? "Datos importados"}
+                        </div>
+                      </div>
+
+                      <div className="card p-3 space-y-1.5 border-p-border-mid bg-p-surface shadow-sm hover:border-p-accent/30 transition-colors">
+                        <div className="text-[10px] uppercase font-bold text-p-text-muted tracking-wide flex items-center gap-1.5">
+                          <BookOpen className="w-3.5 h-3.5 text-p-accent" /> Destino
+                        </div>
+                        <div className="text-sm font-medium text-p-text truncate" title={project?.name}>
+                          {project?.name ?? "Proyecto actual"}
+                        </div>
+                        <div className="text-[11px] text-p-text-muted truncate">
+                          {round?.name ?? "Ronda actual"}
+                        </div>
+                      </div>
+
+                      <div className="card p-3 space-y-1.5 border-p-border-mid bg-p-surface shadow-sm hover:border-p-accent/30 transition-colors">
+                        <div className="text-[10px] uppercase font-bold text-p-text-muted tracking-wide flex items-center gap-1.5">
+                          <Users className="w-3.5 h-3.5 text-p-accent" /> Perfil de referencia
+                        </div>
+                        <div className="text-sm font-medium text-p-text truncate">
+                          {profileSummary?.has_profile ? "Validación activada" : "Sin validación de perfil"}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="rounded-xl bg-p-bg-subtle border border-p-border p-3.5 text-xs text-p-text flex items-start gap-2.5">
+                      <div className="mt-0.5 relative flex items-center justify-center">
+                        <span className="absolute w-2 h-2 rounded-full bg-p-success/40 animate-ping"></span>
+                        <span className="relative w-2 h-2 rounded-full bg-p-success"></span>
+                      </div>
+                      <p className="leading-relaxed">
+                        El motor de IA ya está procesando las muestras en segundo plano para los subproyectos: <span className="font-semibold text-p-text">{activeCodingTypes.map(t => CODING_LABELS[t]).join(" y ")}</span>. 
                         {(matchingProfile || profileSummary?.has_profile || profileCandidates.length > 0)
-                          && " Esta revisión decide qué hacer con posibles duplicados / candidatos a exclusión por perfil."}
+                          && " Revisa las incidencias de duplicados o candidatos a exclusión por perfil abajo antes de finalizar la configuración."}
                       </p>
                     </div>
 
