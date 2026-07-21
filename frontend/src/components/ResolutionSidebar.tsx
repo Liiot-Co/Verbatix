@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, CheckCircle2, Maximize2, Plus, Sparkles, Volume2, VolumeX } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Maximize2, Plus, Sparkles, Volume2, VolumeX, Search, X } from "lucide-react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Link } from "react-router-dom";
 import {
@@ -930,12 +930,42 @@ export default function ResolutionSidebar({
           {/* Bottom zone: grid de códigos, navegable por teclado — this is the part that scrolls */}
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-4 pt-3 space-y-3">
             <div className="bg-p-surface border border-p-border rounded-2xl p-3.5">
-              <div className="flex items-center gap-1.5 mb-2">
-                <span className="font-mono text-[10px] tracking-wide uppercase text-p-text-faint whitespace-nowrap">
-                  {assignHint}
-                </span>
-                <div className="flex-1 h-px bg-p-border" />
-                <div className="flex items-center gap-0.5">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="relative flex-1 group">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-p-text-faint group-focus-within:text-p-accent transition-colors" />
+                  <input
+                    type="text"
+                    placeholder={`${assignHint}...`}
+                    value={codeFilter}
+                    onChange={(e) => {
+                      setCodeFilter(e.target.value.toLowerCase());
+                      setNavCodeIndex(0);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        setCodeFilter("");
+                        setNavCodeIndex(0);
+                        e.currentTarget.blur();
+                      } else if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        e.currentTarget.blur();
+                      }
+                    }}
+                    className="w-full h-7 pl-8 pr-7 bg-p-surface border border-p-border rounded-lg text-xs text-p-text placeholder:text-p-text-muted focus-visible:outline-none focus-visible:border-p-accent/50 focus-visible:ring-1 focus-visible:ring-p-accent/30 transition-all shadow-sm"
+                  />
+                  {codeFilter && (
+                    <button
+                      onClick={() => {
+                        setCodeFilter("");
+                        setNavCodeIndex(0);
+                      }}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center text-p-text-faint hover:text-p-text bg-p-bg-subtle hover:bg-p-border rounded"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-0.5 shrink-0 bg-p-surface rounded-lg p-0.5 border border-p-border shadow-sm">
                   <button
                     onClick={() => setAutoCols(true)}
                     title="Ajustar columnas automáticamente"
@@ -954,16 +984,10 @@ export default function ResolutionSidebar({
                     </button>
                   ))}
                 </div>
-                <span className="text-[10px] text-p-text-faint ml-1 font-mono">
+                <span className="text-[10px] text-p-text-faint ml-1 font-mono shrink-0">
                   {codeFilter ? `${filteredCodes.length}/${codes.length}` : codes.length}
                 </span>
               </div>
-              {codeFilter && (
-                <div className="flex items-center gap-1.5 mb-2 px-2 py-1 rounded-lg bg-p-bg-subtle text-xs text-p-text-muted">
-                  <span className="font-mono">Filtro: {codeFilter}</span>
-                  <span className="text-p-text-faint">· ⌫ borrar · Esc limpiar</span>
-                </div>
-              )}
               <div
                 ref={gridRef}
                 className="grid gap-1"
