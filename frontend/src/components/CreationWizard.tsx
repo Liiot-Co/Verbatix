@@ -186,8 +186,9 @@ const stepVariants = {
 export default function CreationWizard() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { roundId: existingRoundId, step: urlStep } = useParams<{ roundId: string; step?: string }>();
-  const isAddLoadMode = Boolean(existingRoundId);
+  const { step: urlStep, roundId: pathRoundId } = useParams<{ roundId: string; step?: string }>();
+  const isAddLoadMode = Boolean(pathRoundId) || searchParams.get("addLoad") === "true";
+  const existingRoundId = isAddLoadMode ? (pathRoundId ?? searchParams.get("roundId")) : null;
   // round-sequence-and-homologation (Task 11/12): /wizard?projectId=&roundId=
   // reanuda una ronda YA creada pero con configuración incompleta — distinto
   // de isAddLoadMode (que asume subproyectos ya listos para sumar una carga).
@@ -474,6 +475,10 @@ export default function CreationWizard() {
   useEffect(() => {
     if (!urlStep) {
       const params = new URLSearchParams(searchParams.toString());
+      if (pathRoundId) {
+        params.set("roundId", pathRoundId);
+        params.set("addLoad", "true");
+      }
       const qs = params.toString();
       navigate(`/wizard/setup${qs ? `?${qs}` : ""}`, { replace: true });
     }
