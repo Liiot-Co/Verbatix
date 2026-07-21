@@ -352,8 +352,8 @@ NO_SABE_VARIANTS = list(SYSTEM_ALIAS_VARIANTS["no_answer"])
 
 
 def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
-    """One garbage group (short text) -> anomaly. One 'no se' group -> auto_coded
-    straight to its system code, skipping manual review entirely."""
+    """One garbage group (short text) -> auto_coded to 95. One 'no se' group ->
+    auto_coded straight to its system code, skipping manual review entirely."""
     updates = []  # every UPDATE/INSERT, for assertions below
 
     def fake_execute(stmt, params=None):
@@ -361,21 +361,31 @@ def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
         if "codebook_id from subprojects where id" in sql:
             return FakeResult(scalar="cb-1")
         if "select id, system_type from codes" in sql:
-            return FakeResult(mapping_rows=[{"id": "code-96", "system_type": "no_answer"}])
-        if "select id from mention_groups" in sql:
+            return FakeResult(mapping_rows=[
+                {"id": "code-95", "system_type": "anomaly"},
+                {"id": "code-96", "system_type": "no_answer"},
+            ])
+        if "length(normalized_text) <= 2" in sql:
+            return FakeResult(mapping_rows=[{"id": "group-short"}])
+        if "select id from mention_groups" in sql and "variants" in (params or {}):
             rows = [{"id": "group-2"}] if params.get("variants") == NO_SABE_VARIANTS else []
             return FakeResult(mapping_rows=rows)
-        if sql.strip().startswith("update mention_groups") and "anomaly" in sql:
-            return FakeResult(rowcount=1)  # the short-text garbage group
+        if "select id, normalized_text from mention_groups" in sql:
+            return FakeResult(mapping_rows=[])
         updates.append((sql, params))
         return FakeResult(rowcount=1)
 
     total = _prefilter_garbage(FakeSession(execute=fake_execute), SUBPROJECT_BRANDS)
 
-    assert total == 2  # 1 garbage + 1 "no se" resolved
+    assert total == 2  # 1 short garbage + 1 "no se" resolved
     assert any("status = 'auto_coded'" in sql for sql, _ in updates)
-    insert_sql, insert_params = next((s, p) for s, p in updates if s.strip().startswith("insert into verbatim_codes"))
-    assert insert_params["code"] == "code-96"
+    # Short noise goes to anomaly (95); exact "no se" goes to 96.
+    coded = [
+        (sql, params) for sql, params in updates
+        if sql.strip().startswith("insert into verbatim_codes")
+    ]
+    assert any(p.get("code") == "code-95" for _, p in coded)
+    assert any(p.get("code") == "code-96" for _, p in coded)
 
 
 def test_is_gibberish_flags_random_mash_but_not_real_brands():
@@ -383,6 +393,10 @@ def test_is_gibberish_flags_random_mash_but_not_real_brands():
 
     assert _is_gibberish("lñksadjfdsflkdsfdshwhef") is True
     assert _is_gibberish("mgxqzptlv") is True
+    assert _is_gibberish("lkjfksdñajfdsk") is True
+    # Multi-palabra teclazo: antes se descartaba por llevar espacios.
+    assert _is_gibberish("kjsdañfdsk jdsfj n a") is True
+    assert _is_gibberish("n a") is True
     # Marcas, typos y no-respuestas reales NO son basura: siguen su curso normal.
     for real in ["gloria", "schugur", "philadelphia", "wong", "queso paira", "no se", "kfc"]:
         assert _is_gibberish(real) is False

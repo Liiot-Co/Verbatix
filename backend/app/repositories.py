@@ -1854,7 +1854,11 @@ def get_resolution_summary(db: Session, subproject_id: uuid.UUID) -> dict:
     # cuando el analista intenta crear una marca por debajo del mínimo.
     min_mentions_threshold = db.execute(
         text("""
-            select r.min_mentions_threshold
+            select coalesce(
+              r.min_mentions_threshold,
+              sp.min_mentions_threshold,
+              3
+            )
               from subprojects sp join rounds r on r.id = sp.round_id
              where sp.id = :sp
         """),

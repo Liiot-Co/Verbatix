@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.pipeline.resolution import BelowThresholdError, ResolutionConflict, resolve_group
+from app.pipeline.resolution import ResolutionConflict, resolve_group
 from app.repositories import add_alias_from_group
 
 ROUND_ID = uuid.uuid4()
@@ -66,6 +66,8 @@ class FakeSession:
             return FakeResult(mapping=mapping)
         if "single_code_per_response" in sql:
             return FakeResult(scalar=self.single_code)
+        if "min_mentions_threshold" in sql:
+            return FakeResult(scalar=self.threshold)
         if "is_system from codes" in sql:
             ids = list(params.get("ids") or [])
             return FakeResult(mappings_list=[
@@ -136,23 +138,25 @@ def test_concurrent_edit_raises_conflict_when_state_diverged():
             )
 
 
-def test_new_code_below_min_mentions_threshold_fails():
-    group = _group(frequency_count=2)  # threshold defaults to 3 in FakeSession
+def test_new_code_below_min_mentions_threshold_is_allowed_for_human():
+    """El mínimo es del motor; en Resolución un humano puede crear con 1–2 menciones."""
+    group = _group(frequency_count=2)  # bajo el mínimo típico de 3
+    new_id = uuid.uuid4()
     with ExitStack() as stack:
         mocks = Mocks(stack, group)
-        with pytest.raises(BelowThresholdError):
-            resolve_group(
-                FakeSession(threshold=3), SUBPROJECT_ID, GROUP_ID,
-                {"action": "approve", "code_ids": [], "new_code": {"label": "Nueva marca"}},
-                user_id=USER_ID,
-            )
-    mocks.create_code.assert_not_called()
+        mocks.create_code.return_value = {"id": str(new_id)}
+        result = resolve_group(
+            FakeSession(threshold=3), SUBPROJECT_ID, GROUP_ID,
+            {"action": "approve", "code_ids": [], "new_code": {"label": "El Artesano"}},
+            user_id=USER_ID,
+        )
+
+    mocks.create_code.assert_called_once()
+    assert result["status"] == "resolved"
 
 
 def test_force_below_threshold_lets_human_create_code_under_minimum():
-    """Bajo el mínimo el motor no crea el código solo, pero un humano SÍ puede
-    forzarlo con confirmación explícita (crear 'Quesos artesanales' para agrupar
-    menciones raras)."""
+    """Compat: force_below_threshold sigue siendo aceptado (clientes que lo mandan)."""
     group = _group(frequency_count=1)  # 1 < threshold 3
     new_id = uuid.uuid4()
     with ExitStack() as stack:

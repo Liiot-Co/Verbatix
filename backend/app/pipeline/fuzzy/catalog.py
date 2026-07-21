@@ -40,10 +40,13 @@ def _is_junk_brand_seed(text_value: str) -> bool:
     t = (text_value or "").strip()
     if len(t) <= 2 or t in COMMON_WORDS:
         return True
-    if " " not in t:
-        letters = [c for c in t if c.isalpha()]
-        if len(letters) >= 4 and not any(c in _VOWELS_SET for c in letters):
-            return True
+    tokens = [tok for tok in t.split() if tok]
+    if tokens and all(len(tok) <= 1 for tok in tokens):
+        return True
+    compact = "".join(ch for ch in t if not ch.isspace())
+    letters = [c for c in compact if c.isalpha()]
+    if len(letters) >= 4 and not any(c in _VOWELS_SET for c in letters):
+        return True
     return False
 
 

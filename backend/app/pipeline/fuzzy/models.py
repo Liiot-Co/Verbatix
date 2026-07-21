@@ -42,11 +42,21 @@ SYSTEM_ALIAS_VARIANTS: dict[str, tuple[str, ...]] = {
         "ni idea", "no idea", "sin idea", "ninguna idea", "no tengo idea",
         "no lo se", "no sabria", "no sabe no responde", "desconozco",
         "no conozco ninguna", "no conozco ninguno",
+        "no estoy seguro", "no estoy segura", "no estoy segur",
+        "no se bien", "no sabria decirte", "quien sabe",
     ),
-    "none": ("nada", "ninguna", "ninguno", "ni una", "niguna"),
+    "none": (
+        "nada", "ninguna", "ninguno", "ni una", "niguna",
+        "mas ninguna", "mas ninguno", "ya ninguna", "ninguna mas",
+    ),
     "no_recall": (
         "no recuerda", "no recuerdo", "no me acuerdo", "no responde",
         "no contesta", "no recuerdo ninguna", "no recuerdo el nombre",
+    ),
+    # 97 "Otras menciones": respuestas literales de catch-all, no marcas reales.
+    "other_mentions": (
+        "otros", "otro", "otras", "otra", "etc", "etcetera",
+        "los demas", "las demas", "demas", "varios", "varias",
     ),
 }
 
