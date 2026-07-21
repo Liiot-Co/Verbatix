@@ -57,18 +57,19 @@ export default function FieldSelectionTable({
                   {!readOnly && selection && (
                     <td className="px-3 py-2.5">
                       <input
+                        id={`field-${preview.field}`}
                         type="checkbox"
                         checked={selection.included}
                         onChange={(e) => update(preview.field, { included: e.target.checked })}
-                        className="mt-0.5 h-4 w-4 rounded border-p-border-mid accent-p-accent"
+                        className="mt-0.5 h-4 w-4 cursor-pointer rounded border-p-border-mid accent-p-accent"
                         aria-label={`Incluir campo ${preview.field}`}
                       />
                     </td>
                   )}
                   <td className="min-w-0 max-w-[14rem] px-3 py-2.5">
-                    <span className="block truncate text-sm font-medium text-p-text" title={preview.field}>
+                    <label htmlFor={`field-${preview.field}`} className="block truncate text-sm font-medium text-p-text cursor-pointer select-none" title={preview.field}>
                       {preview.field}
-                    </span>
+                    </label>
                     {preview.reason && (
                       <p className="mt-0.5 text-xs text-p-text-muted">{preview.reason}</p>
                     )}
@@ -87,18 +88,20 @@ export default function FieldSelectionTable({
                     </td>
                   )}
                   <td className="px-3 py-2.5">
-                    {preview.sample_values.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
+                    {preview.sample_values.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
                         {preview.sample_values.map((sample, i) => (
                           <span
                             key={i}
                             title={sample}
-                            className="max-w-[10rem] truncate rounded-full bg-p-bg-subtle px-2 py-0.5 text-[11px] text-p-text-faint"
+                            className="max-w-[14rem] truncate rounded bg-white/50 dark:bg-black/20 border border-p-border px-2 py-1 text-xs text-p-text"
                           >
                             {sample}
                           </span>
                         ))}
                       </div>
+                    ) : (
+                      <span className="text-xs text-p-text-faint italic">Sin datos</span>
                     )}
                   </td>
                 </tr>
