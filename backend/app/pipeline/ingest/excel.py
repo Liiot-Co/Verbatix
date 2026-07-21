@@ -125,6 +125,7 @@ def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | Non
             "(se valida contra el perfil de referencia). "
             "También acepta 'Serial'."
         )
+    i_realid = col("realid", "real id")
 
     i_q = col("question id")
     # column_map.verbatim es explícito; si no viene, cae al sniffing actual.
@@ -139,7 +140,7 @@ def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | Non
     i_out = col("output id 1", "output id")
 
     out = []
-    for r in rows[header_i + 1:]:
+    for source_row_number, r in enumerate(rows[header_i + 1:], start=header_i + 2):
         if not r or not r[i_txt]:
             continue
         resp_val = r[i_resp] if i_resp < len(r) else None
@@ -147,6 +148,8 @@ def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | Non
             continue
         out.append({
             "respondent_external_id": str(resp_val).strip(),
+            "realid": str(r[i_realid]).strip() if i_realid is not None and i_realid < len(r) and r[i_realid] else None,
+            "source_row_number": source_row_number,
             # Sin Question ID (Excel mínimo: Respondent ID + Verbatim) usamos
             # una clave estable; el wizard/ronda asigna Marcas o Razones.
             "question_key": (

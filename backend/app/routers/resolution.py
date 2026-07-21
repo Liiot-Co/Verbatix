@@ -22,7 +22,10 @@ from app.repositories import (
 
 router = APIRouter(prefix="/api/v1", tags=["resolution"])
 
-DEFAULT_STATUSES = ["anomaly", "below_threshold", "pending_review"]
+DEFAULT_STATUSES = [
+    "suggested", "abstained", "pending_review", "below_threshold",
+    "anomaly", "garbage", "engine_error", "conflict",
+]
 
 
 def _default_statuses() -> list[str]:
@@ -125,6 +128,10 @@ class ResolveDecision(BaseModel):
     code_ids: list[uuid.UUID] = []
     new_code: NewCodeIn | None = None
     add_alias: bool = False
+    # Un humano puede crear un código aunque el grupo no llegue al mínimo de
+    # menciones (previa confirmación explícita en el frontend). El motor nunca lo
+    # hace solo; solo esta bandera, enviada tras confirmar, lo permite.
+    force_below_threshold: bool = False
     expected_status: str | None = None
 
 

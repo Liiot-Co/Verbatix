@@ -240,6 +240,60 @@ export interface ProcessResult {
   round_id: string;
 }
 
+export interface CodebookDraftGroup {
+  id: string;
+  text: string | null;
+  normalized_text: string;
+  frequency: number;
+}
+
+export interface CodebookDraftCode {
+  id: string;
+  code_number: number;
+  label: string;
+  net_name: string | null;
+  definition: string | null;
+  inclusion_criteria: string[];
+  exclusion_criteria: string[];
+  examples: string[];
+  approval_status: "pending" | "approved" | "revoked";
+  is_system: boolean;
+  mentions: number;
+  mention_groups: number;
+  groups: CodebookDraftGroup[];
+}
+
+export interface CodebookDraft {
+  id: string;
+  subproject_id: string;
+  round_id: string;
+  coding_type: CodingType;
+  origin: string;
+  status: string;
+  version: number;
+  codes: CodebookDraftCode[];
+}
+
+export interface CodebookDraftDecision {
+  code_id: string;
+  decision: "approve" | "reject";
+  label: string;
+  net_name: string | null;
+  definition: string | null;
+  inclusion_criteria: string[];
+  exclusion_criteria: string[];
+  examples: string[];
+}
+
+export interface CodebookDraftApproval {
+  codebook_id: string;
+  round_id: string;
+  status: "approved";
+  approved_codes: number;
+  rejected_codes: number;
+  ready_to_process: boolean;
+}
+
 // REQ-03: un posible duplicado real (mismo realid en otra carga de la ronda),
 // insertado y pendiente de decisión humana.
 export interface DuplicateFlag {
@@ -357,6 +411,9 @@ export interface PreliminarySummary {
   summary: {
     auto_coded: number;
     pending_review: number;
+    suggested: number;
+    abstained: number;
+    engine_errors: number;
     anomalies: number;
     resolved: number;
   };
@@ -473,7 +530,9 @@ export interface AdminUser extends UserProfile {
 
 /* ── Resolution Center (Fase 4) ── */
 
-export type MentionGroupStatus = "auto_coded" | "below_threshold" | "anomaly" | "pending_review" | "resolved";
+export type MentionGroupStatus =
+  | "auto_coded" | "below_threshold" | "anomaly" | "pending_review" | "resolved"
+  | "suggested" | "garbage" | "engine_error" | "abstained" | "conflict";
 
 export interface RoundCode {
   id: string;
@@ -509,6 +568,9 @@ export interface ResolutionSummary {
   resolved: number;
   progress_pct: number;
   can_close: boolean;
+  /** Umbral de menciones de la ronda; el frontend avisa antes de crear un código
+   *  por debajo de él. Nulo si la ronda no lo definió. */
+  min_mentions_threshold?: number | null;
 }
 
 export interface MentionGroupDetail {
@@ -533,6 +595,9 @@ export interface ResolveDecision {
   code_ids: string[];
   new_code?: NewCodeInput | null;
   add_alias?: boolean;
+  /** Permite crear un código aunque el grupo no llegue al mínimo de menciones,
+   *  previa confirmación explícita del codificador. */
+  force_below_threshold?: boolean;
   expected_status?: MentionGroupStatus | null;
 }
 
@@ -544,6 +609,12 @@ export interface ResolveResult {
   verbatims_updated: number;
   new_code: { id: string; code_number: number; label: string; is_new: boolean } | null;
   auto_resolved_groups: { id: string; normalized_text: string }[];
+  similar_suggestions: {
+    id: string;
+    normalized_text: string;
+    status: string;
+    score: number;
+  }[];
 }
 
 export interface BulkResolveResult {

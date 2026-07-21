@@ -6,6 +6,7 @@ import polars as pl
 from app.pipeline.fuzzy import (
     CodeAlias,
     discover_catalog_from_frequency,
+    discover_new_brands,
     run_fuzzy_matching,
 )
 from app.pipeline.fuzzy.catalog import promote_llm_result_to_alias
@@ -147,6 +148,8 @@ class _FreqSession:
         sql = str(stmt)
         if "codebook_id from subprojects" in sql:
             return _FreqResult(scalar=self._codebook_id)
+        if "select exists" in sql and "from codes" in sql:
+            return _FreqResult(scalar=False)
         if "from mention_groups" in sql:
             return _FreqResult(rows=self._seeds)
         if "is_system and system_type is not null" in sql:
@@ -162,8 +165,8 @@ class _FreqSession:
 
 def test_discover_catalog_promotes_frequent_groups_to_seeds():
     seeds = [
-        {"normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
-        {"normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 7},
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
+        {"id": uuid.uuid4(), "normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 7},
     ]
     db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
 
@@ -194,8 +197,8 @@ def test_discover_catalog_routes_system_responses_to_system_codes():
     # sino alias del código de sistema 96 para que el fuzzy lo codifique ahí.
     code_96 = str(uuid.uuid4())
     seeds = [
-        {"normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 12},
-        {"normalized_text": "no se", "sample_text": "No se", "frequency_count": 10},
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 12},
+        {"id": uuid.uuid4(), "normalized_text": "no se", "sample_text": "No se", "frequency_count": 10},
     ]
     db = _FreqSession(
         codebook_id=uuid.uuid4(),
@@ -216,8 +219,8 @@ def test_discover_catalog_routes_system_responses_to_system_codes():
 
 def test_discover_catalog_clusters_typo_seeds_as_aliases():
     seeds = [
-        {"normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 20},
-        {"normalized_text": "gloriaa", "sample_text": "GLORIAA", "frequency_count": 6},
+        {"id": uuid.uuid4(), "normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 20},
+        {"id": uuid.uuid4(), "normalized_text": "gloriaa", "sample_text": "GLORIAA", "frequency_count": 6},
     ]
     db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
 
@@ -231,8 +234,8 @@ def test_discover_catalog_clusters_typo_seeds_as_aliases():
 
 def test_discover_catalog_numbering_skips_system_range():
     seeds = [
-        {"normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
-        {"normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 8},
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},
+        {"id": uuid.uuid4(), "normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 8},
     ]
     # El siguiente número libre cae en el rango de sistema (95-99): debe saltarlo.
     db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds, next_number=95)
@@ -294,8 +297,8 @@ def test_discover_catalog_clusters_sub_threshold_typos_by_combined_frequency():
 
 def test_discover_catalog_promotes_cluster_when_combined_frequency_reaches_minimum():
     seeds = [
-        {"normalized_text": "kraft", "sample_text": "Kraft", "frequency_count": 2},
-        {"normalized_text": "kraf", "sample_text": "Kraf", "frequency_count": 1},
+        {"id": uuid.uuid4(), "normalized_text": "kraft", "sample_text": "Kraft", "frequency_count": 2},
+        {"id": uuid.uuid4(), "normalized_text": "kraftt", "sample_text": "Kraftt", "frequency_count": 1},
     ]
     db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
 
@@ -306,4 +309,153 @@ def test_discover_catalog_promotes_cluster_when_combined_frequency_reaches_minim
     assert len(db.inserted_codes) == 1
     assert db.inserted_codes[0]["label"] == "Kraft"
     by_alias = {c.alias_normalized: c.code_id for c in catalog}
-    assert by_alias["kraft"] == by_alias["kraf"] == db.inserted_codes[0]["id"]
+    assert by_alias["kraft"] == by_alias["kraftt"] == db.inserted_codes[0]["id"]
+
+
+def test_is_junk_brand_seed_helper():
+    from app.pipeline.fuzzy.catalog import _is_junk_brand_seed
+
+    for junk in ["a", "no", "el", "la", "de", "xy", "  "]:
+        assert _is_junk_brand_seed(junk) is True
+    for real in ["gloria", "bonle", "wong", "otto kunz", "kfc"]:
+        assert _is_junk_brand_seed(real) is False
+
+
+def test_discover_catalog_skips_junk_stopword_seeds():
+    # 'no' es frecuente pero es stopword: NO debe volverse el código basura 'No'.
+    seeds = [
+        {"id": uuid.uuid4(), "normalized_text": "no", "sample_text": "No", "frequency_count": 10},
+        {"id": uuid.uuid4(), "normalized_text": "gloria", "sample_text": "Gloria", "frequency_count": 8},
+    ]
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
+
+    discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=3)
+
+    labels = [c["label"] for c in db.inserted_codes]
+    assert labels == ["Gloria"]
+
+
+def test_looks_like_multiple_brands_helper():
+    from app.pipeline.fuzzy.catalog import _looks_like_multiple_brands
+
+    known = {"edam", "laive", "gloria", "wong"}
+    # Dos marcas conocidas juntas -> respuesta multi-marca (no se fusiona).
+    assert _looks_like_multiple_brands("edam laive", known) is True
+    assert _looks_like_multiple_brands("gloria wong", known) is True
+    # Marca legítima de dos palabras cuyos tokens NO son marcas sueltas -> se crea.
+    assert _looks_like_multiple_brands("otto kunz", known) is False
+    # Una sola palabra, o solo un token que es marca -> no dispara.
+    assert _looks_like_multiple_brands("gloria", known) is False
+    assert _looks_like_multiple_brands("laive natural", known) is False
+
+
+def test_discover_catalog_does_not_merge_two_brand_answer_into_one_code():
+    # 'edam' y 'laive' son marcas distintas; una respuesta 'edam laive' NO debe
+    # volverse un código fusionado 'Edam Laive' — se deja para revisión humana.
+    seeds = [
+        {"id": uuid.uuid4(), "normalized_text": "edam", "sample_text": "Edam", "frequency_count": 6},
+        {"id": uuid.uuid4(), "normalized_text": "laive", "sample_text": "Laive", "frequency_count": 5},
+        {"id": uuid.uuid4(), "normalized_text": "edam laive", "sample_text": "Edam Laive", "frequency_count": 4},
+    ]
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
+
+    discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=3)
+
+    labels = [c["label"] for c in db.inserted_codes]
+    assert "Edam" in labels and "Laive" in labels
+    # No hay código que combine ambas marcas.
+    assert not any("edam" in l.lower() and "laive" in l.lower() for l in labels)
+    assert len(db.inserted_codes) == 2
+
+
+def test_discover_catalog_never_clusters_bone_into_bonle():
+    seeds = [
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonlé", "frequency_count": 5},
+        {"id": uuid.uuid4(), "normalized_text": "bone", "sample_text": "Bone", "frequency_count": 5},
+    ]
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
+
+    discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=5)
+
+    assert len(db.inserted_codes) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Marcas nuevas por frecuencia en rondas HEREDADAS (discover_new_brands)
+# --------------------------------------------------------------------------- #
+class _NBResult:
+    def __init__(self, rows=None, scalar=None, mapping=None):
+        self._rows, self._scalar, self._mapping = rows or [], scalar, mapping
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+    def first(self):
+        return self._mapping
+
+    def scalar(self):
+        return self._scalar
+
+
+class _NewBrandSession:
+    """Fake que sirve el subproyecto/origen, los candidatos pendientes y la
+    numeración, y captura los inserts de discover_new_brands."""
+
+    def __init__(self, origin, candidates):
+        self.origin = origin
+        self.candidates = candidates
+        self.inserted_codes = []
+        self.inserted_aliases = []
+        self.suggested = []
+
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        if "sp.coding_type" in sql and "cb.origin" in sql:
+            return _NBResult(mapping={
+                "codebook_id": "cb-1", "coding_type": "brands",
+                "codebook_origin": self.origin,
+            })
+        if "status = 'pending_review'" in sql and "frequency_count" in sql:
+            return _NBResult(rows=self.candidates)
+        if "max(code_number)" in sql:
+            return _NBResult(scalar=1)
+        if "select code_number from codes" in sql:
+            return _NBResult(rows=[])
+        if sql.strip().startswith("insert into codes"):
+            self.inserted_codes.append(params)
+        elif sql.strip().startswith("insert into code_aliases"):
+            self.inserted_aliases.append(params)
+        elif sql.strip().startswith("update mention_groups"):
+            self.suggested.append(params)
+        return _NBResult()
+
+
+def test_discover_new_brands_creates_pending_brand_when_cluster_reaches_minimum():
+    candidates = [
+        {"id": uuid.uuid4(), "normalized_text": "wong", "sample_text": "Wong", "frequency_count": 4},
+        {"id": uuid.uuid4(), "normalized_text": "metro", "sample_text": "Metro", "frequency_count": 1},
+    ]
+    db = _NewBrandSession(origin="inherited", candidates=candidates)
+
+    grouped = discover_new_brands(db, uuid.uuid4(), min_mentions=3)
+
+    # 'wong' (4 >= 3) nace como código; 'metro' (1 < 3) sigue pending_review al LLM.
+    assert grouped == 1
+    assert len(db.inserted_codes) == 1
+    assert db.inserted_codes[0]["label"] == "Wong"
+    # Un alias 'pending' por cada mención del cluster, listo para confirmación.
+    assert len(db.inserted_aliases) == 1  # un execute (lista de params) por code
+
+
+def test_discover_new_brands_is_noop_for_scratch_round():
+    # En scratch ya descubrió su catálogo discover_catalog_from_frequency: no duplica.
+    db = _NewBrandSession(
+        origin="scratch",
+        candidates=[{"id": uuid.uuid4(), "normalized_text": "wong", "sample_text": "Wong", "frequency_count": 9}],
+    )
+
+    assert discover_new_brands(db, uuid.uuid4(), min_mentions=3) == 0
+    assert db.inserted_codes == []

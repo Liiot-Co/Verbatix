@@ -8,6 +8,7 @@ not the engines' internals.
 import uuid
 from unittest.mock import patch
 
+from app.core.config import settings
 from app.pipeline.process import (
     _apply_semantic_cache,
     _prefilter_garbage,
@@ -21,19 +22,23 @@ SUBPROJECT_REASONS = uuid.uuid4()
 
 
 class FakeResult:
-    def __init__(self, scalar=None, rowcount=0, mapping_rows=None):
+    def __init__(self, scalar=None, rowcount=0, mapping_rows=None, scalars_list=None):
         self._scalar = scalar
         self.rowcount = rowcount
         self._mapping_rows = mapping_rows or []
+        self._scalars_list = scalars_list or []
 
     def scalar(self):
         return self._scalar
+
+    def scalars(self):
+        return self
 
     def mappings(self):
         return self
 
     def all(self):
-        return self._mapping_rows
+        return self._scalars_list or self._mapping_rows
 
     def first(self):
         return self._mapping_rows[0] if self._mapping_rows else None
@@ -66,10 +71,12 @@ def test_process_round_dispatches_both_subprojects_in_parallel_and_sums_stats():
 
     def fake_execute(stmt, params=None):
         sql = str(stmt)
-        if "id, coding_type from subprojects where round_id" in sql:
+        if "from subprojects sp" in sql and "join codebooks cb" in sql:
             return FakeResult(mapping_rows=[
-                {"id": SUBPROJECT_BRANDS, "coding_type": "brands"},
-                {"id": SUBPROJECT_REASONS, "coding_type": "reasons"},
+                {"id": SUBPROJECT_BRANDS, "coding_type": "brands", "min_mentions_threshold": 3,
+                 "codebook_status": "approved", "codebook_origin": "scratch"},
+                {"id": SUBPROJECT_REASONS, "coding_type": "reasons", "min_mentions_threshold": 3,
+                 "codebook_status": "approved", "codebook_origin": "scratch"},
             ])
         return FakeResult()
 
@@ -96,10 +103,12 @@ def test_process_round_raises_when_one_subproject_fails():
     of being silently swallowed by the worker thread."""
     def fake_execute(stmt, params=None):
         sql = str(stmt)
-        if "id, coding_type from subprojects where round_id" in sql:
+        if "from subprojects sp" in sql and "join codebooks cb" in sql:
             return FakeResult(mapping_rows=[
-                {"id": SUBPROJECT_BRANDS, "coding_type": "brands"},
-                {"id": SUBPROJECT_REASONS, "coding_type": "reasons"},
+                {"id": SUBPROJECT_BRANDS, "coding_type": "brands", "min_mentions_threshold": 3,
+                 "codebook_status": "approved", "codebook_origin": "scratch"},
+                {"id": SUBPROJECT_REASONS, "coding_type": "reasons", "min_mentions_threshold": 3,
+                 "codebook_status": "approved", "codebook_origin": "scratch"},
             ])
         return FakeResult()
 
@@ -131,6 +140,180 @@ def test_process_round_raises_when_round_has_no_subprojects():
         pass
 
 
+def test_process_round_stops_at_codebook_review_for_scratch_draft():
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "from subprojects sp" in sql and "join codebooks cb" in sql:
+            return FakeResult(mapping_rows=[{
+                "id": SUBPROJECT_BRANDS,
+                "coding_type": "brands",
+                "min_mentions_threshold": 3,
+                "codebook_status": "draft",
+                "codebook_origin": "scratch",
+            }])
+        return FakeResult()
+
+    db = FakeSession(execute=fake_execute)
+    with (
+        patch.object(settings, "auto_approve_scratch_codebook", False),
+        patch("app.pipeline.process.discover_catalog_from_frequency", return_value=[]) as bootstrap,
+        patch("app.pipeline.process._canonicalize_brand_draft", return_value=2) as canonicalize,
+        patch("app.pipeline.process._process_subproject") as classify,
+    ):
+        result = process_round(db, ROUND_ID)
+
+    bootstrap.assert_called_once()
+    canonicalize.assert_called_once()
+    classify.assert_not_called()
+    assert result["awaiting_codebook_approval"] is True
+    assert result["proposed_codes"] == 2
+    assert result["groups_classified"] == 0
+
+
+def test_process_round_codebook_review_survives_brand_canonicalize_failure():
+    """Si DeepSeek falla al canonizar, la ronda igual debe quedar en codebook_review."""
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "from subprojects sp" in sql and "join codebooks cb" in sql:
+            return FakeResult(mapping_rows=[{
+                "id": SUBPROJECT_BRANDS,
+                "coding_type": "brands",
+                "min_mentions_threshold": 3,
+                "codebook_status": "draft",
+                "codebook_origin": "scratch",
+            }])
+        return FakeResult()
+
+    db = FakeSession(execute=fake_execute)
+    with (
+        patch.object(settings, "auto_approve_scratch_codebook", False),
+        patch("app.pipeline.process.discover_catalog_from_frequency", return_value=[]),
+        patch(
+            "app.pipeline.process._canonicalize_brand_draft",
+            return_value=4,
+        ) as canonicalize,
+        patch("app.pipeline.process._process_subproject") as classify,
+    ):
+        result = process_round(db, ROUND_ID)
+
+    canonicalize.assert_called_once()
+    classify.assert_not_called()
+    assert result["awaiting_codebook_approval"] is True
+    assert result["proposed_codes"] == 4
+
+
+def test_residual_confuso_bucket_closes_unresolved_to_system_code():
+    """El bucket residual cierra los grupos sin decisión al código de sistema
+    universal (95 marcas), auto_coded, con source engine_rule."""
+    from app.pipeline.process import _apply_residual_confuso_bucket
+
+    code95 = uuid.uuid4()
+    g1, g2 = uuid.uuid4(), uuid.uuid4()
+    executed = []
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        executed.append((sql, params))
+        if "c.is_system = true and c.system_type" in sql:
+            assert params["st"] == "anomaly"  # marcas -> 95
+            return FakeResult(scalar=code95)
+        if "select id from mention_groups" in sql and "suggested_code_id is null" in sql:
+            return FakeResult(scalars_list=[g1, g2])
+        return FakeResult()
+
+    with patch.object(settings, "residual_to_confuso", True):
+        n = _apply_residual_confuso_bucket(FakeSession(execute=fake_execute), uuid.uuid4(), "brands")
+
+    assert n == 2
+    assert any(
+        "set status = 'auto_coded'" in sql and p.get("code") == code95
+        for sql, p in executed if isinstance(p, dict)
+    )
+    assert any("'engine_rule'" in sql for sql, _ in executed)
+
+
+def test_residual_confuso_bucket_respects_flag_off():
+    from app.pipeline.process import _apply_residual_confuso_bucket
+
+    with patch.object(settings, "residual_to_confuso", False):
+        n = _apply_residual_confuso_bucket(FakeSession(), uuid.uuid4(), "brands")
+    assert n == 0
+
+
+def test_process_round_auto_approves_scratch_draft_and_classifies():
+    """Con auto_approve_scratch_codebook (default), la ronda NO se detiene en
+    codebook_review: auto-aprueba el borrador y sigue de corrido a clasificación,
+    llegando sola a preliminary_ready."""
+    results_seen = {}
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "from subprojects sp" in sql and "join codebooks cb" in sql:
+            return FakeResult(mapping_rows=[{
+                "id": SUBPROJECT_BRANDS,
+                "coding_type": "brands",
+                "min_mentions_threshold": 3,
+                "codebook_status": "draft",
+                "codebook_origin": "scratch",
+            }])
+        return FakeResult()
+
+    def fake_worker(sp_id, coding_type, threshold, results, errors):
+        results[sp_id] = {
+            "run_id": "r", "llm_run_id": "l", "groups_classified": 7,
+            "suggestions": 1, "anomalies": 0, "total": 8,
+        }
+        results_seen[sp_id] = True
+
+    db = FakeSession(execute=fake_execute)
+    with (
+        patch.object(settings, "auto_approve_scratch_codebook", True),
+        patch("app.pipeline.process.discover_catalog_from_frequency", return_value=[]) as bootstrap,
+        patch("app.pipeline.process._canonicalize_brand_draft", return_value=2),
+        patch("app.repositories.auto_approve_scratch_codebooks", return_value=1) as auto_approve,
+        patch("app.pipeline.process._process_subproject_worker", side_effect=fake_worker),
+    ):
+        result = process_round(db, ROUND_ID)
+
+    bootstrap.assert_called_once()
+    auto_approve.assert_called_once()
+    assert SUBPROJECT_BRANDS in results_seen
+    assert result.get("awaiting_codebook_approval") is None
+    assert result["groups_classified"] == 7
+
+
+def test_canonicalize_brand_draft_keeps_seeds_when_llm_fails():
+    from app.pipeline.process import _canonicalize_brand_draft
+
+    code_id = uuid.uuid4()
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "approval_status = 'pending'" in sql:
+            return FakeResult(mapping_rows=[{
+                "id": code_id,
+                "label": "bonle",
+                "examples": ["bonle", "bomle"],
+                "mentions": 12,
+            }])
+        if "product_category" in sql:
+            return FakeResult(mapping_rows=[{
+                "study": "LECHES",
+                "external_code": "X",
+                "product_category": "Leches",
+            }])
+        return FakeResult()
+
+    db = FakeSession(execute=fake_execute)
+    with patch(
+        "app.pipeline.process.propose_brand_codes",
+        side_effect=ValueError("DeepSeek devolvió una canonización de marcas inválida"),
+    ):
+        kept = _canonicalize_brand_draft(db, SUBPROJECT_BRANDS)
+
+    assert kept == 1
+
+
 def test_process_subproject_runs_fuzzy_for_brands():
     with (
         patch("app.pipeline.process._prefilter_garbage") as prefilter_mock,
@@ -152,6 +335,7 @@ def test_process_subproject_skips_fuzzy_for_reasons():
         patch("app.pipeline.process._prefilter_garbage"),
         patch("app.pipeline.process._process_brands") as fuzzy_mock,
         patch("app.pipeline.process.discover_reason_catalog") as discover_mock,
+        patch("app.pipeline.process._apply_brand_in_reason_rule", return_value={"groups_suggested": 0}),
         patch("app.pipeline.process._apply_semantic_cache", return_value={"groups_classified": 0}),
         patch("app.pipeline.process.classify_round", return_value={"run_id": "llm1", "groups_classified": 2, "anomalies": 0, "total": 2}),
     ):
@@ -162,7 +346,9 @@ def test_process_subproject_skips_fuzzy_for_reasons():
     assert result["groups_classified"] == 2
 
 
-NO_SABE_VARIANTS = ["no sabe", "no se", "nose", "no sabria decir", "no conozco"]
+from app.pipeline.fuzzy.models import SYSTEM_ALIAS_VARIANTS
+
+NO_SABE_VARIANTS = list(SYSTEM_ALIAS_VARIANTS["no_answer"])
 
 
 def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
@@ -192,6 +378,16 @@ def test_prefilter_auto_codes_system_alias_and_flags_real_garbage():
     assert insert_params["code"] == "code-96"
 
 
+def test_is_gibberish_flags_random_mash_but_not_real_brands():
+    from app.pipeline.process import _is_gibberish
+
+    assert _is_gibberish("lñksadjfdsflkdsfdshwhef") is True
+    assert _is_gibberish("mgxqzptlv") is True
+    # Marcas, typos y no-respuestas reales NO son basura: siguen su curso normal.
+    for real in ["gloria", "schugur", "philadelphia", "wong", "queso paira", "no se", "kfc"]:
+        assert _is_gibberish(real) is False
+
+
 def test_semantic_cache_skipped_for_brands():
     """coding_type != 'reasons' -> no DB access at all, no LLM cost paid on the check."""
     calls = []
@@ -203,11 +399,8 @@ def test_semantic_cache_skipped_for_brands():
     assert calls == []
 
 
-def test_semantic_cache_hit_auto_codes_group_before_llm_sees_it():
-    """A group with a near-identical reason_embeddings hit gets marked
-    'auto_coded' by the cache pass — so classify_round's own pending_review
-    query (and therefore _classify_batch_with_retry/classify_batch) never
-    sees it, without needing to spy on the LLM call itself."""
+def test_semantic_cache_hit_suggests_group_before_llm_sees_it():
+    """Un embedding aprobado propone, pero no autocierra sin calibración."""
     group_id = "group-1"
     mention_groups = {group_id: {"normalized_text": "muy fresco", "status": "pending_review"}}
     inserted_verbatim_codes = []
@@ -227,7 +420,7 @@ def test_semantic_cache_hit_auto_codes_group_before_llm_sees_it():
             return FakeResult(mapping_rows=rows)
         if sql.strip().startswith("update mention_groups"):
             for p in params:
-                mention_groups[p["id"]]["status"] = "auto_coded"
+                mention_groups[p["id"]]["status"] = "suggested"
             return FakeResult()
         if sql.strip().startswith("insert into verbatim_codes"):
             inserted_verbatim_codes.extend(params)
@@ -242,8 +435,8 @@ def test_semantic_cache_hit_auto_codes_group_before_llm_sees_it():
     ):
         result = _apply_semantic_cache(db, SUBPROJECT_REASONS, "reasons")
 
-    assert result == {"groups_classified": 1}
-    assert mention_groups[group_id]["status"] == "auto_coded"
+    assert result == {"groups_classified": 0, "suggestions": 1}
+    assert mention_groups[group_id]["status"] == "suggested"
     assert inserted_verbatim_codes[0]["code"] == "code-1"
 
     # classify_round filters on status='pending_review' via its own query — this
@@ -307,7 +500,7 @@ def test_semantic_cache_searches_source_round_when_homologated():
             return FakeResult(scalar="code-own" if params["src"] == "code-source" else None)
         if sql.strip().startswith("update mention_groups"):
             for p in params:
-                mention_groups[p["id"]]["status"] = "auto_coded"
+                mention_groups[p["id"]]["status"] = "suggested"
             return FakeResult()
         if sql.strip().startswith("insert into verbatim_codes"):
             inserted_verbatim_codes.extend(params)
@@ -324,7 +517,7 @@ def test_semantic_cache_searches_source_round_when_homologated():
         result = _apply_semantic_cache(db, SUBPROJECT_REASONS, "reasons")
 
     assert lookup_calls == [["cb-own", "cb-source"]]
-    assert result == {"groups_classified": 1}
+    assert result == {"groups_classified": 0, "suggestions": 1}
     assert inserted_verbatim_codes[0]["code"] == "code-own"  # remapped, not the origin round's code_id
 
 

@@ -21,6 +21,7 @@ _SHEET_NAME = "Registros DAU"
 # Se guarda bajo una clave reservada que no puede colisionar con un campo ##v
 # (los nombres de campo nunca empiezan con '##').
 _SERIAL_KEY = "##serial"
+_SOURCE_ROW_KEY = "##source_row_number"
 
 # Campos de infraestructura que IBM MDM/Ascribe siempre exporta en un .dau,
 # sin importar el diseño del cuestionario (ver Datos Cliente/.../MetaData.txt
@@ -148,7 +149,7 @@ def parse_records(content: bytes) -> list[dict[str, str]]:
     current: dict[str, str] | None = None
     current_num: str | None = None
 
-    for line in text.replace("\r\n", "\n").split("\n"):
+    for line_number, line in enumerate(text.replace("\r\n", "\n").split("\n"), start=1):
         recstart_m = _RECSTART_RE.match(line)
         end_m = _END_RE.match(line)
 
@@ -157,21 +158,31 @@ def parse_records(content: bytes) -> list[dict[str, str]]:
                 raise DauFormatError(
                     f"'##recstart {recstart_m.group(1)}' encontrado antes de cerrar el registro {current_num}"
                 )
-            current = {_SERIAL_KEY: recstart_m.group(1)}
+            current = {
+                _SERIAL_KEY: recstart_m.group(1),
+                _SOURCE_ROW_KEY: str(len(records) + 1),
+            }
             current_num = recstart_m.group(1)
         elif end_m:
             if current is None or end_m.group(1) != current_num:
                 raise DauFormatError(f"'##end {end_m.group(1)}' sin '##recstart' correspondiente")
             records.append(current)
             current, current_num = None, None
-        elif current is not None and line.startswith("##v "):
+        elif line.startswith("##v"):
             # ponytail: asume que cada campo cabe en una línea. Un valor con un
             # salto de línea literal rompería este parseo — no manejado, ya que
             # los archivos reales del cliente no lo hacen (CRLF solo delimita
             # registros/campos). Líneas ##v malformadas se ignoran silenciosamente.
+            if current is None:
+                raise DauFormatError(
+                    f"línea {line_number}: campo '##v' fuera de un registro"
+                )
             m = _FIELD_RE.match(line)
-            if m:
-                current[m.group(1)] = m.group(2)
+            if not m:
+                raise DauFormatError(
+                    f"línea {line_number}, registro {current_num}: campo '##v' malformado"
+                )
+            current[m.group(1)] = m.group(2)
 
     if current is not None:
         raise DauFormatError(f"registro '##recstart {current_num}' sin '##end' correspondiente")
@@ -214,6 +225,7 @@ def parse_verbatims(content: bytes) -> list[dict]:
             out.append({
                 "respondent_external_id": serial,
                 "realid": realid,
+                "source_row_number": int(r[_SOURCE_ROW_KEY]),
                 "question_key": field,
                 "original_text": value.strip(),
                 "input_code_number": None,

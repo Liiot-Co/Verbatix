@@ -61,6 +61,8 @@ def rows_to_normalized_df(rows: list[dict], coding_type: str) -> pl.DataFrame:
         .filter(
             pl.col("respondent_external_id").is_not_null()
             & (pl.col("respondent_external_id").str.strip_chars() != "")
+            & pl.col("original_text").is_not_null()
+            & (pl.col("original_text").str.strip_chars() != "")
         )
         .with_columns(
             pl.col("original_text")
@@ -76,7 +78,6 @@ def rows_to_normalized_df(rows: list[dict], coding_type: str) -> pl.DataFrame:
             .str.strip_chars()
             .alias("normalized_text"),
         )
-        .filter(pl.col("normalized_text").str.len_chars() > 0)
         .select(
             pl.col("respondent_external_id"),
             pl.col("question_key"),

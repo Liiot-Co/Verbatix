@@ -24,15 +24,20 @@ from app.core import scheduler, storage
 from app.pipeline import imports as load_review
 from app.pipeline.ingest import dau, excel
 from app.repositories import (
+    approve_scratch_codebook_draft,
     build_mention_groups,
     classify_question,
     clone_codebook,
     create_codebook,
     get_coded_summary,
+    get_codebook_draft,
     get_or_create_subproject,
     get_pending_summary,
     insert_codebook_from_excel,
     insert_verbatims,
+    persist_dataset_snapshot,
+    round_processing_blockers,
+    sync_unmatched_question_flags,
     propagate_group_codes_to_pending,
     seed_system_codes,
 )
@@ -52,7 +57,11 @@ class RoundIn(BaseModel):
     name: str
     round_number: int
     category_id: uuid.UUID | None = None
-    min_mentions_threshold: int = 3
+    # Umbral de frecuencia para promover una marca/razón a código nuevo en el
+    # bootstrap desde cero. 2 (no 3) para que las marcas reales poco frecuentes
+    # también obtengan su código y no caigan al residuo (sube la cobertura de
+    # ~87% a ~91% con la misma precisión, medido contra el LC real del cliente).
+    min_mentions_threshold: int = 2
     audit_percentage: float = 10
 
 
@@ -71,7 +80,7 @@ def _catalog_source(
               join projects p on p.id = r.project_id
               join codebooks cb on cb.id = sp.codebook_id
              where sp.id = :source
-               and cb.status = 'approved'
+               and cb.status in ('approved', 'exported')
         """),
         {"source": source_subproject_id},
     ).mappings().first()
@@ -157,11 +166,13 @@ def _create_subprojects(
     if reuse_catalogs_from_round_id:
         rows = db.execute(
             text("""
-                select sp.coding_type, sp.codebook_id, cb.origin
+                select sp.id as source_subproject_id, sp.round_id,
+                       sp.coding_type, sp.codebook_id, cb.origin, cb.status
                   from rounds r
                   join subprojects sp on sp.round_id = r.id
                   join codebooks cb on cb.id = sp.codebook_id
                  where r.id = :source and r.project_id = :project
+                   and cb.status in ('approved', 'exported')
             """),
             {
                 "source": reuse_catalogs_from_round_id,
@@ -180,17 +191,28 @@ def _create_subprojects(
     for coding_type in selected_types:
         selection = selections[coding_type]
         if reused_catalogs:
-            cb_id = reused_catalogs[coding_type]["codebook_id"]
+            source_catalog = reused_catalogs[coding_type]
+            cb_id = create_codebook(
+                db,
+                project_id,
+                coding_type,
+                source_catalog["codebook_id"],
+                origin="inherited_round",
+                status="approved",
+            )
             inherited = {
-                "codes": 0, "aliases": 0, "nets": 0, "reused": True
+                **clone_codebook(db, source_catalog["codebook_id"], cb_id),
+                "reused": False,
             }
-            source_round_id = None
-            catalog_origin = reused_catalogs[coding_type]["origin"]
+            source_round_id = source_catalog["round_id"]
+            catalog_origin = "inherited_round"
+            source_subproject_id = source_catalog["source_subproject_id"]
         else:
             cb_id, inherited, source_round_id = _create_catalog_for_origin(
                 db, project_id, coding_type, selection
             )
             catalog_origin = selection.origin
+            source_subproject_id = selection.source_subproject_id
         if coding_type == "reasons" and source_round_id:
             reasons_source_round_id = source_round_id
 
@@ -213,7 +235,7 @@ def _create_subprojects(
                 "ct": coding_type,
                 "origin_mode": (
                     "homologated"
-                    if selection.origin == "inherited_round"
+                    if catalog_origin == "inherited_round"
                     else "from_scratch"
                 ),
                 "source": selection.source_subproject_id,
@@ -952,11 +974,19 @@ def import_file(
         raise HTTPException(400, "codebook_coding_type debe ser 'brands' o 'reasons' si se envía codebook_sheet")
 
     meta = db.execute(
-        text("select storage_path, file_type from imported_files where id = :id and round_id = :round"),
+        text("""
+            select storage_path, file_type, dataset_snapshot
+              from imported_files where id = :id and round_id = :round
+        """),
         {"id": file_id, "round": round_id},
     ).mappings().first()
     if not meta:
         raise HTTPException(404, "Archivo no encontrado")
+    if (meta["dataset_snapshot"] or {}).get("status") == "ready":
+        raise HTTPException(
+            409,
+            "Esta carga ya tiene un snapshot cerrado; sube un archivo nuevo para conservar la trazabilidad",
+        )
 
     bucket, _, path = meta["storage_path"].partition("/")
     content = storage.download(bucket, path)
@@ -1027,6 +1057,7 @@ def import_file(
     except ValueError as exc:
         db.rollback()
         raise HTTPException(400, str(exc)) from exc
+    sync_unmatched_question_flags(db, file_id, pending_questions)
 
     configured_types = db.execute(
         text("select coding_type from subprojects where round_id = :round"),
@@ -1091,7 +1122,6 @@ def import_file(
         text("update rounds set status = 'files_uploaded', updated_at = now() where id = :id"),
         {"id": round_id},
     )
-    db.commit()
 
     # Auto-process right after import so the user never has to notice/click a
     # separate "Procesar" step. Submitted to the in-process scheduler (own DB
@@ -1103,8 +1133,26 @@ def import_file(
     # analista debe responder Marcas/Razones primero (Tarea 9), y el caller
     # reintenta el import (mismo archivo) una vez resueltas.
     # REQ-03 / REQ-05: con flags pendientes (duplicados o candidatos a exclusión)
-    # tampoco — el motor se dispara al resolver el último flag.
+    # tampoco — el motor se dispara al resolver el último flag. Ambos ya no
+    # corren acá: se disparan juntos, explícitamente, desde
+    # POST .../files/{file_id}/profile-match, después de que el analista
+    # confirma los campos seleccionados — por eso pending_flags es 0 recién
+    # importado (aún no hay flags que generar).
     pending_flags = load_review.count_pending_flags(db, file_id)
+    snapshot_status = "blocked" if pending_questions or pending_flags else "ready"
+    persist_dataset_snapshot(
+        db,
+        file_id,
+        status=snapshot_status,
+        parsed_rows=len(rows),
+        field_selections=(
+            [fs.model_dump() for fs in payload.field_selections]
+            if payload.field_selections else []
+        ),
+        pending_questions=pending_questions,
+        skipped_by_type=skipped_by_type,
+    )
+    db.commit()
     if pending_questions:
         processing_status = "blocked_on_classification"
     elif pending_flags:
@@ -1376,8 +1424,13 @@ def _maybe_queue_after_review(
     pending_flags: int,
     *,
     already_resolved: bool,
+    file_id: uuid.UUID | None = None,
 ) -> str:
-    """Dispara el motor una sola vez cuando ya no quedan flags pendientes."""
+    """Dispara el motor una sola vez cuando ya no quedan flags pendientes.
+
+    Si se pasa `file_id`, también cierra su dataset_snapshot a 'ready' —
+    el snapshot de ingestión queda 'blocked' mientras haya flags de
+    duplicados/perfil pendientes de esa carga (ver import_file)."""
     if pending_flags > 0:
         return "blocked_on_review"
     if already_resolved:
@@ -1391,6 +1444,8 @@ def _maybe_queue_after_review(
     ).scalars().all()
     for sp_id in subproject_ids:
         build_mention_groups(db, sp_id)
+    if file_id is not None:
+        persist_dataset_snapshot(db, file_id, status="ready")
     db.commit()
     scheduler.submit(round_id)
     return "queued"
@@ -1482,6 +1537,7 @@ def resolve_import_flag(
         flag_round["round_id"],
         result["pending_flags"],
         already_resolved=bool(result.get("already_resolved")),
+        file_id=flag_round["file_id"],
     )
 
     return {**result, "processing": {"status": processing_status}}
@@ -1490,6 +1546,63 @@ def resolve_import_flag(
 class ClassifyQuestionIn(BaseModel):
     question_key: str
     coding_type: str
+
+
+class CodeDraftDecisionIn(BaseModel):
+    code_id: uuid.UUID
+    decision: str
+    label: str
+    net_name: str | None = None
+    definition: str | None = None
+    inclusion_criteria: list[str] = []
+    exclusion_criteria: list[str] = []
+    examples: list[str] = []
+
+
+class ApproveCodebookDraftIn(BaseModel):
+    codes: list[CodeDraftDecisionIn]
+
+
+@router.get("/subprojects/{subproject_id}/codebook-draft")
+def codebook_draft(
+    subproject_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    try:
+        return get_codebook_draft(db, subproject_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/subprojects/{subproject_id}/codebook-draft/approve")
+def approve_codebook_draft(
+    subproject_id: uuid.UUID,
+    payload: ApproveCodebookDraftIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+    decisions = []
+    for item in payload.codes:
+        if item.decision not in ("approve", "reject"):
+            raise HTTPException(400, "decision debe ser 'approve' o 'reject'")
+        if item.decision == "approve" and not item.label.strip():
+            raise HTTPException(400, "Todo código aprobado necesita label")
+        decisions.append({**item.model_dump(), "code_id": item.code_id, "label": item.label.strip()})
+    try:
+        result = approve_scratch_codebook_draft(db, subproject_id, decisions, user["id"])
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    db.commit()
+    if result.get("ready_to_process") and result.get("round_id"):
+        scheduler.submit(uuid.UUID(result["round_id"]))
+    return result
 
 
 @router.post("/projects/{project_id}/questions/classify", status_code=201)
@@ -1522,6 +1635,9 @@ def process(
 ):
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
+    blockers = round_processing_blockers(db, round_id)
+    if blockers:
+        raise HTTPException(409, "; ".join(blockers))
     db.execute(
         text("update rounds set status = 'processing', updated_at = now() where id = :id"),
         {"id": round_id},
@@ -1556,8 +1672,14 @@ def preliminary(
     return {
         "summary": {
             "auto_coded": by_status.get("auto_coded", 0),
-            "pending_review": by_status.get("pending_review", 0),
-            "anomalies": by_status.get("anomaly", 0),
+            "pending_review": sum(
+                count for status, count in by_status.items()
+                if status not in ("auto_coded", "resolved")
+            ),
+            "suggested": by_status.get("suggested", 0),
+            "abstained": by_status.get("abstained", 0),
+            "engine_errors": by_status.get("engine_error", 0),
+            "anomalies": by_status.get("anomaly", 0) + by_status.get("garbage", 0),
             "resolved": by_status.get("resolved", 0),
         },
     }

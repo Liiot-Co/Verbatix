@@ -17,9 +17,34 @@ export const STATUS_CHIP: Record<MentionGroupStatus, { label: string; className:
     hint: "Todavía no fue procesada por el motor de codificación.",
   },
   auto_coded: {
-    label: "Sugerido",
+    label: "Exacto aprobado",
     className: "badge-auto",
-    hint: "El motor asignó un código automáticamente con alta confianza.",
+    hint: "Coincidió exactamente con una memoria aprobada o una regla cerrada.",
+  },
+  suggested: {
+    label: "Sugerido",
+    className: "badge-warning",
+    hint: "El motor encontró un candidato, pero necesita confirmación humana.",
+  },
+  garbage: {
+    label: "Basura probable",
+    className: "badge-error",
+    hint: "Texto vacío, ilegible o sin contenido clasificable; requiere confirmación.",
+  },
+  engine_error: {
+    label: "Error del motor",
+    className: "badge-error",
+    hint: "La clasificación técnica falló; no se interpretó como anomalía del dato.",
+  },
+  abstained: {
+    label: "Abstención",
+    className: "badge-warning",
+    hint: "DeepSeek no encontró evidencia suficiente para proponer una decisión segura.",
+  },
+  conflict: {
+    label: "Conflicto",
+    className: "badge-error",
+    hint: "Existe evidencia aprobada contradictoria y debe adjudicarse manualmente.",
   },
   resolved: {
     label: "Resuelto",

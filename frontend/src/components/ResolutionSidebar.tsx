@@ -96,7 +96,7 @@ export default function ResolutionSidebar({
 
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [, setSummary] = useState<ResolutionSummary | null>(null);
+  const [summary, setSummary] = useState<ResolutionSummary | null>(null);
   const [codes, setCodes] = useState<RoundCode[]>([]);
   const [systemCodes, setSystemCodes] = useState<RoundCode[]>([]);
   const [detail, setDetail] = useState<MentionGroupDetail | null>(null);
@@ -115,6 +115,8 @@ export default function ResolutionSidebar({
   const [showDiscardMenu, setShowDiscardMenu] = useState(false);
   const [navDiscardIndex, setNavDiscardIndex] = useState(0);
   const [newCodeLabel, setNewCodeLabel] = useState("");
+  // Label pendiente de confirmar cuando el grupo no llega al mínimo de menciones.
+  const [confirmNewCode, setConfirmNewCode] = useState<string | null>(null);
   const [addAlias, setAddAlias] = useState(true);
   const [codeFilter, setCodeFilter] = useState("");
   // Zonas de foco tipo Excel: "header" = tarjeta de la mención (←/→ descartan/crean),
@@ -297,6 +299,9 @@ export default function ResolutionSidebar({
           setResolvedThisSession((n) => n + result.auto_resolved_groups.length);
           parts.push(`${result.auto_resolved_groups.length} grupo(s) auto-clasificados`);
         }
+        if (result.similar_suggestions?.length) {
+          parts.push(`${result.similar_suggestions.length} grupo(s) parecido(s) para confirmar`);
+        }
         if (parts.length > 0) showToast(parts.join(" · "), "success");
         lastResolvedRef.current = groupId;
         loadSummary();
@@ -304,7 +309,27 @@ export default function ResolutionSidebar({
       } catch (err) {
         rollback();
         setResolvedThisSession((n) => Math.max(0, n - 1));
-        if (err instanceof ApiError && (err.status === 409 || err.status === 422)) {
+        if (err instanceof ApiError && err.status === 422 && decision.new_code) {
+          // Bajo el mínimo: red de seguridad reactiva por si la alerta proactiva
+          // no alcanzó a tener el umbral. En vez de un error seco, se ofrece
+          // "Crear igual" y se reenvía forzando la creación.
+          showToast(`${err.message}. ¿Crear igual?`, "error", {
+            label: "Crear igual",
+            onAction: async () => {
+              try {
+                await resolveMentionGroup(groupId, { ...decision, force_below_threshold: true });
+                setQueue((q) => q.filter((g) => g.id !== groupId));
+                setTotal((t) => Math.max(0, t - 1));
+                setResolvedThisSession((n) => n + 1);
+                showToast("Marca creada", "success");
+                loadSummary();
+                onResolved?.();
+              } catch {
+                showToast("No se pudo crear la marca.", "error");
+              }
+            },
+          });
+        } else if (err instanceof ApiError && (err.status === 409 || err.status === 422)) {
           showToast(err.message, "error");
           if (err.status === 409) loadQueue();
         } else {
@@ -440,27 +465,43 @@ export default function ResolutionSidebar({
   }, [filteredCodes, navCodeIndex, assignCode]);
 
   const createAndAssign = useCallback(
-    (label: string) => {
+    (label: string, force = false) => {
       if (!currentCard) return;
       const trimmed = label.trim() || currentCard.normalized_text;
       const capitalized = trimmed.replace(
         /\b\w+\b/g,
         (w) => w.charAt(0).toUpperCase() + w.slice(1),
       );
+      // Bajo el mínimo el motor no crea la marca solo; un humano SÍ puede, pero
+      // con un aviso breve y no invasivo — se confirma con intención, no por error.
+      // El umbral es el de la ronda (mismo que valida el backend); si aún no cargó
+      // el summary, se deja pasar y el backend responde 422 como red de seguridad.
+      const threshold = summary?.min_mentions_threshold;
+      if (
+        !force &&
+        threshold != null &&
+        currentCard.frequency_count < threshold
+      ) {
+        setConfirmNewCode(capitalized);
+        return;
+      }
+      setConfirmNewCode(null);
       playAndResolve("down", currentCard.id, {
         action: "approve",
         code_ids: [],
         new_code: { label: capitalized },
         add_alias: addAlias,
+        force_below_threshold: force,
       });
     },
-    [currentCard, addAlias, playAndResolve]
+    [currentCard, addAlias, playAndResolve, summary]
   );
 
   const openNewCodeInput = useCallback(() => {
     if (!currentCard || cardExiting) return;
     setShowNewCodeInput(true);
     setShowDiscardMenu(false);
+    setConfirmNewCode(null);
     setNewCodeLabel(currentCard.normalized_text);
     setTimeout(() => newCodeInputRef.current?.focus(), 60);
   }, [currentCard, cardExiting]);
@@ -719,6 +760,39 @@ export default function ResolutionSidebar({
 
               <div className="pt-2.5 border-t border-p-border/60">
                 {showNewCodeInput ? (
+                  confirmNewCode ? (
+                    <div className="flex flex-col gap-2">
+                      <div className="rounded-lg border border-p-border bg-p-bg-subtle px-3 py-2.5">
+                        <p className="text-xs text-p-text-muted leading-relaxed">
+                          Vas a crear{" "}
+                          <span className="font-semibold text-p-text">“{confirmNewCode}”</span>{" "}
+                          con solo{" "}
+                          <span className="font-semibold text-p-text">{currentCard?.frequency_count}</span>{" "}
+                          {currentCard?.frequency_count === 1 ? "mención" : "menciones"}
+                          {summary?.min_mentions_threshold != null
+                            ? ` (el mínimo del estudio es ${summary.min_mentions_threshold})`
+                            : ""}
+                          . Suele ser el motor quien agrupa estas menciones —
+                          ¿seguro que quieres crearla igual?
+                        </p>
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => setConfirmNewCode(null)}
+                          className="btn-ghost-sm flex-1 justify-center"
+                        >
+                          Mejor no
+                        </button>
+                        <button
+                          onClick={() => createAndAssign(confirmNewCode, true)}
+                          disabled={resolving}
+                          className="flex-[2] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg project-row-icon-5 text-sm font-bold text-white hover:opacity-90 active:scale-[0.98] transition-all duration-150"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Crear igual
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
                   <div className="flex flex-col gap-2">
                     <label className="font-mono text-[10px] tracking-wide uppercase text-p-accent">
                       {newCodeNameLabel}
@@ -735,6 +809,7 @@ export default function ResolutionSidebar({
                         } else if (e.key === "Escape") {
                           setShowNewCodeInput(false);
                           setNewCodeLabel("");
+                          setConfirmNewCode(null);
                         }
                       }}
                       className="input text-sm font-semibold"
@@ -744,6 +819,7 @@ export default function ResolutionSidebar({
                         onClick={() => {
                           setShowNewCodeInput(false);
                           setNewCodeLabel("");
+                          setConfirmNewCode(null);
                         }}
                         className="btn-ghost-sm flex-1 justify-center"
                       >
@@ -758,6 +834,7 @@ export default function ResolutionSidebar({
                       </button>
                     </div>
                   </div>
+                  )
                 ) : (
                   <div className="flex gap-1.5 relative">
                     <button

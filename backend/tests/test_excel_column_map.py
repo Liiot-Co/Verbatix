@@ -109,3 +109,14 @@ def test_parse_verbatims_mapped_respondent_column():
     assert len(rows) == 1
     assert rows[0]["respondent_external_id"] == "55"
     assert rows[0]["original_text"] == "buen sabor"
+
+
+def test_parse_verbatims_preserves_realid_and_source_row():
+    content = _make_xlsx(
+        ["Respondent ID", "realid", "Question ID", "Verbatim"],
+        [["7", "persona-abc", "Q1", "sabor"]],
+    )
+    rows = excel.parse_verbatims(content, "Sheet")
+    assert rows[0]["respondent_external_id"] == "7"
+    assert rows[0]["realid"] == "persona-abc"
+    assert rows[0]["source_row_number"] == 2

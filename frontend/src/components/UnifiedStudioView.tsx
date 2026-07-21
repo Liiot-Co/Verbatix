@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Keyboard, Search } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { getPreliminary, getResolutionSummary, getRound, getVerbatimsSummary, processRound } from "@/api/client";
+import { getPreliminary, getResolutionSummary, getRound, getVerbatimsSummary, isProcessingRequired, processRound } from "@/api/client";
+import { isResolutionPhase } from "@/lib/studioStatus";
 import type { PreliminarySummary, ResolutionSummary, RoundStatus, VerbatimSummaryRow } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
@@ -17,6 +18,7 @@ import { AgentProcessingUI } from "./studio/AgentProcessingUI";
 import { StudioHeader } from "./studio/StudioHeader";
 import { StudioSummaryCards } from "./studio/StudioSummaryCards";
 import { VerbatimsTable } from "./studio/VerbatimsTable";
+import CodebookDraftReview from "./CodebookDraftReview";
 
 function playProcessingFinishedSound() {
   try {
@@ -92,13 +94,18 @@ export default function UnifiedStudioView() {
       ?? currentRound.subprojects[0]?.id;
     if (!subprojectId) return;
     if (!activeSubprojectId) setActiveSubprojectId(subprojectId);
+    // Resolución/Preliminar solo responden una vez que la ronda alcanzó una fase
+    // de resolución (ver require_resolution_phase en backend). Antes de eso el
+    // motor sigue trabajando: no llamamos esos endpoints para no provocar 403
+    // processing_required — la UI muestra el estado de procesamiento.
+    const resolutionReady = isResolutionPhase(currentRound.status);
     const requests: Promise<unknown>[] = [];
-    if (canManageRound || canViewResolution) {
+    if (resolutionReady && (canManageRound || canViewResolution)) {
       requests.push(getPreliminary(roundId).then(setPreliminary));
     } else {
       setPreliminary(null);
     }
-    if (canViewResolution) {
+    if (resolutionReady && canViewResolution) {
       requests.push(getResolutionSummary(subprojectId).then(setResolution));
     } else {
       setResolution(null);
@@ -107,9 +114,13 @@ export default function UnifiedStudioView() {
   }, [roundId, activeSubprojectId, canManageRound, canViewResolution]);
 
   const loadVerbatims = useCallback(() => {
-    if (!activeSubprojectId) return;
-    getVerbatimsSummary(activeSubprojectId, summaryView).then((res) => setSummaryRows(res.items));
-  }, [activeSubprojectId, summaryView]);
+    if (!activeSubprojectId || !isResolutionPhase(round?.status)) return;
+    getVerbatimsSummary(activeSubprojectId, summaryView)
+      .then((res) => setSummaryRows(res.items))
+      .catch((err) => {
+        if (!isProcessingRequired(err)) throw err;
+      });
+  }, [activeSubprojectId, summaryView, round?.status]);
 
   useEffect(() => {
     setLoading(true);
@@ -119,11 +130,18 @@ export default function UnifiedStudioView() {
 
   useEffect(() => {
     if (!activeSubprojectId) return;
+    if (!isResolutionPhase(round?.status)) {
+      setSummaryRows([]);
+      return;
+    }
     setLoading(true);
     getVerbatimsSummary(activeSubprojectId, summaryView)
       .then((res) => setSummaryRows(res.items))
+      .catch((err) => {
+        if (!isProcessingRequired(err)) throw err;
+      })
       .finally(() => setLoading(false));
-  }, [activeSubprojectId, summaryView]);
+  }, [activeSubprojectId, summaryView, round?.status]);
 
   const autoProcessing = round?.status === "processing" || round?.status === "files_uploaded";
   const wasProcessing = useRef(false);
@@ -274,6 +292,16 @@ export default function UnifiedStudioView() {
         isProcessingNow={isProcessingNow}
         onProcess={handleProcess}
       />
+
+      {round.status === "codebook_review" && activeSubproject?.status === "codebook_review" && canManageRound ? (
+        <CodebookDraftReview
+          subprojectId={activeSubproject.id}
+          onApproved={async () => {
+            await loadData();
+            await loadVerbatims();
+          }}
+        />
+      ) : null}
 
       <div className="inline-flex rounded-lg border border-p-border p-0.5 self-start">
         {round.subprojects.map((subproject) => (

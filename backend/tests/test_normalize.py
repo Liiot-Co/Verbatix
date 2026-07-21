@@ -1,7 +1,24 @@
 import polars as pl
 import pytest
 
-from app.pipeline.normalize import normalization_stats, normalize, rows_to_normalized_df
+from app.pipeline.normalize import (
+    normalization_stats,
+    normalize,
+    rows_to_normalized_df,
+    strip_leading_article,
+)
+
+
+def test_strip_leading_article():
+    # Quita el artículo inicial para el matcheo de marcas ('el prado' -> 'prado').
+    assert strip_leading_article("el prado") == "prado"
+    assert strip_leading_article("el paira") == "paira"
+    assert strip_leading_article("la iberica") == "iberica"
+    assert strip_leading_article("las palmas") == "palmas"
+    # Sin artículo, o marca de una palabra: se conserva igual.
+    assert strip_leading_article("gloria") == "gloria"
+    # No rompe una marca corta si al quitar el artículo quedaría <3 chars.
+    assert strip_leading_article("el xy") == "el xy"
 
 
 @pytest.mark.parametrize(
@@ -58,6 +75,19 @@ def test_pipeline_reasons_keeps_full_phrase():
     assert df.height == 1
     assert df.row(0, named=True)["normalized_text"] == "es rico y barato"
     assert df.row(0, named=True)["coding_type"] == "reasons"
+
+
+def test_pipeline_preserves_nonblank_punctuation_as_garbage_candidate():
+    rows = [{
+        "respondent_external_id": "141",
+        "question_key": "brand_4",
+        "original_text": "\\'>`",
+    }]
+
+    df = rows_to_normalized_df(rows, "brands")
+
+    assert df.height == 1
+    assert df.row(0, named=True)["normalized_text"] == ""
 
 
 def test_pipeline_stats():

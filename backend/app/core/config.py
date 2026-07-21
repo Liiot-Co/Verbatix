@@ -20,14 +20,12 @@ class Settings(BaseSettings):
     # Combined with llm_parallel_requests this bounds total concurrent LLM calls;
     # kept conservative since DeepSeek's real rate limits are unknown.
     round_parallel_workers: int = 2
-    # Below this, an LLM classification goes to human review (anomaly) instead of
-    # auto_coded, regardless of which code_numbers it returned. Separate per coding_type
-    # so reasons (more prone to semantic false positives) can be tightened via env without
-    # touching brands.
+    # Risk bands for ordering suggestions in review. They do not authorize
+    # auto-close: model self-confidence is not a calibrated probability.
     llm_confidence_threshold_brands: float = 0.6
     llm_confidence_threshold_reasons: float = 0.6
-    # Stricter gate for promoting an auto-accepted result into a reusable catalog
-    # (fuzzy alias / semantic cache) rather than just auto-coding this one verbatim.
+    # Gate for creating a *pending* reusable-memory proposal. Human approval is
+    # still required before lookup can consume it.
     llm_promotion_confidence_threshold: float = 0.9
     # Cosine similarity floor for a reason_embeddings hit to auto-code a group
     # without ever reaching the LLM. Unvalidated (Task C5 calibrates this against
@@ -39,6 +37,46 @@ class Settings(BaseSettings):
     # semantic_cache (0.9) a propósito: acá se agrupan distintas FORMAS de decir
     # una misma idea para formar una categoría, no se busca un near-duplicado.
     reason_cluster_similarity_threshold: float = 0.75
+
+    # Rollout controls. Exact approved memory and closed system rules always
+    # auto-close. The learned engines auto-close only when they pass the
+    # calibrated auto-commit gates below; anything short of the gate is a
+    # suggestion, never an auto-close. Every hard anti-error rule stays intact
+    # (negative aliases, system code 95 never auto-closed by a model, etc.).
+    auto_commit_exact_approved: bool = True
+    auto_commit_brand_fuzzy: bool = True
+    auto_commit_semantic: bool = True
+    auto_commit_llm: bool = True
+    classification_shadow_mode: bool = False
+    # Cuando una ronda arranca un libro de códigos desde cero, el motor construye
+    # una propuesta por frecuencia y, con este flag, la auto-aprueba y sigue de
+    # corrido a clasificación (el analista corrige en Resolución). En False se
+    # conserva el gate humano: la ronda se detiene en 'codebook_review'.
+    auto_approve_scratch_codebook: bool = True
+    # En rondas que HEREDAN el libro (no scratch), crear marcas nuevas por
+    # frecuencia sobre lo que el catálogo heredado no reconoció: un cluster que
+    # alcanza el mínimo de menciones (p.ej. 'wong' con 4 >= 3) nace como código
+    # 'pending' (propuesta a confirmar), en vez de caer al residual 95.
+    discover_new_brands_in_inherited_rounds: bool = True
+    # Gate de AUTO-CIERRE del fuzzy de marcas (distinto del filtro de recall de
+    # fuzzy/scoring.py, que solo decide si un candidato es elegible). Un candidato
+    # fuzzy solo se auto-cierra si su score y su margen top1-top2 superan estos
+    # pisos; si no, queda como sugerencia para Resolución. Bajado de 88 -> 82 junto
+    # con el arreglo del scoring de palabra única: los typos claros con margen
+    # fuerte (schugur->chugur, cajamarquina->cajamarquino) se cierran solos; los de
+    # score medio o con dos candidatos parecidos siguen como sugerencia (el margen
+    # top1-top2 corta la ambigüedad) y el aprendizaje de aliases los captura luego.
+    brand_fuzzy_autocommit_score: float = 82.0
+    brand_fuzzy_autocommit_margin: float = 5.0
+    # Bucket residual estilo Ascribe: al terminar todas las etapas, cada grupo que
+    # quedó sin decisión (pending/anomaly/abstained/engine_error, sin sugerencia de
+    # código real) se cierra al código de sistema universal — Marcas al 95
+    # "Menciones confusas/Incorrectas", Razones al 97 "Otras menciones". Garantiza
+    # cobertura ~100%; el analista reclasifica en Resolución lo que sea una marca
+    # real rara. Los grupos con sugerencia real (suggested) NO se tocan.
+    residual_to_confuso: bool = True
+    residual_brand_system_type: str = "anomaly"          # code 95
+    residual_reason_system_type: str = "other_mentions"  # code 97
 
     # Resolution Center (Fase 4): grupo descartado -> este code_number del codebook.
     discard_code_number: int = 95

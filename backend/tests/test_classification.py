@@ -26,6 +26,9 @@ class FakeResult:
     def scalar(self):
         return self._scalar
 
+    def first(self):
+        return self._rows[0] if self._rows else None
+
 
 class FakeSession:
     def __init__(self, codes, groups, coding_type=None):
@@ -41,8 +44,10 @@ class FakeSession:
             return FakeResult(scalar=self._coding_type)
         if "from codes c" in sql:
             return FakeResult(rows=self._codes)
-        if "from mention_groups" in sql and "select id, sample_text" in sql:
+        if "from mention_groups mg" in sql:
             return FakeResult(rows=self._groups)
+        if "select p.name as study" in sql:
+            return FakeResult(rows=[])
         if "single_code_per_response from subprojects" in sql:
             return FakeResult(scalar=False)
         return FakeResult()
@@ -51,7 +56,7 @@ class FakeSession:
         pass
 
 
-def test_classify_round_matches_and_flags_anomaly():
+def test_classify_round_suggests_matches_and_abstains_without_autoclose():
     group_matched = {"id": uuid.uuid4(), "sample_text": "muy caro"}
     group_unmatched = {"id": uuid.uuid4(), "sample_text": "asdf"}
     group_low_confidence = {"id": uuid.uuid4(), "sample_text": "algo raro"}
@@ -73,11 +78,17 @@ def test_classify_round_matches_and_flags_anomaly():
         {"verbatim_id": str(group_anomaly["id"]), "code_numbers": [95], "confidence": 0.9},
     ]
 
-    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results):
+    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
+         patch.object(settings, "auto_commit_llm", True):
         summary = classify_round(db, uuid.uuid4())
 
+    # Con auto_commit_llm activo: el código de contenido con confianza sobre el
+    # umbral auto-cierra; el de baja confianza sigue a Resolución; el 95 (código
+    # de sistema) NUNCA auto-cierra aunque la confianza sea alta; y lo no matcheado
+    # se abstiene.
     assert summary["groups_classified"] == 1
-    assert summary["anomalies"] == 3
+    assert summary["suggestions"] == 1
+    assert summary["anomalies"] == 2
     assert summary["total"] == 4
 
     def has_param(key, value, stmt_filter=""):
@@ -92,18 +103,26 @@ def test_classify_round_matches_and_flags_anomaly():
                     return True
         return False
 
-    assert has_param("id", group_unmatched["id"], "anomaly")
-    assert has_param("id", group_low_confidence["id"], "anomaly")
-    assert has_param("id", group_anomaly["id"], "anomaly")
+    assert has_param("id", group_unmatched["id"], "abstained")
+    assert has_param("id", group_anomaly["id"], "abstained")
     assert has_param("code", codes[0]["id"])
+    # El match de contenido auto-cierra (state auto_coded, is_active True); el de
+    # baja confianza queda como sugerencia inactiva.
+    assert has_param("state", "auto_coded")
+    assert has_param("state", "suggested")
+    assert has_param("active", True)
+    assert has_param("active", False)
 
     insert_sql = next(sql for sql, p in db.executed if "insert into verbatim_codes" in sql)
-    assert "'llm_classified'" in insert_sql
+    assert "'llm_suggestion'" in insert_sql
     assert "'engine_fuzzy'" not in insert_sql
 
 
-def test_classify_round_applies_threshold_per_coding_type():
-    """Same confidence score, different coding_type -> different threshold applied."""
+def test_classify_round_confidence_threshold_gates_autoclose():
+    """La confianza declarada es el gate de auto-cierre cuando auto_commit_llm está
+    activo: por debajo del umbral del tipo -> sugerencia; por encima -> auto_coded.
+    El mismo código con la misma confianza cambia de destino según el umbral de su
+    coding_type."""
     group = {"id": uuid.uuid4(), "sample_text": "algo"}
     codes = [
         {"id": uuid.uuid4(), "code_number": 1, "label": "Precio", "net_name": None, "system_type": None, "aliases": []},
@@ -111,19 +130,63 @@ def test_classify_round_applies_threshold_per_coding_type():
     fake_results = [{"verbatim_id": str(group["id"]), "code_numbers": [1], "confidence": 0.7}]
 
     with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
+         patch.object(settings, "auto_commit_llm", True), \
          patch.object(settings, "llm_confidence_threshold_brands", 0.9), \
          patch.object(settings, "llm_confidence_threshold_reasons", 0.5):
+        # Marcas: umbral 0.9 > conf 0.7 -> por debajo -> sugerencia.
         db_brands = FakeSession(codes=codes, groups=[group], coding_type="brands")
         summary_brands = classify_round(db_brands, uuid.uuid4())
 
+        # Razones: umbral 0.5 <= conf 0.7 -> por encima -> auto-cierra.
         db_reasons = FakeSession(codes=codes, groups=[group], coding_type="reasons")
         summary_reasons = classify_round(db_reasons, uuid.uuid4())
 
-    # 0.7 < brands threshold (0.9) -> anomaly; 0.7 >= reasons threshold (0.5) -> auto-coded.
-    assert summary_brands["anomalies"] == 1
+    assert summary_brands["anomalies"] == 0
     assert summary_brands["groups_classified"] == 0
+    assert summary_brands["suggestions"] == 1
     assert summary_reasons["groups_classified"] == 1
+    assert summary_reasons["suggestions"] == 0
     assert summary_reasons["anomalies"] == 0
+
+
+def test_classify_round_suggest_only_when_autocommit_disabled():
+    """Con auto_commit_llm apagado, ni una confianza alta auto-cierra: todo queda
+    en sugerencia para Resolución (modo conservador / shadow)."""
+    group = {"id": uuid.uuid4(), "sample_text": "algo"}
+    codes = [
+        {"id": uuid.uuid4(), "code_number": 1, "label": "Precio", "net_name": None, "system_type": None, "aliases": []},
+    ]
+    # 0.7 supera el umbral de confianza (0.6) pero no el de promoción (0.9): auto
+    # cerraría si el flag estuviera activo, y no toca el caché semántico.
+    fake_results = [{"verbatim_id": str(group["id"]), "code_numbers": [1], "confidence": 0.7}]
+
+    with patch("app.pipeline.llm.classify.classify_batch", return_value=fake_results), \
+         patch.object(settings, "auto_commit_llm", False):
+        db = FakeSession(codes=codes, groups=[group], coding_type="reasons")
+        summary = classify_round(db, uuid.uuid4())
+
+    assert summary["groups_classified"] == 0
+    assert summary["suggestions"] == 1
+
+
+def test_classify_round_marks_failed_batch_as_engine_error():
+    group = {"id": uuid.uuid4(), "sample_text": "texto pendiente", "frequency_count": 3}
+    db = FakeSession(codes=[], groups=[group], coding_type="reasons")
+
+    with patch(
+        "app.pipeline.llm.classify._classify_batch_with_retry",
+        side_effect=RuntimeError("DeepSeek no disponible"),
+    ):
+        summary = classify_round(db, uuid.uuid4())
+
+    assert summary["engine_errors"] == 1
+    assert summary["anomalies"] == 0
+    assert any(
+        "status = 'engine_error'" in sql
+        and isinstance(params, list)
+        and params[0]["id"] == group["id"]
+        for sql, params in db.executed
+    )
 
 
 def test_classify_round_promotes_brand_over_threshold_not_reasons():

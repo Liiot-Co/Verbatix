@@ -4,6 +4,7 @@ clasificación de Paso 0 más allá de consumir sus resultados.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from collections import defaultdict
 
@@ -16,6 +17,55 @@ class SingleCodeViolation(ValueError):
 
 
 ROUND_DECISION_KEY = "__round__"
+
+# Separadores de menciones múltiples en un solo campo de Marcas: coma, barra y las
+# conjunciones "y"/"e" aisladas (ej. "Gloria, bonle", "Bonlé y Laive"). Solo aplica
+# a Marcas — en Razones "rico y barato" es una decisión semántica del LLM, no un
+# split ortográfico.
+_MENTION_SEPARATORS = re.compile(r"\s*,\s*|\s*/\s*|\s+y\s+|\s+e\s+", re.IGNORECASE)
+
+
+def split_mentions(original_text: str) -> list[str]:
+    """Parte un campo de Marcas en sus menciones, en orden y determinista.
+
+    Solo separa cuando cada parte resultante es no vacía y de longitud >= 2; si el
+    corte es ambiguo (deja fragmentos de 1 carácter, o no hay separador) devuelve el
+    texto completo como una sola mención — que seguirá su curso normal (fuzzy/LLM/
+    Resolución) en vez de romperse en pedazos inservibles.
+    """
+    text_value = (original_text or "").strip()
+    if not text_value:
+        return []
+    parts = [part.strip() for part in _MENTION_SEPARATORS.split(text_value)]
+    parts = [part for part in parts if part]
+    if len(parts) <= 1 or any(len(part) < 2 for part in parts):
+        return [text_value]
+    return parts
+
+
+def expand_brand_mentions(rows: list[dict], brand_keys: set[str]) -> list[dict]:
+    """Expande cada fila de Marcas con varias menciones en un solo campo a una fila
+    por mención, en orden. Debe correr ANTES de apply_mention_limits para que el
+    tope de código único (primera mención) y el máximo de menciones se apliquen con
+    la misma maquinaria a menciones ya separadas. Filas de otros tipos o de una sola
+    mención se devuelven intactas.
+    """
+    if not brand_keys:
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        if row.get("question_key") not in brand_keys:
+            out.append(row)
+            continue
+        mentions = split_mentions(str(row.get("original_text") or ""))
+        if len(mentions) <= 1:
+            out.append(row)
+            continue
+        for mention in mentions:
+            expanded = dict(row)
+            expanded["original_text"] = mention
+            out.append(expanded)
+    return out
 
 
 def max_mentions_per_respondent(rows: list[dict], question_key: str) -> int:

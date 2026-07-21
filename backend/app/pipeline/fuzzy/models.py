@@ -37,9 +37,17 @@ SHORT_TEXT_EXACT_MAX_LEN: int = 3
 # promuevan como marcas falsas: se vuelven aliases del código de sistema y el
 # fuzzy las codifica directo a 96/98/99.
 SYSTEM_ALIAS_VARIANTS: dict[str, tuple[str, ...]] = {
-    "no_answer": ("no sabe", "no se", "nose", "no sabria decir", "no conozco"),
+    "no_answer": (
+        "no sabe", "no se", "nose", "no sabria decir", "no conozco",
+        "ni idea", "no idea", "sin idea", "ninguna idea", "no tengo idea",
+        "no lo se", "no sabria", "no sabe no responde", "desconozco",
+        "no conozco ninguna", "no conozco ninguno",
+    ),
     "none": ("nada", "ninguna", "ninguno", "ni una", "niguna"),
-    "no_recall": ("no recuerda", "no recuerdo", "no me acuerdo", "no responde", "no contesta"),
+    "no_recall": (
+        "no recuerda", "no recuerdo", "no me acuerdo", "no responde",
+        "no contesta", "no recuerdo ninguna", "no recuerdo el nombre",
+    ),
 }
 
 

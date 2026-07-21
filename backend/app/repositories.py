@@ -259,11 +259,13 @@ def seed_system_codes(db: Session, codebook_id: uuid.UUID, *, overflow: bool = F
             text("""
                 insert into codes (
                   id, codebook_id, code_number, label, origin, is_system,
-                  system_type, is_system_overflow, overflow_base_system_type
+                  system_type, is_system_overflow, overflow_base_system_type,
+                  approval_status, definition
                 )
                 values (
                   :id, :cb, :n, :l, 'inherited', true,
-                  :st, :overflow, :overflow_type
+                  :st, :overflow, :overflow_type, 'approved',
+                  'Código técnico determinista del sistema'
                 )
                 on conflict (codebook_id, code_number) do nothing
             """),
@@ -284,12 +286,18 @@ def clone_codebook(
 ) -> dict:
     codes = db.execute(
         text("""
-            insert into codes (id, codebook_id, code_number, label, origin, is_system,
-                               system_type, inherited_from_code_id,
-                               is_system_overflow, overflow_base_system_type)
+            insert into codes (
+              id, codebook_id, code_number, label, origin, is_system,
+              system_type, inherited_from_code_id, is_system_overflow,
+              overflow_base_system_type, definition, inclusion_criteria,
+              exclusion_criteria, examples, approval_status
+            )
             select gen_random_uuid(), :cb, code_number, label, 'inherited', is_system,
-                   system_type, id, is_system_overflow, overflow_base_system_type
-            from codes where codebook_id = :src and is_active
+                   system_type, id, is_system_overflow, overflow_base_system_type,
+                   definition, inclusion_criteria, exclusion_criteria, examples,
+                   'approved'
+            from codes
+            where codebook_id = :src and is_active and approval_status = 'approved'
             returning id
         """),
         {"cb": target_codebook_id, "src": source_codebook_id},
@@ -297,14 +305,18 @@ def clone_codebook(
 
     aliases = db.execute(
         text("""
-            insert into code_aliases (id, codebook_id, code_id, alias_normalized,
-                                      alias_sample, occurrences, origin)
+            insert into code_aliases (
+              id, codebook_id, code_id, alias_normalized, alias_sample,
+              occurrences, origin, alias_kind, status, normalization_version,
+              evidence, approved_at
+            )
             select gen_random_uuid(), :cb, nc.id, a.alias_normalized, a.alias_sample,
-                   a.occurrences, 'inherited'
+                   a.occurrences, 'inherited', a.alias_kind, 'approved',
+                   a.normalization_version, a.evidence, now()
             from code_aliases a
             join codes oc on oc.id = a.code_id
             join codes nc on nc.codebook_id = :cb and nc.inherited_from_code_id = oc.id
-            where a.codebook_id = :src
+            where a.codebook_id = :src and a.status = 'approved'
         """),
         {"cb": target_codebook_id, "src": source_codebook_id},
     ).rowcount
@@ -352,6 +364,20 @@ def insert_codebook_from_excel(
             "no hay un rango seguro para los códigos de sistema"
         )
 
+    alias_targets: dict[str, int] = {}
+    for code in parsed["codes"]:
+        for alias in code["aliases"]:
+            normalized = normalize(alias["text"])
+            if not normalized:
+                continue
+            previous = alias_targets.get(normalized)
+            if previous is not None and previous != code["code_number"]:
+                raise ValueError(
+                    f"El alias '{alias['text']}' apunta a los códigos "
+                    f"{previous} y {code['code_number']}"
+                )
+            alias_targets[normalized] = code["code_number"]
+
     codebook = db.execute(
         text("select origin, status from codebooks where id = :id for update"),
         {"id": codebook_id},
@@ -382,8 +408,11 @@ def insert_codebook_from_excel(
         cid = uuid.uuid4()
         db.execute(
             text("""
-                insert into codes (id, codebook_id, code_number, label, origin, is_system, system_type)
-                values (:id, :cb, :n, :l, 'imported_client', false, null)
+                insert into codes (
+                  id, codebook_id, code_number, label, origin, is_system,
+                  system_type, approval_status
+                )
+                values (:id, :cb, :n, :l, 'imported_client', false, null, 'approved')
             """),
             {
                 "id": cid,
@@ -411,9 +440,15 @@ def insert_codebook_from_excel(
                 continue
             db.execute(
                 text("""
-                    insert into code_aliases (id, codebook_id, code_id, alias_normalized,
-                                              alias_sample, occurrences, origin)
-                    values (:id, :cb, :c, :norm, :sample, :occ, 'imported_xlsx')
+                    insert into code_aliases (
+                      id, codebook_id, code_id, alias_normalized, alias_sample,
+                      occurrences, origin, status, approved_by, approved_at,
+                      evidence
+                    )
+                    values (
+                      :id, :cb, :c, :norm, :sample, :occ, 'imported_xlsx',
+                      'approved', :user, now(), '{"source":"client_catalog"}'::jsonb
+                    )
                     on conflict (codebook_id, alias_normalized, code_id) do nothing
                 """),
                 {
@@ -423,6 +458,7 @@ def insert_codebook_from_excel(
                     "norm": norm,
                     "sample": a["text"],
                     "occ": a["occurrences"],
+                    "user": approved_by,
                 },
             )
             n_alias += 1
@@ -445,6 +481,386 @@ def insert_codebook_from_excel(
         "aliases": n_alias,
         "nets": len(parsed["nets"]),
         "system_codes_overflow": overflow,
+    }
+
+
+def get_codebook_draft(db: Session, subproject_id: uuid.UUID) -> dict:
+    """Devuelve la propuesta scratch completa, agrupada para revisión por impacto."""
+    book = db.execute(
+        text("""
+            select cb.id, cb.coding_type, cb.origin, cb.status, cb.version,
+                   sp.round_id
+              from subprojects sp
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().first()
+    if not book:
+        raise LookupError("Subproyecto sin libro de códigos")
+
+    rows = db.execute(
+        text("""
+            select c.id, c.code_number, c.label, c.definition,
+                   c.inclusion_criteria, c.exclusion_criteria, c.examples,
+                   c.approval_status, c.is_system, max(n.name) as net_name,
+                   coalesce(sum(mg.frequency_count), 0) as mentions,
+                   count(mg.id) as mention_groups,
+                   coalesce(
+                     jsonb_agg(
+                       jsonb_build_object(
+                         'id', mg.id,
+                         'text', mg.sample_text,
+                         'normalized_text', mg.normalized_text,
+                         'frequency', mg.frequency_count
+                       ) order by mg.frequency_count desc
+                     ) filter (where mg.id is not null),
+                     '[]'::jsonb
+                   ) as groups
+              from codes c
+              left join net_codes nc on nc.code_id = c.id
+              left join nets n on n.id = nc.net_id
+              left join mention_groups mg on mg.suggested_code_id = c.id
+             where c.codebook_id = :cb and c.is_active
+             group by c.id
+             order by c.is_system, mentions desc, c.code_number
+        """),
+        {"cb": book["id"]},
+    ).mappings().all()
+    return {
+        "id": str(book["id"]),
+        "subproject_id": str(subproject_id),
+        "round_id": str(book["round_id"]),
+        "coding_type": book["coding_type"],
+        "origin": book["origin"],
+        "status": book["status"],
+        "version": book["version"],
+        "codes": [
+            {
+                **dict(row),
+                "id": str(row["id"]),
+                "mentions": int(row["mentions"] or 0),
+                "mention_groups": int(row["mention_groups"] or 0),
+            }
+            for row in rows
+        ],
+    }
+
+
+def _auto_approve_empty_scratch_codebooks(db: Session, round_id: uuid.UUID, user_id) -> int:
+    """Cierra libros scratch sin candidatos pendientes para no bloquear la ronda.
+
+    Caso típico: ronda con Marcas+Razones donde solo un coding_type trajo datos;
+    el otro queda draft vacío y la UI no ofrece nada que aprobar.
+    """
+    result = db.execute(
+        text("""
+            update codebooks cb
+               set status = 'approved',
+                   approved_by = :user,
+                   approved_at = coalesce(cb.approved_at, now())
+              from subprojects sp
+             where sp.codebook_id = cb.id
+               and sp.round_id = :round
+               and cb.origin = 'scratch'
+               and cb.status not in ('approved', 'exported')
+               and not exists (
+                 select 1 from codes c
+                  where c.codebook_id = cb.id
+                    and not c.is_system
+                    and c.is_active
+                    and c.approval_status = 'pending'
+               )
+        """),
+        {"round": round_id, "user": user_id},
+    )
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+def auto_approve_scratch_codebooks(
+    db: Session, round_id: uuid.UUID, subproject_ids: list, user_id=None,
+) -> int:
+    """Auto-aprueba los libros scratch recién construidos por el bootstrap y deja
+    sus grupos listos para que la cascada de clasificación los re-tome.
+
+    A diferencia de ``approve_scratch_codebook_draft`` (que consume el payload de
+    revisión humana y reescribe labels/nets), esto NO destruye la propuesta del
+    bootstrap: solo cambia estados a 'approved'. Cada grupo que el discovery dejó
+    en 'suggested' vuelve a 'pending_review' — su ``normalized_text`` ya es un
+    alias positivo aprobado del código, de modo que ``_process_brands`` lo cierra
+    por coincidencia exacta, y las variantes/residuo siguen por fuzzy/semántico/LLM.
+    Ningún número de código se reasigna: se respeta la numeración del bootstrap.
+    """
+    if not subproject_ids:
+        return 0
+    codebook_ids = db.execute(
+        text("""
+            select cb.id from subprojects sp
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.id = any(:ids) and cb.origin = 'scratch'
+               and cb.status not in ('approved', 'exported')
+             for update of cb
+        """),
+        {"ids": list(subproject_ids)},
+    ).scalars().all()
+    if not codebook_ids:
+        return 0
+    codebook_ids = list(codebook_ids)
+    db.execute(
+        text("""
+            update codes set approval_status = 'approved', created_by = :user
+             where codebook_id = any(:cbs) and not is_system and is_active
+               and approval_status = 'pending'
+        """),
+        {"cbs": codebook_ids, "user": user_id},
+    )
+    db.execute(
+        text("""
+            update code_aliases
+               set status = 'approved', approved_by = :user,
+                   approved_at = coalesce(approved_at, now()), revoked_at = null
+             where codebook_id = any(:cbs) and status = 'pending'
+        """),
+        {"cbs": codebook_ids, "user": user_id},
+    )
+    db.execute(
+        text("""
+            update codebooks
+               set status = 'approved', approved_by = :user,
+                   approved_at = coalesce(approved_at, now())
+             where id = any(:cbs) and status not in ('approved', 'exported')
+        """),
+        {"cbs": codebook_ids, "user": user_id},
+    )
+    # Los grupos que el bootstrap marcó 'suggested' vuelven a la cola: la cascada
+    # ya con libro aprobado los cierra (exacto para las semillas, fuzzy/LLM para
+    # el resto). No tocamos 'anomaly'/'garbage' del prefiltro.
+    db.execute(
+        text("""
+            update mention_groups
+               set status = 'pending_review', suggested_code_id = null
+             where subproject_id = any(:ids) and status = 'suggested'
+        """),
+        {"ids": list(subproject_ids)},
+    )
+    return len(codebook_ids)
+
+
+def _mark_round_ready_after_codebook_approval(
+    db: Session, round_id: uuid.UUID, subproject_id: uuid.UUID,
+) -> bool:
+    """Si ya no quedan libros pendientes, pone la ronda en processing."""
+    pending_books = db.execute(
+        text("""
+            select count(*) from subprojects sp
+            join codebooks cb on cb.id = sp.codebook_id
+            where sp.round_id = :round and cb.status not in ('approved', 'exported')
+        """),
+        {"round": round_id},
+    ).scalar() or 0
+    ready = pending_books == 0
+    db.execute(
+        text("update subprojects set status = :status, updated_at = now() where id = :sp"),
+        {"status": "processing" if ready else "codebook_review", "sp": subproject_id},
+    )
+    if ready:
+        db.execute(
+            text("""
+                update subprojects
+                   set status = 'processing', updated_at = now()
+                 where round_id = :round
+            """),
+            {"round": round_id},
+        )
+        db.execute(
+            text("update rounds set status = 'processing', updated_at = now() where id = :round"),
+            {"round": round_id},
+        )
+    return ready
+
+
+def approve_scratch_codebook_draft(
+    db: Session,
+    subproject_id: uuid.UUID,
+    decisions: list[dict],
+    user_id,
+) -> dict:
+    """Aprueba/rechaza cada candidato de un libro scratch en una transacción.
+
+    Se exige una decisión para todos los candidatos activos: una lista parcial
+    nunca convierte el resto en aprobado por accidente.
+    """
+    book = db.execute(
+        text("""
+            select cb.id, cb.origin, cb.status, cb.coding_type, sp.round_id
+              from subprojects sp
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.id = :sp
+             for update of cb, sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().first()
+    if not book:
+        raise LookupError("Subproyecto sin libro de códigos")
+    if book["origin"] != "scratch":
+        raise ValueError("Solo los libros creados desde cero usan esta aprobación")
+    if book["status"] in ("approved", "exported"):
+        _auto_approve_empty_scratch_codebooks(db, book["round_id"], user_id)
+        ready = _mark_round_ready_after_codebook_approval(db, book["round_id"], subproject_id)
+        return {
+            "codebook_id": str(book["id"]),
+            "round_id": str(book["round_id"]),
+            "status": book["status"],
+            "approved_codes": 0,
+            "rejected_codes": 0,
+            "ready_to_process": ready,
+        }
+
+    candidate_ids = set(db.execute(
+        text("""
+            select id from codes
+             where codebook_id = :cb and not is_system and is_active
+               and approval_status = 'pending'
+        """),
+        {"cb": book["id"]},
+    ).scalars().all())
+    decision_by_id = {item["code_id"]: item for item in decisions}
+    if set(decision_by_id) != candidate_ids:
+        missing = len(candidate_ids - set(decision_by_id))
+        extra = len(set(decision_by_id) - candidate_ids)
+        raise ValueError(
+            f"La revisión debe decidir todos los candidatos pendientes "
+            f"(faltan {missing}, sobran {extra})"
+        )
+
+    approved_ids, rejected_ids = [], []
+    for code_id, item in decision_by_id.items():
+        if item["decision"] == "approve":
+            db.execute(
+                text("""
+                    update codes
+                       set label = :label,
+                           definition = :definition,
+                           inclusion_criteria = cast(:inclusion as jsonb),
+                           exclusion_criteria = cast(:exclusion as jsonb),
+                           examples = cast(:examples as jsonb),
+                           approval_status = 'approved', created_by = :user
+                     where id = :id
+                """),
+                {
+                    "id": code_id,
+                    "label": item["label"],
+                    "definition": item.get("definition"),
+                    "inclusion": json.dumps(item.get("inclusion_criteria", [])),
+                    "exclusion": json.dumps(item.get("exclusion_criteria", [])),
+                    "examples": json.dumps(item.get("examples", [])),
+                    "user": user_id,
+                },
+            )
+            approved_ids.append(code_id)
+            net_name = (item.get("net_name") or "").strip()
+            if book.get("coding_type") == "reasons":
+                db.execute(text("delete from net_codes where code_id = :code"), {"code": code_id})
+            if net_name:
+                net_id = db.execute(
+                    text("""
+                        select id from nets
+                         where codebook_id = :cb and lower(name) = lower(:name)
+                         limit 1
+                    """),
+                    {"cb": book["id"], "name": net_name},
+                ).scalar()
+                if net_id is None:
+                    net_id = uuid.uuid4()
+                    db.execute(
+                        text("""
+                            insert into nets (id, codebook_id, name, origin, display_order, created_by)
+                            values (:id, :cb, :name, 'analyst_manual', 0, :user)
+                        """),
+                        {"id": net_id, "cb": book["id"], "name": net_name, "user": user_id},
+                    )
+                db.execute(
+                    text("""
+                        insert into net_codes (id, net_id, code_id)
+                        values (:id, :net, :code)
+                    """),
+                    {"id": uuid.uuid4(), "net": net_id, "code": code_id},
+                )
+        else:
+            db.execute(
+                text("update codes set approval_status = 'revoked', is_active = false where id = :id"),
+                {"id": code_id},
+            )
+            rejected_ids.append(code_id)
+
+    if not approved_ids:
+        raise ValueError("El libro necesita al menos una categoría aprobada")
+
+    if approved_ids:
+        db.execute(
+            text("""
+                update code_aliases
+                   set status = 'approved', approved_by = :user,
+                       approved_at = now(), revoked_at = null
+                 where codebook_id = :cb and code_id = any(:ids) and status = 'pending'
+            """),
+            {"cb": book["id"], "ids": approved_ids, "user": user_id},
+        )
+    if rejected_ids:
+        db.execute(
+            text("""
+                update code_aliases
+                   set status = 'revoked', revoked_at = now()
+                 where codebook_id = :cb and code_id = any(:ids) and status = 'pending'
+            """),
+            {"cb": book["id"], "ids": rejected_ids},
+        )
+
+    db.execute(
+        text("""
+            update mention_groups
+               set status = 'pending_review',
+                   suggested_code_id = case
+                     when suggested_code_id = any(:rejected) then null
+                     else suggested_code_id
+                   end
+             where subproject_id = :sp and status = 'suggested'
+        """),
+        {"sp": subproject_id, "rejected": rejected_ids or [uuid.UUID(int=0)]},
+    )
+    db.execute(
+        text("""
+            update codebooks
+               set status = 'approved', approved_by = :user, approved_at = now()
+             where id = :cb
+        """),
+        {"cb": book["id"], "user": user_id},
+    )
+
+    _auto_approve_empty_scratch_codebooks(db, book["round_id"], user_id)
+    ready = _mark_round_ready_after_codebook_approval(db, book["round_id"], subproject_id)
+
+    log_action(
+        db,
+        user_id,
+        book["round_id"],
+        "codebook",
+        book["id"],
+        "approve_scratch_draft",
+        old_value={"status": book["status"]},
+        new_value={
+            "status": "approved",
+            "approved_codes": len(approved_ids),
+            "rejected_codes": len(rejected_ids),
+        },
+    )
+    return {
+        "codebook_id": str(book["id"]),
+        "round_id": str(book["round_id"]),
+        "status": "approved",
+        "approved_codes": len(approved_ids),
+        "rejected_codes": len(rejected_ids),
+        "ready_to_process": ready,
     }
 
 
@@ -573,6 +989,7 @@ def insert_verbatims(
     `expected_max_mentions` (una vez por ronda) se persisten en subprojects/rounds."""
     from app.pipeline.question_controls import (
         apply_mention_limits,
+        expand_brand_mentions,
         max_mentions_across_keys,
         persist_round_controls,
         record_mention_decision,
@@ -682,6 +1099,17 @@ def insert_verbatims(
     limited_keys: dict[str, int] = {}
     multi_keys = {qk for qk in keys_in_batch if qk not in single_code_keys}
 
+    # Multi-marca en un solo campo ("Gloria, bonle") -> una fila por mención, en
+    # orden, ANTES de contar menciones y de aplicar los topes: así código único
+    # (primera mención) y máximo de menciones operan sobre menciones ya separadas.
+    # Solo Marcas; Razones no se parten por separadores (es decisión semántica).
+    brand_keys = {
+        qk for qk in keys_in_batch
+        if (questions_by_key.get(qk, {}).get("coding_type") or guess_coding_type(qk)) == "brands"
+    }
+    if brand_keys:
+        rows = expand_brand_mentions(rows, brand_keys)
+
     if isinstance(round_expected, int) and round_expected > 0 and multi_keys:
         detected = max_mentions_across_keys(rows, multi_keys)
         if detected > round_expected:
@@ -768,23 +1196,28 @@ def insert_verbatims(
         df = rows_to_normalized_df(ct_rows, coding_type)
         df_parts.append(df)
 
-        originals: dict[tuple[str, str | None], dict] = {}
-        for r in ct_rows:
-            resp = str(r.get("respondent_external_id") or "").strip()
+        # Phase 1: Batch respondent INSERT + SELECT (replaces per-row _get_or_create_respondent)
+        respondent_realids: dict[str, str] = {}
+        for source_row in ct_rows:
+            resp = str(source_row.get("respondent_external_id") or "").strip()
             if not resp:
                 continue
-            originals[(resp, r.get("question_key"))] = r
-
-        # Phase 1: Batch respondent INSERT + SELECT (replaces per-row _get_or_create_respondent)
-        respondent_keys: set[str] = set()
-        for row in df.iter_rows(named=True):
-            respondent_keys.add(row["respondent_external_id"])
+            realid = str(source_row.get("realid") or resp).strip()
+            previous = respondent_realids.get(resp)
+            if previous is not None and previous != realid:
+                raise ValueError(
+                    f"El Serial {resp!r} trae más de un realid en la misma carga"
+                )
+            respondent_realids[resp] = realid
 
         respondent_cache: dict[str, uuid.UUID] = {}
-        if respondent_keys:
+        if respondent_realids:
             respondent_params = [
-                {"id": uuid.uuid4(), "round": round_id, "file": file_id, "resp": resp, "realid": resp}
-                for resp in respondent_keys
+                {
+                    "id": uuid.uuid4(), "round": round_id, "file": file_id,
+                    "resp": resp, "realid": realid,
+                }
+                for resp, realid in respondent_realids.items()
             ]
             db.execute(
                 text("""
@@ -801,29 +1234,37 @@ def insert_verbatims(
                     WHERE round_id = :round AND imported_file_id = :file
                     AND respondent_external_id = ANY(:resps)
                 """),
-                {"round": round_id, "file": file_id, "resps": list(respondent_keys)},
+                {"round": round_id, "file": file_id, "resps": list(respondent_realids)},
             ).mappings().all()
             respondent_cache = {r["respondent_external_id"]: r["id"] for r in resp_rows}
 
         # Phase 2: Batch verbatim INSERT (replaces per-row INSERT)
         verbatim_params = []
-        for row in df.iter_rows(named=True):
-            key = (row["respondent_external_id"], row.get("question_key"))
-            src = originals.get(key) or originals.get((row["respondent_external_id"], None))
-            original = (src or {}).get("original_text") or row["normalized_text"]
-            input_code = (src or {}).get("input_code_number")
-            respondent_id = respondent_cache.get(row["respondent_external_id"])
+        mention_positions: dict[tuple[str, str | None], int] = {}
+        for fallback_row_number, source_row in enumerate(ct_rows, start=1):
+            resp = str(source_row.get("respondent_external_id") or "").strip()
+            original = str(source_row.get("original_text") or "").strip()
+            normalized = normalize(original)
+            if not resp or not original:
+                continue
+            question_key = source_row.get("question_key")
+            position_key = (resp, question_key)
+            mention_position = mention_positions.get(position_key, 0) + 1
+            mention_positions[position_key] = mention_position
+            respondent_id = respondent_cache.get(resp)
 
             verbatim_params.append({
                 "id": uuid.uuid4(),
                 "sp": subproject_id,
                 "resp_id": respondent_id,
-                "qid": question_id_by_key.get(row.get("question_key")),
+                "qid": question_id_by_key.get(question_key),
                 "f": file_id,
-                "q": row.get("question_key"),
+                "q": question_key,
                 "txt": original,
-                "norm": row["normalized_text"],
-                "inp": input_code,
+                "norm": normalized,
+                "inp": source_row.get("input_code_number"),
+                "source_row": source_row.get("source_row_number") or fallback_row_number,
+                "position": mention_position,
             })
 
         if verbatim_params:
@@ -832,13 +1273,15 @@ def insert_verbatims(
                     INSERT INTO verbatims (id, subproject_id, respondent_id, question_id,
                                            imported_file_id, source_question_key,
                                            original_text, normalized_text, input_code_number,
-                                           coding_status)
-                    VALUES (:id, :sp, :resp_id, :qid, :f, :q, :txt, :norm, :inp, 'pending')
-                    ON CONFLICT (subproject_id, respondent_id, source_question_key)
+                                           source_row_number, mention_position, coding_status)
+                    VALUES (:id, :sp, :resp_id, :qid, :f, :q, :txt, :norm, :inp,
+                            :source_row, :position, 'pending')
+                    ON CONFLICT (subproject_id, respondent_id, source_question_key, mention_position)
                     DO UPDATE SET
                       normalized_text = excluded.normalized_text,
                       original_text = excluded.original_text,
-                      imported_file_id = excluded.imported_file_id
+                      imported_file_id = excluded.imported_file_id,
+                      source_row_number = excluded.source_row_number
                     WHERE verbatims.coding_status = 'pending'
                 """),
                 verbatim_params,
@@ -847,6 +1290,268 @@ def insert_verbatims(
 
     combined_df = pl.concat(df_parts) if df_parts else rows_to_normalized_df([], "brands")
     return n, combined_df, sorted(pending), skipped_by_type
+
+
+def sync_unmatched_question_flags(
+    db: Session,
+    imported_file_id: uuid.UUID,
+    pending_question_keys: list[str],
+) -> None:
+    """Materializa preguntas no clasificadas en la cola de revisión existente.
+
+    Un retry resuelve los flags que ya no siguen pendientes y no duplica los que
+    continúan abiertos.
+    """
+    pending = sorted(set(pending_question_keys))
+    db.execute(
+        text("""
+            update import_review_flags
+               set status = 'resolved', reviewed_at = now()
+             where imported_file_id = :file
+               and flag_type = 'unmatched_question_column'
+               and status = 'pending'
+               and not ((detail ->> 'question_key') = any(:pending))
+        """),
+        {"file": imported_file_id, "pending": pending},
+    )
+    for question_key in pending:
+        db.execute(
+            text("""
+                insert into import_review_flags
+                    (id, imported_file_id, flag_type, detail, status)
+                select :id, :file, 'unmatched_question_column',
+                       jsonb_build_object('question_key', :question_key), 'pending'
+                 where not exists (
+                    select 1 from import_review_flags
+                     where imported_file_id = :file
+                       and flag_type = 'unmatched_question_column'
+                       and status = 'pending'
+                       and detail ->> 'question_key' = :question_key
+                 )
+            """),
+            {"id": uuid.uuid4(), "file": imported_file_id, "question_key": question_key},
+        )
+
+
+def persist_dataset_snapshot(
+    db: Session,
+    imported_file_id: uuid.UUID,
+    *,
+    status: str,
+    parsed_rows: int | None = None,
+    field_selections: list[dict] | None = None,
+    pending_questions: list[str] | None = None,
+    skipped_by_type: dict[str, int] | None = None,
+) -> dict:
+    """Crea/actualiza el snapshot de una carga hasta que alcance estado ready."""
+    if status not in ("blocked", "ready"):
+        raise ValueError("dataset snapshot status debe ser blocked o ready")
+    file_row = db.execute(
+        text("""
+            select checksum, total_rows, file_type, dataset_snapshot
+              from imported_files where id = :file
+        """),
+        {"file": imported_file_id},
+    ).mappings().first()
+    if not file_row:
+        raise LookupError("Archivo importado no encontrado")
+    existing = file_row.get("dataset_snapshot") or {}
+    if existing.get("status") == "ready":
+        return dict(existing)
+
+    coding_counts = db.execute(
+        text("""
+            select sp.coding_type,
+                   count(v.id) as verbatims,
+                   count(distinct v.respondent_id) as respondents,
+                   count(distinct v.source_question_key) as question_variables,
+                   count(distinct v.mention_group_id) as mention_groups
+              from subprojects sp
+              left join verbatims v
+                on v.subproject_id = sp.id and v.imported_file_id = :file
+             where sp.round_id = (
+                 select round_id from imported_files where id = :file
+             )
+             group by sp.coding_type
+        """),
+        {"file": imported_file_id},
+    ).mappings().all()
+    profile_counts = db.execute(
+        text("""
+            select profile_status, count(*) as n
+              from respondents where imported_file_id = :file
+             group by profile_status
+        """),
+        {"file": imported_file_id},
+    ).mappings().all()
+    flag_counts = db.execute(
+        text("""
+            select flag_type, count(*) as n
+              from import_review_flags
+             where imported_file_id = :file and status = 'pending'
+             group by flag_type
+        """),
+        {"file": imported_file_id},
+    ).mappings().all()
+
+    selections = field_selections if field_selections is not None else existing.get("field_selections", [])
+    snapshot = {
+        "version": "ingestion-snapshot-v1",
+        "status": status,
+        "normalization_version": "canonical-v1",
+        "population_reconciliation": (
+            "pending_review" if status == "blocked" else "not_configured"
+        ),
+        "source": {
+            "checksum": file_row["checksum"],
+            "reported_rows": file_row["total_rows"],
+            "parsed_verbatims": parsed_rows if parsed_rows is not None else existing.get("source", {}).get("parsed_verbatims"),
+            "file_type": file_row["file_type"],
+        },
+        "field_selections": selections,
+        "pending_questions": sorted(pending_questions or []),
+        "skipped_by_type": skipped_by_type or existing.get("skipped_by_type", {}),
+        "persisted_by_coding_type": {
+            row["coding_type"]: {
+                "verbatims": row["verbatims"],
+                "respondents": row["respondents"],
+                "question_variables": row["question_variables"],
+                "mention_groups": row["mention_groups"],
+            }
+            for row in coding_counts
+        },
+        "profile_status_counts": {row["profile_status"]: row["n"] for row in profile_counts},
+        "pending_flag_counts": {row["flag_type"]: row["n"] for row in flag_counts},
+    }
+    db.execute(
+        text("""
+            update imported_files
+               set dataset_snapshot = cast(:snapshot as jsonb)
+             where id = :file
+               and coalesce(dataset_snapshot ->> 'status', '') <> 'ready'
+        """),
+        {"file": imported_file_id, "snapshot": json.dumps(snapshot)},
+    )
+    return snapshot
+
+
+def round_processing_blockers(db: Session, round_id: uuid.UUID) -> list[str]:
+    """Defensa central: ningún caller puede saltarse las puertas de ingestión."""
+    pending_flags = db.execute(
+        text("""
+            select count(*) from import_review_flags f
+            join imported_files i on i.id = f.imported_file_id
+            where i.round_id = :round and f.status = 'pending'
+        """),
+        {"round": round_id},
+    ).scalar() or 0
+    unready_snapshots = db.execute(
+        text("""
+            select count(*) from imported_files
+             where round_id = :round
+               and file_type in ('verbatims_xlsx', 'combined_xlsx', 'dau')
+               and (
+                 status <> 'validated'
+                 or coalesce(dataset_snapshot ->> 'status', '') <> 'ready'
+               )
+        """),
+        {"round": round_id},
+    ).scalar() or 0
+    missing_client_catalogs = db.execute(
+        text("""
+            select count(*) from subprojects sp
+            join codebooks cb on cb.id = sp.codebook_id
+            where sp.round_id = :round
+              and cb.origin = 'imported_client_catalog'
+              and cb.status not in ('approved', 'exported')
+        """),
+        {"round": round_id},
+    ).scalar() or 0
+    blockers = []
+    if pending_flags:
+        blockers.append(f"{pending_flags} flags de importación pendientes")
+    if unready_snapshots:
+        blockers.append(f"{unready_snapshots} snapshots de población sin cerrar")
+    if missing_client_catalogs:
+        blockers.append(f"{missing_client_catalogs} catálogos de cliente sin confirmar")
+    return blockers
+
+
+def round_export_blockers(db: Session, round_id: uuid.UUID) -> list[str]:
+    """Puerta de integridad del entregable, independiente de permisos/rol.
+
+    Reutiliza las validaciones de ingestión y exige que el artefacto exportado
+    provenga de snapshots cerrados, libros aprobados, grupos decididos y una
+    auditoría vigente para cada subproyecto.
+    """
+    blockers = list(round_processing_blockers(db, round_id))
+    state = db.execute(
+        text("""
+            select
+              (select count(*) from imported_files i
+                where i.round_id = :round
+                  and i.file_type in ('verbatims_xlsx', 'combined_xlsx', 'dau')) as source_files,
+              (select count(*) from imported_files i
+                where i.round_id = :round
+                  and i.file_type in ('verbatims_xlsx', 'combined_xlsx', 'dau')
+                  and i.status = 'validated'
+                  and i.dataset_snapshot ->> 'status' = 'ready') as ready_source_files,
+              (select count(*) from subprojects sp
+                join codebooks cb on cb.id = sp.codebook_id
+                where sp.round_id = :round
+                  and cb.status not in ('approved', 'exported')) as unapproved_codebooks,
+              (select count(*) from mention_groups mg
+                join subprojects sp on sp.id = mg.subproject_id
+                where sp.round_id = :round
+                  and mg.status not in ('auto_coded', 'resolved')) as unresolved_groups,
+              (select count(*) from code_aliases ca
+                join subprojects sp on sp.codebook_id = ca.codebook_id
+                where sp.round_id = :round and ca.status = 'conflict')
+              +
+              (select count(*) from mention_groups mg
+                join subprojects sp on sp.id = mg.subproject_id
+                where sp.round_id = :round and mg.status = 'conflict') as conflicts,
+              (select count(*) from subprojects sp
+                where sp.round_id = :round
+                  and not exists (
+                    select 1 from audit_sessions ases
+                    where ases.subproject_id = sp.id
+                      and ases.status = 'approved'
+                      and (
+                        not exists (
+                          select 1 from processing_runs pr
+                          where pr.subproject_id = sp.id
+                        )
+                        or ases.processing_run_id = (
+                          select pr.id from processing_runs pr
+                          where pr.subproject_id = sp.id
+                          order by pr.created_at desc limit 1
+                        )
+                      )
+                  )) as missing_or_stale_audits
+        """),
+        {"round": round_id},
+    ).mappings().first() or {}
+
+    source_files = int(state.get("source_files") or 0)
+    ready_source_files = int(state.get("ready_source_files") or 0)
+    unapproved_codebooks = int(state.get("unapproved_codebooks") or 0)
+    unresolved_groups = int(state.get("unresolved_groups") or 0)
+    conflicts = int(state.get("conflicts") or 0)
+    missing_or_stale_audits = int(state.get("missing_or_stale_audits") or 0)
+    if source_files == 0:
+        blockers.append("la ronda no tiene un snapshot de población de origen")
+    elif ready_source_files != source_files:
+        blockers.append(f"{source_files - ready_source_files} archivos sin snapshot de población cerrado")
+    if unapproved_codebooks:
+        blockers.append(f"{unapproved_codebooks} libros de códigos sin aprobar")
+    if unresolved_groups:
+        blockers.append(f"{unresolved_groups} grupos sin decisión final")
+    if conflicts:
+        blockers.append(f"{conflicts} conflictos de clasificación o memoria")
+    if missing_or_stale_audits:
+        blockers.append(f"{missing_or_stale_audits} auditorías faltantes o desactualizadas")
+    return blockers
 
 
 def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
@@ -859,7 +1564,7 @@ def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
             insert into mention_groups (id, subproject_id, normalized_text, sample_text,
                                         frequency_count, status)
             select gen_random_uuid(), :sp, v.normalized_text, min(v.original_text),
-                   count(*), 'pending_review'
+                   count(*), case when v.normalized_text = '' then 'garbage' else 'pending_review' end
             from verbatims v
             left join respondents r on r.id = v.respondent_id
             where v.subproject_id = :sp and v.normalized_text <> ''
@@ -884,6 +1589,16 @@ def build_mention_groups(db: Session, subproject_id: uuid.UUID) -> int:
                  where r.id = v.respondent_id
                    and r.profile_status = 'excluded_confirmed'
               )
+        """),
+        {"sp": subproject_id},
+    )
+
+    db.execute(
+        text("""
+            update verbatims
+               set coding_status = 'garbage'
+             where subproject_id = :sp and normalized_text = ''
+               and coding_status = 'pending'
         """),
         {"sp": subproject_id},
     )
@@ -1012,32 +1727,81 @@ def get_or_create_subproject(
         return existing
 
     cb_id = _current_codebook_id(db, project_id, coding_type)
-    if not cb_id:
-        cb_id = create_codebook(db, project_id, coding_type)
-        seed_system_codes(db, cb_id)
-
+    source_subproject_id = None
+    origin_mode = "from_scratch"
+    if cb_id:
+        source = db.execute(
+            text("""
+                select cb.id, cb.status, sp.id as source_subproject_id
+                  from codebooks cb
+                  left join subprojects sp on sp.codebook_id = cb.id
+                 where cb.id = :cb
+                 order by sp.created_at desc nulls last
+                 limit 1
+            """),
+            {"cb": cb_id},
+        ).mappings().first()
+        if source and source["source_subproject_id"]:
+            if source["status"] in ("approved", "exported"):
+                target_cb = create_codebook(
+                    db, project_id, coding_type, cb_id,
+                    origin="inherited_round", status="approved",
+                )
+                clone_codebook(db, cb_id, target_cb)
+                source_subproject_id = source["source_subproject_id"]
+                origin_mode = "homologated"
+                cb_id = target_cb
+            else:
+                # Un borrador de otra ronda nunca se comparte: el fallback crea
+                # un scratch independiente y deja que su propio DAU lo proponga.
+                cb_id = create_codebook(db, project_id, coding_type)
+                seed_system_codes(db, cb_id)
+    else:
         round_row = db.execute(
             text("select origin_mode, source_round_id from rounds where id = :id"),
             {"id": round_id},
         ).mappings().first()
         if round_row and round_row["origin_mode"] == "homologated" and round_row["source_round_id"]:
-            source_project_id = db.execute(
-                text("select project_id from rounds where id = :id"),
-                {"id": round_row["source_round_id"]},
-            ).scalar()
-            if source_project_id and source_project_id != project_id:
-                clone_codebook(db, source_project_id, coding_type, cb_id)
+            source_catalog = db.execute(
+                text("""
+                    select sp.id as subproject_id, sp.codebook_id
+                      from subprojects sp
+                      join codebooks cb on cb.id = sp.codebook_id
+                     where sp.round_id = :round and sp.coding_type = :ct
+                       and cb.status in ('approved', 'exported')
+                """),
+                {"round": round_row["source_round_id"], "ct": coding_type},
+            ).mappings().first()
+            if source_catalog:
+                cb_id = create_codebook(
+                    db, project_id, coding_type, source_catalog["codebook_id"],
+                    origin="inherited_round", status="approved",
+                )
+                clone_codebook(db, source_catalog["codebook_id"], cb_id)
+                source_subproject_id = source_catalog["subproject_id"]
+                origin_mode = "homologated"
+            else:
+                cb_id = create_codebook(db, project_id, coding_type)
+                seed_system_codes(db, cb_id)
+        else:
+            cb_id = create_codebook(db, project_id, coding_type)
+            seed_system_codes(db, cb_id)
 
     sp_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into subprojects (id, round_id, codebook_id, coding_type,
-                                     min_mentions_threshold, audit_percentage)
-            values (:id, :round, :cb, :ct,
-                    coalesce(:min_m, 3), coalesce(:audit, 10))
+            insert into subprojects (
+              id, round_id, codebook_id, coding_type, origin_mode,
+              source_subproject_id, min_mentions_threshold, audit_percentage
+            )
+            values (
+              :id, :round, :cb, :ct, :origin_mode, :source,
+              coalesce(:min_m, 3), coalesce(:audit, 10)
+            )
         """),
         {
             "id": sp_id, "round": round_id, "cb": cb_id, "ct": coding_type,
+            "origin_mode": origin_mode, "source": source_subproject_id,
             "min_m": min_mentions_threshold, "audit": audit_percentage,
         },
     )
@@ -1098,16 +1862,29 @@ def get_resolution_summary(db: Session, subproject_id: uuid.UUID) -> dict:
         {"sp": subproject_id},
     ).mappings().all()
     by_status = {r["status"]: r["n"] for r in counts}
-    pending = by_status.get("anomaly", 0) + by_status.get("below_threshold", 0) + by_status.get("pending_review", 0)
+    terminal = {"auto_coded", "resolved"}
+    pending = sum(count for status, count in by_status.items() if status not in terminal)
     auto_coded = by_status.get("auto_coded", 0)
     resolved = by_status.get("resolved", 0)
     total = pending + auto_coded + resolved
+    # El umbral de menciones vive en la ronda (es el que valida resolve_group al
+    # crear un código nuevo); se expone para que el frontend avise ANTES de enviar
+    # cuando el analista intenta crear una marca por debajo del mínimo.
+    min_mentions_threshold = db.execute(
+        text("""
+            select r.min_mentions_threshold
+              from subprojects sp join rounds r on r.id = sp.round_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).scalar()
     return {
         "pending": pending,
         "auto_coded": auto_coded,
         "resolved": resolved,
         "progress_pct": round((resolved + auto_coded) / total * 100, 1) if total else 0.0,
         "can_close": pending == 0,
+        "min_mentions_threshold": min_mentions_threshold,
     }
 
 
@@ -1120,7 +1897,8 @@ def get_pending_summary(db: Session, subproject_id: uuid.UUID) -> list[dict]:
                    c.code_number as suggested_code_number, c.label as suggested_code_label
             from mention_groups g
             left join codes c on c.id = g.suggested_code_id
-            where g.subproject_id = :sp and g.status in ('anomaly', 'below_threshold', 'pending_review')
+            where g.subproject_id = :sp
+              and g.status not in ('auto_coded', 'resolved')
             order by g.frequency_count desc, g.normalized_text
         """),
         {"sp": subproject_id},
@@ -1241,7 +2019,7 @@ def list_codebook_codes(db: Session, codebook_id: uuid.UUID, include_system: boo
             from codes c
             left join net_codes nc on nc.code_id = c.id
             left join nets n on n.id = nc.net_id
-            where c.codebook_id = :cb and c.is_active
+            where c.codebook_id = :cb and c.is_active and c.approval_status = 'approved'
               and (:include_system or not c.is_system)
             order by c.code_number
         """),
@@ -1302,8 +2080,11 @@ def create_code(db: Session, codebook_id: uuid.UUID, label: str, net_id: uuid.UU
     code_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into codes (id, codebook_id, code_number, label, origin, is_system, created_by)
-            values (:id, :cb, :n, :l, 'analyst_manual', false, :u)
+            insert into codes (
+              id, codebook_id, code_number, label, origin, is_system,
+              created_by, approval_status
+            )
+            values (:id, :cb, :n, :l, 'analyst_manual', false, :u, 'approved')
         """),
         {"id": code_id, "cb": codebook_id, "n": next_number, "l": norm_label, "u": user_id},
     )
@@ -1399,17 +2180,121 @@ def unresolve_group(db: Session, group_id: uuid.UUID, user_id) -> None:
     )
 
 
-def add_alias_from_group(db: Session, codebook_id: uuid.UUID, code_id: uuid.UUID, group: dict) -> None:
+def add_alias_from_group(db: Session, codebook_id: uuid.UUID, code_id: uuid.UUID, group: dict) -> bool:
     norm = group["normalized_text"]
+    if not norm:
+        return True
+    conflict_count = db.execute(
+        text("""
+            select count(*) from code_aliases
+             where codebook_id = :cb and alias_normalized = :norm
+               and status = 'conflict' and alias_kind in ('positive', 'system')
+        """),
+        {"cb": codebook_id, "norm": norm},
+    ).scalar() or 0
+    if conflict_count:
+        # Adjudicación humana explícita: conserva ambas memorias, revoca los
+        # destinos descartados y vuelve a aprobar únicamente el seleccionado.
+        db.execute(
+            text("""
+                update code_aliases
+                   set status = case when code_id = :code then 'approved' else 'revoked' end,
+                       revoked_at = case when code_id = :code then null else now() end,
+                       approved_at = case when code_id = :code then now() else approved_at end,
+                       evidence = evidence || '{"adjudicated_by":"human_resolution"}'::jsonb
+                 where codebook_id = :cb and alias_normalized = :norm
+                   and status = 'conflict' and alias_kind in ('positive', 'system')
+            """),
+            {"cb": codebook_id, "norm": norm, "code": code_id},
+        )
+    conflicting_code = db.execute(
+        text("""
+            select code_id from code_aliases
+             where codebook_id = :cb and alias_normalized = :norm
+               and status = 'approved' and alias_kind in ('positive', 'system')
+               and code_id <> :code
+             limit 1
+        """),
+        {"cb": codebook_id, "norm": norm, "code": code_id},
+    ).scalar()
+    if conflicting_code:
+        db.execute(
+            text("""
+                update code_aliases
+                   set status = 'conflict'
+                 where codebook_id = :cb and alias_normalized = :norm
+                   and status = 'approved' and alias_kind in ('positive', 'system')
+            """),
+            {"cb": codebook_id, "norm": norm},
+        )
+        db.execute(
+            text("""
+                insert into code_aliases (
+                  id, codebook_id, code_id, alias_normalized, alias_sample,
+                  origin, alias_kind, status, evidence
+                ) values (
+                  :id, :cb, :code, :norm, :sample, 'analyst_manual',
+                  'positive', 'conflict', '{"source":"human_contradiction"}'::jsonb
+                )
+                on conflict (codebook_id, alias_normalized, code_id) do update
+                  set status = 'conflict', evidence = excluded.evidence
+            """),
+            {
+                "id": uuid.uuid4(), "cb": codebook_id, "code": code_id,
+                "norm": norm, "sample": group.get("sample_text"),
+            },
+        )
+        return False
+    db.execute(
+        text("""
+            insert into code_aliases (
+              id, codebook_id, code_id, alias_normalized, alias_sample,
+              origin, status, approved_at, evidence
+            )
+            values (
+              :id, :cb, :c, :norm, :sample, 'analyst_manual', 'approved',
+              now(), '{"source":"human_resolution"}'::jsonb
+            )
+            on conflict (codebook_id, alias_normalized, code_id) do update set
+              status = 'approved', origin = 'analyst_manual', approved_at = now(),
+              revoked_at = null, evidence = excluded.evidence
+        """),
+        {"id": uuid.uuid4(), "cb": codebook_id, "c": code_id, "norm": norm, "sample": group.get("sample_text")},
+    )
+    return True
+
+
+def add_negative_alias_from_group(
+    db: Session,
+    codebook_id: uuid.UUID,
+    rejected_code_id: uuid.UUID,
+    group: dict,
+    user_id,
+) -> None:
+    """Registra que este texto NO debe volver a sugerir el código rechazado."""
+    norm = group.get("normalized_text")
     if not norm:
         return
     db.execute(
         text("""
-            insert into code_aliases (id, codebook_id, code_id, alias_normalized, alias_sample, origin)
-            values (:id, :cb, :c, :norm, :sample, 'analyst_manual')
-            on conflict (codebook_id, alias_normalized, code_id) do nothing
+            insert into code_aliases (
+              id, codebook_id, code_id, alias_normalized, alias_sample,
+              origin, alias_kind, status, evidence, approved_by, approved_at
+            )
+            values (
+              :id, :cb, :code, :norm, :sample, 'analyst_manual', 'negative',
+              'approved', '{"source":"human_rejection"}'::jsonb, :user, now()
+            )
+            on conflict (codebook_id, alias_normalized, code_id) do update set
+              alias_kind = 'negative', status = 'approved',
+              origin = 'analyst_manual', approved_by = excluded.approved_by,
+              approved_at = now(), revoked_at = null,
+              evidence = excluded.evidence
         """),
-        {"id": uuid.uuid4(), "cb": codebook_id, "c": code_id, "norm": norm, "sample": group.get("sample_text")},
+        {
+            "id": uuid.uuid4(), "cb": codebook_id, "code": rejected_code_id,
+            "norm": norm, "sample": group.get("sample_text"), "user": user_id,
+        },
     )
 
 
@@ -1484,10 +2369,24 @@ def get_coded_population(db: Session, subproject_id: uuid.UUID) -> list[dict]:
     rows = db.execute(
         text("""
             select v.id as verbatim_id,
+                   exists (
+                     select 1 from verbatim_codes proposed
+                     join codes proposed_code on proposed_code.id = proposed.code_id
+                     where proposed.verbatim_id = v.id and not proposed.is_active
+                       and proposed.source = 'llm_suggestion'
+                       and proposed_code.is_system
+                   ) as llm_system_candidate,
+                   exists (
+                     select 1 from audit_logs al
+                     where al.entity_name = 'mention_group'
+                       and al.entity_id = v.mention_group_id
+                       and al.action = 'alias_conflict'
+                   ) as historical_conflict,
                    jsonb_agg(
                      jsonb_build_object(
                        'code_id', c.id, 'code_number', c.code_number,
-                       'label', c.label, 'source', vc.source
+                       'label', c.label, 'source', vc.source,
+                       'confidence_score', vc.confidence_score
                      ) order by vc.output_index
                    ) as codes
             from verbatims v
@@ -1498,7 +2397,20 @@ def get_coded_population(db: Session, subproject_id: uuid.UUID) -> list[dict]:
         """),
         {"sp": subproject_id},
     ).mappings().all()
-    return [{"verbatim_id": str(r["verbatim_id"]), "codes": r["codes"]} for r in rows]
+    return [
+        {
+            "verbatim_id": str(r["verbatim_id"]),
+            "codes": r["codes"],
+            "high_risk": bool(r["llm_system_candidate"] or r["historical_conflict"]),
+            "risk_flags": [
+                flag for flag, enabled in (
+                    ("llm_system_candidate", r["llm_system_candidate"]),
+                    ("historical_conflict", r["historical_conflict"]),
+                ) if enabled
+            ],
+        }
+        for r in rows
+    ]
 
 
 def create_audit_session(
@@ -1684,10 +2596,12 @@ def get_audit_item(db: Session, item_id: uuid.UUID) -> dict | None:
     row = db.execute(
         text("""
             select i.id, i.status, i.comment, i.verbatim_id, i.codes_snapshot,
+                   v.mention_group_id,
                    r.id as review_id, r.corrections_count,
                    s.id as session_id, s.status as session_status,
                    s.total_items, s.reviewed_items, s.subproject_id
             from audit_items i
+            join verbatims v on v.id = i.verbatim_id
             join audit_code_reviews r on r.id = i.audit_code_review_id
             join audit_sessions s on s.id = r.audit_session_id
             where i.id = :id
@@ -1701,6 +2615,7 @@ def get_audit_item(db: Session, item_id: uuid.UUID) -> dict | None:
         "status": row["status"],
         "comment": row["comment"],
         "verbatim_id": str(row["verbatim_id"]),
+        "mention_group_id": str(row["mention_group_id"]) if row["mention_group_id"] else None,
         "codes_snapshot": row["codes_snapshot"] or [],
         "review_id": str(row["review_id"]),
         "corrections_count": row["corrections_count"],
@@ -1710,6 +2625,49 @@ def get_audit_item(db: Session, item_id: uuid.UUID) -> dict | None:
         "reviewed_items": row["reviewed_items"],
         "subproject_id": str(row["subproject_id"]),
     }
+
+
+def mark_audit_group_items_reassigned(
+    db: Session,
+    session_id: str,
+    mention_group_id: uuid.UUID,
+    comment: str | None,
+    user_id,
+) -> int:
+    """Sincroniza los items muestreados que representan el mismo grupo corregido."""
+    return db.execute(
+        text("""
+            update audit_items i
+               set status = 'reassigned', comment = coalesce(:comment, i.comment),
+                   reviewer_id = :user, reviewed_at = now()
+              from audit_code_reviews r, verbatims v
+             where i.audit_code_review_id = r.id
+               and i.verbatim_id = v.id
+               and r.audit_session_id = :session
+               and v.mention_group_id = :group
+        """),
+        {
+            "session": session_id, "group": mention_group_id,
+            "comment": comment, "user": user_id,
+        },
+    ).rowcount
+
+
+def reopen_group_after_audit(db: Session, group_id: uuid.UUID) -> int:
+    """Una eliminación de auditoría vuelve el grupo entero a Resolución."""
+    db.execute(
+        text("""
+            update mention_groups
+               set status = 'pending_review', suggested_code_id = null,
+                   resolved_by = null, resolved_at = null
+             where id = :group
+        """),
+        {"group": group_id},
+    )
+    return db.execute(
+        text("update verbatims set coding_status = 'needs_review' where mention_group_id = :group"),
+        {"group": group_id},
+    ).rowcount
 
 
 def get_audit_code_review(db: Session, review_id: uuid.UUID) -> dict | None:

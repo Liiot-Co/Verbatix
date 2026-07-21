@@ -27,6 +27,7 @@ SUBPROJECT_ID = uuid.uuid4()
 CODEBOOK_ID = uuid.uuid4()
 SESSION_ID = str(uuid.uuid4())
 ITEM_ID = uuid.uuid4()
+ITEM_GROUP_ID = uuid.uuid4()
 USER_ID = uuid.uuid4()
 CODE_A = str(uuid.uuid4())
 CODE_B = str(uuid.uuid4())
@@ -115,6 +116,35 @@ def test_bigger_pct_is_superset_of_smaller():
     small = {v["verbatim_id"] for v in select_sample(pop, 5, seed=9)}
     big = {v["verbatim_id"] for v in select_sample(pop, 20, seed=9)}
     assert small <= big
+
+
+def test_sample_interleaves_primary_code_and_source_strata():
+    dominant = _population(20, CODE_A)
+    for item in dominant:
+        item["codes"][0]["source"] = "engine_exact"
+        item["codes"][0]["confidence_score"] = 1.0
+    minority = _population(1, CODE_B)
+    minority[0]["codes"][0]["source"] = "analyst_manual"
+    minority[0]["codes"][0]["confidence_score"] = None
+
+    sample = select_sample(dominant + minority, 10, seed=7)
+
+    assert len(sample) == 3
+    assert any(item["codes"][0]["code_id"] == CODE_B for item in sample)
+
+
+def test_sample_includes_every_high_risk_case_even_above_percentage_target():
+    population = _population(100)
+    for item in population[:8]:
+        item["high_risk"] = True
+        item["risk_flags"] = ["llm_system_candidate"]
+
+    sample = select_sample(population, 5, seed=7)
+
+    assert len(sample) == 8
+    assert {item["verbatim_id"] for item in population[:8]} <= {
+        item["verbatim_id"] for item in sample
+    }
 
 
 def test_empty_population_yields_empty_sample():
@@ -295,6 +325,7 @@ def _item(status="pending", session_status="in_progress"):
     return {
         "id": str(ITEM_ID), "status": status, "comment": None,
         "verbatim_id": str(uuid.uuid4()), "codes_snapshot": [],
+        "mention_group_id": str(ITEM_GROUP_ID),
         "review_id": str(uuid.uuid4()), "corrections_count": 0,
         "session_id": SESSION_ID, "session_status": session_status,
         "total_items": 10, "reviewed_items": 3, "subproject_id": str(SUBPROJECT_ID),
@@ -305,9 +336,17 @@ class ReviewMocks:
     def __init__(self, stack: ExitStack, item):
         base = "app.pipeline.audit."
         stack.enter_context(patch(base + "get_audit_item", return_value=item))
-        self.deactivate = stack.enter_context(patch(base + "deactivate_verbatim_codes"))
-        self.assign = stack.enter_context(patch(base + "assign_codes_to_verbatim"))
-        self.set_coding = stack.enter_context(patch(base + "set_verbatim_coding_status"))
+        self.deactivate = stack.enter_context(patch(base + "deactivate_group_codes"))
+        self.assign = stack.enter_context(
+            patch(base + "assign_codes_to_group", return_value=7)
+        )
+        self.mark_group = stack.enter_context(patch(base + "mark_group_resolved"))
+        self.reopen_group = stack.enter_context(
+            patch(base + "reopen_group_after_audit", return_value=7)
+        )
+        self.mark_group_items = stack.enter_context(
+            patch(base + "mark_audit_group_items_reassigned", return_value=2)
+        )
         self.update_item = stack.enter_context(patch(base + "update_audit_item_review"))
         self.bump = stack.enter_context(patch(base + "increment_review_corrections"))
         self.refresh = stack.enter_context(
@@ -362,10 +401,13 @@ def test_review_reassign_rewrites_codes_as_audit_correction():
         result = review_item(db, ITEM_ID, {"action": "reassign", "code_ids": [CODE_A]}, user_id=USER_ID)
 
     assert result["status"] == "reassigned"
-    mocks.deactivate.assert_called_once_with(db, uuid.UUID(item["verbatim_id"]))
+    mocks.deactivate.assert_called_once_with(db, ITEM_GROUP_ID)
     mocks.assign.assert_called_once()
     assert mocks.assign.call_args[0][2] == [uuid.UUID(CODE_A)]
-    mocks.set_coding.assert_called_once_with(db, uuid.UUID(item["verbatim_id"]), "manually_coded")
+    assert mocks.assign.call_args[0][3] == "audit_correction"
+    mocks.mark_group.assert_called_once_with(db, ITEM_GROUP_ID, USER_ID)
+    assert result["affected_verbatims"] == 7
+    assert result["affected_audit_items"] == 2
     mocks.bump.assert_called_once()
     assert db.committed
 
@@ -400,7 +442,7 @@ def test_review_reassign_already_reassigned_does_not_double_count():
     mocks.bump.assert_not_called()
 
 
-def test_review_remove_leaves_verbatim_needing_review():
+def test_review_remove_reopens_whole_group_for_resolution():
     db = FakeSession()
     item = _item()
     with ExitStack() as stack:
@@ -408,9 +450,9 @@ def test_review_remove_leaves_verbatim_needing_review():
         result = review_item(db, ITEM_ID, {"action": "remove"}, user_id=USER_ID)
 
     assert result["status"] == "reassigned"
-    mocks.deactivate.assert_called_once()
+    mocks.deactivate.assert_called_once_with(db, ITEM_GROUP_ID)
     mocks.assign.assert_not_called()
-    mocks.set_coding.assert_called_once_with(db, uuid.UUID(item["verbatim_id"]), "needs_review")
+    mocks.reopen_group.assert_called_once_with(db, ITEM_GROUP_ID)
     mocks.bump.assert_called_once()
 
 

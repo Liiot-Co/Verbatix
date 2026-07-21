@@ -21,51 +21,112 @@ por embeddings), ahora contra un codebook que ya tiene contenido real.
 from __future__ import annotations
 
 import uuid
+import json
 
 import numpy as np
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.pipeline.llm.client import name_clusters
+from app.pipeline.llm.client import propose_reason_codes
 
 from .embed import embed
 
 
 def cluster_by_similarity(
-    items: list[tuple[str, list[float], int]], threshold: float
+    items: list[tuple], threshold: float
 ) -> list[dict]:
-    """Greedy single-link: cada item se compara contra el representante
-    (primer miembro, el de mayor frecuencia si `items` ya viene ordenado desc)
-    de los clusters abiertos y se une al primero que supere el umbral de
-    similitud coseno, o abre uno nuevo. O(n*k) — de sobra para los cientos de
-    mention_groups únicos que trae una ronda; no hay sklearn en el stack y no
-    hace falta uno para este volumen.
+    """Agrupa de forma reproducible mediante enlace completo.
 
-    `items`: (representative_text, embedding, frequency). Devuelve
-    [{"representative": str, "total_frequency": int}], sin trackear membresía
-    individual (no la necesita el caller, ver docstring del módulo).
+    Solo se fusionan dos clusters cuando *todos* sus pares superan el umbral.
+    Esto evita tanto la dependencia del orden del greedy anterior como el efecto
+    cadena de single-link. El representante es el medoide y se conservan ejemplos
+    centrales y de frontera para que DeepSeek vea la extensión real del cluster.
     """
-    reprs: list[np.ndarray] = []
-    clusters: list[dict] = []
-    for text_, vector, freq in items:
-        v = np.array(vector, dtype=float)
-        norm = np.linalg.norm(v)
+    members: list[dict] = []
+    for item in items:
+        text_, vector, freq = item[:3]
+        vector_array = np.array(vector, dtype=float)
+        norm = np.linalg.norm(vector_array)
         if norm > 0:
-            v = v / norm
+            vector_array = vector_array / norm
+        members.append({
+            "text": text_,
+            "vector": vector_array,
+            "frequency": int(freq),
+            "member_id": item[3] if len(item) > 3 else None,
+        })
 
-        best_idx, best_sim = None, threshold
-        for idx, r in enumerate(reprs):
-            sim = float(np.dot(v, r))
-            if sim >= best_sim:
-                best_idx, best_sim = idx, sim
+    # La clave estable hace que una permutación de la entrada produzca el mismo
+    # clustering, representantes y orden de salida.
+    members.sort(key=lambda m: (str(m["text"]).casefold(), str(m["member_id"] or "")))
+    clusters: list[list[dict]] = [[member] for member in members]
 
-        if best_idx is not None:
-            clusters[best_idx]["total_frequency"] += freq
-        else:
-            clusters.append({"representative": text_, "total_frequency": freq})
-            reprs.append(v)
-    return clusters
+    def complete_link(left: list[dict], right: list[dict]) -> float:
+        return min(
+            float(np.dot(a["vector"], b["vector"]))
+            for a in left for b in right
+        )
+
+    while True:
+        candidates: list[tuple[float, str, int, int]] = []
+        for left_idx in range(len(clusters)):
+            for right_idx in range(left_idx + 1, len(clusters)):
+                similarity = complete_link(clusters[left_idx], clusters[right_idx])
+                if similarity >= threshold:
+                    stable_key = "|".join(
+                        sorted(str(m["text"]).casefold() for m in clusters[left_idx] + clusters[right_idx])
+                    )
+                    candidates.append((similarity, stable_key, left_idx, right_idx))
+        if not candidates:
+            break
+        _, _, left_idx, right_idx = sorted(
+            candidates, key=lambda row: (-row[0], row[1])
+        )[0]
+        clusters[left_idx] = clusters[left_idx] + clusters[right_idx]
+        del clusters[right_idx]
+
+    output: list[dict] = []
+    for cluster in clusters:
+        def centrality(member: dict) -> float:
+            return sum(
+                float(np.dot(member["vector"], other["vector"])) * other["frequency"]
+                for other in cluster
+            ) / max(sum(other["frequency"] for other in cluster), 1)
+
+        ranked = sorted(
+            cluster,
+            key=lambda member: (
+                -centrality(member), -member["frequency"], str(member["text"]).casefold()
+            ),
+        )
+        boundary = sorted(
+            cluster,
+            key=lambda member: (
+                centrality(member), -member["frequency"], str(member["text"]).casefold()
+            ),
+        )
+        representative = ranked[0]
+        central_examples = [member["text"] for member in ranked[:3]]
+        boundary_examples = [
+            member["text"] for member in boundary[:2]
+            if member["text"] not in central_examples
+        ]
+        output.append({
+            "representative": representative["text"],
+            "total_frequency": sum(member["frequency"] for member in cluster),
+            "member_ids": [
+                member["member_id"] for member in cluster if member["member_id"] is not None
+            ],
+            "examples": central_examples + boundary_examples,
+            "central_examples": central_examples,
+            "boundary_examples": boundary_examples,
+        })
+
+    return sorted(
+        output,
+        key=lambda cluster: (-cluster["total_frequency"], str(cluster["representative"]).casefold()),
+    )
 
 
 def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions: int) -> int:
@@ -88,7 +149,7 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
 
     candidates = db.execute(
         text("""
-            select normalized_text, sample_text, frequency_count
+            select id, normalized_text, sample_text, frequency_count
             from mention_groups
             where subproject_id = :sp and status = 'pending_review' and normalized_text <> ''
             order by frequency_count desc, normalized_text
@@ -99,7 +160,12 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
         return 0
 
     items = [
-        (c["sample_text"] or c["normalized_text"], embed(c["normalized_text"]), c["frequency_count"])
+        (
+            c["sample_text"] or c["normalized_text"],
+            embed(c["normalized_text"]),
+            c["frequency_count"],
+            c["id"],
+        )
         for c in candidates
     ]
     clusters = cluster_by_similarity(items, settings.reason_cluster_similarity_threshold)
@@ -107,7 +173,27 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
     if not big_clusters:
         return 0
 
-    labels = name_clusters([c["representative"] for c in big_clusters])
+    cluster_summaries = [
+        (
+            f"Representante: {cluster['representative']}. "
+            f"Ejemplos centrales: {'; '.join(cluster['central_examples'])}. "
+            f"Ejemplos de frontera: {'; '.join(cluster['boundary_examples']) or 'ninguno'}."
+        )
+        for cluster in big_clusters
+    ]
+    context_row = db.execute(
+        text("""
+            select p.name as study, p.external_code,
+                   cat.name as product_category, sp.single_code_per_response
+              from subprojects sp
+              join rounds r on r.id = sp.round_id
+              join projects p on p.id = r.project_id
+              left join categories cat on cat.id = r.category_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().first()
+    proposals = propose_reason_codes(cluster_summaries, dict(context_row) if context_row else {})
 
     next_number = db.execute(
         text("""
@@ -117,7 +203,8 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
         {"cb": codebook_id},
     ).scalar()
 
-    for label in labels:
+    for proposal, cluster in zip(proposals, big_clusters, strict=True):
+        label = proposal["label"]
         # 'engine_auto' (no 'engine_semantic'): mismo origin que
         # discover_catalog_from_frequency usa para marcas — el check constraint
         # de `codes` (001_schema_v8.sql) no tiene un valor separado para
@@ -125,11 +212,59 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
         # significado ("lo creó el motor, no un analista") es el mismo.
         db.execute(
             text("""
-                insert into codes (id, codebook_id, code_number, label, origin)
-                values (:id, :cb, :n, :label, 'engine_auto')
+                insert into codes (
+                  id, codebook_id, code_number, label, definition,
+                  inclusion_criteria, exclusion_criteria, examples,
+                  origin, approval_status
+                )
+                values (
+                  :id, :cb, :n, :label, :definition,
+                  cast(:inclusions as jsonb), cast(:exclusions as jsonb), cast(:examples as jsonb),
+                  'engine_auto', 'pending'
+                )
             """),
-            {"id": uuid.uuid4(), "cb": codebook_id, "n": next_number, "label": label},
+            {
+                "id": (code_id := uuid.uuid4()),
+                "cb": codebook_id,
+                "n": next_number,
+                "label": label,
+                "definition": proposal["definition"],
+                "inclusions": json.dumps(proposal["inclusion_criteria"]),
+                "exclusions": json.dumps(proposal["exclusion_criteria"]),
+                "examples": json.dumps(proposal["examples"]),
+            },
         )
+        net_name = proposal["net"].strip()
+        net_id = db.execute(
+            text("select id from nets where codebook_id = :cb and lower(name) = lower(:name) limit 1"),
+            {"cb": codebook_id, "name": net_name},
+        ).scalar()
+        if net_id is None:
+            net_id = uuid.uuid4()
+            db.execute(
+                text("""
+                    insert into nets (id, codebook_id, name, origin, display_order)
+                    values (:id, :cb, :name, 'engine_auto', :ord)
+                """),
+                {"id": net_id, "cb": codebook_id, "name": net_name, "ord": next_number},
+            )
+        db.execute(
+            text("""
+                insert into net_codes (id, net_id, code_id, display_order)
+                values (:id, :net, :code, :ord)
+                on conflict (net_id, code_id) do nothing
+            """),
+            {"id": uuid.uuid4(), "net": net_id, "code": code_id, "ord": next_number},
+        )
+        if cluster["member_ids"]:
+            db.execute(
+                text("""
+                    update mention_groups
+                       set status = 'suggested', suggested_code_id = :code
+                     where id = any(:ids)
+                """),
+                {"code": code_id, "ids": cluster["member_ids"]},
+            )
         next_number += 1
 
-    return len(labels)
+    return len(proposals)

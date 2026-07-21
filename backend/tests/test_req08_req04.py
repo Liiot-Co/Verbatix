@@ -9,7 +9,9 @@ from app.pipeline.question_controls import (
     apply_mention_limits,
     assert_single_code_assignment,
     cap_codes_for_single_response,
+    expand_brand_mentions,
     max_mentions_across_keys,
+    split_mentions,
 )
 from app.repositories import insert_verbatims
 
@@ -251,6 +253,50 @@ def test_req08_resolution_rejects_two_content_codes():
         [{"id": "a", "is_system": False}, {"id": "s", "is_system": True}],
         single_code=True,
     )
+
+
+def test_split_mentions_is_deterministic_and_order_preserving():
+    assert split_mentions("Gloria, bonle") == ["Gloria", "bonle"]
+    assert split_mentions("Bonlé y Laive") == ["Bonlé", "Laive"]
+    assert split_mentions("paria, laive, gloria, bonle") == ["paria", "laive", "gloria", "bonle"]
+    # Una sola marca no se parte.
+    assert split_mentions("Gloria") == ["Gloria"]
+    # Corte ambiguo (deja un fragmento de 1 char) -> se conserva entero para que
+    # siga su curso normal, no se rompe en pedazos inservibles.
+    assert split_mentions("a, gloria") == ["a, gloria"]
+    assert split_mentions("") == []
+
+
+def test_expand_brand_mentions_only_touches_brand_keys():
+    rows = [
+        {"question_key": "BE1", "respondent_external_id": "1", "original_text": "Gloria, bonle"},
+        {"question_key": "R1", "respondent_external_id": "1", "original_text": "rico y barato"},
+    ]
+    expanded = expand_brand_mentions(rows, brand_keys={"BE1"})
+    texts = [(r["question_key"], r["original_text"]) for r in expanded]
+    # La marca se parte en dos menciones ordenadas; la razón queda intacta.
+    assert texts == [("BE1", "Gloria"), ("BE1", "bonle"), ("R1", "rico y barato")]
+
+
+def test_single_field_multibrand_single_code_keeps_first_mention():
+    """Código único = Sí: "Gloria, bonle" -> solo la primera mención (Gloria)."""
+    rows = expand_brand_mentions(
+        [{"question_key": "BE1", "respondent_external_id": "7", "original_text": "Gloria, bonle"}],
+        brand_keys={"BE1"},
+    )
+    limited = apply_mention_limits(rows, single_code_keys={"BE1"}, limited_keys={})
+    assert [r["original_text"] for r in limited] == ["Gloria"]
+
+
+def test_single_field_multibrand_multi_code_respects_max_mentions():
+    """Código único = No con máx. 3: "paria, laive, gloria, bonle" -> las 3 primeras."""
+    rows = expand_brand_mentions(
+        [{"question_key": "BE1", "respondent_external_id": "7",
+          "original_text": "paria, laive, gloria, bonle"}],
+        brand_keys={"BE1"},
+    )
+    limited = apply_mention_limits(rows, single_code_keys=set(), limited_keys={"BE1": 3})
+    assert [r["original_text"] for r in limited] == ["paria", "laive", "gloria"]
 
 
 def test_req08_defaults_vyk_and_nbs_suggest_multi_and_are_overridable():

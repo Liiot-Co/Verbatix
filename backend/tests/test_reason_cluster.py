@@ -1,5 +1,5 @@
 """Bootstrap del codebook de razones (pipeline/semantic/cluster.py) — mocks
-embed()/name_clusters() para no pegarle al modelo real ni al LLM (mismo
+embed()/propose_reason_codes() para no pegarle al modelo real ni al LLM (mismo
 criterio que test_semantic_cache.py)."""
 import uuid
 from unittest.mock import patch
@@ -29,6 +29,20 @@ def test_cluster_by_similarity_below_threshold_stays_separate():
     clusters = cluster_by_similarity(items, threshold=0.9)
 
     assert len(clusters) == 2
+
+
+def test_cluster_by_similarity_is_independent_of_input_order():
+    items = [
+        ("es rico", [1.0, 0.0], 5),
+        ("tiene buen sabor", [0.99, 0.01], 3),
+        ("es barato", [0.0, 1.0], 2),
+    ]
+
+    forward = cluster_by_similarity(items, threshold=0.9)
+    reversed_order = cluster_by_similarity(list(reversed(items)), threshold=0.9)
+
+    assert forward == reversed_order
+    assert forward[0]["central_examples"]
 
 
 class FakeResult:
@@ -85,9 +99,9 @@ def test_discover_reason_catalog_skips_when_codebook_already_has_own_codes():
 
 def test_discover_reason_catalog_creates_codes_only_for_clusters_above_threshold():
     candidates = [
-        {"normalized_text": "es rico", "sample_text": "Es rico", "frequency_count": 5},
-        {"normalized_text": "tiene buen sabor", "sample_text": "Tiene buen sabor", "frequency_count": 3},
-        {"normalized_text": "compro la", "sample_text": "Compro la", "frequency_count": 1},
+        {"id": uuid.uuid4(), "normalized_text": "es rico", "sample_text": "Es rico", "frequency_count": 5},
+        {"id": uuid.uuid4(), "normalized_text": "tiene buen sabor", "sample_text": "Tiene buen sabor", "frequency_count": 3},
+        {"id": uuid.uuid4(), "normalized_text": "compro la", "sample_text": "Compro la", "frequency_count": 1},
     ]
     db = FakeSession(codebook_id=uuid.uuid4(), has_own_codes=False, candidates=candidates)
 
@@ -97,13 +111,21 @@ def test_discover_reason_catalog_creates_codes_only_for_clusters_above_threshold
 
     with (
         patch("app.pipeline.semantic.cluster.embed", side_effect=fake_embed),
-        patch("app.pipeline.semantic.cluster.name_clusters", return_value=["Buen sabor"]),
+        patch("app.pipeline.semantic.cluster.propose_reason_codes", return_value=[{
+            "net": "Experiencia sensorial",
+            "label": "Buen sabor",
+            "definition": "Valora positivamente el sabor.",
+            "inclusion_criteria": ["Expresa agrado por el sabor"],
+            "exclusion_criteria": ["Solo menciona precio"],
+            "examples": ["Es rico", "Tiene buen sabor"],
+        }]),
     ):
         n = discover_reason_catalog(db, uuid.uuid4(), min_mentions=3)
 
     assert n == 1
     assert len(db.inserted_codes) == 1
     assert db.inserted_codes[0]["label"] == "Buen sabor"
+    assert db.inserted_codes[0]["definition"] == "Valora positivamente el sabor."
     assert db.inserted_codes[0]["n"] == 1
 
 
