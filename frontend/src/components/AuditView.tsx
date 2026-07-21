@@ -458,7 +458,7 @@ export default function AuditView() {
   const auditBreadcrumbs = [
     { label: "Proyectos", to: "/" },
     ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
-    ...(studio ? [{ label: studio.name, to: `/rounds/${roundId}` }] : []),
+    ...(studio ? [{ label: studio.name, to: `/rounds/${roundId}/report` }] : []),
     { label: "Auditoría" },
   ];
 
@@ -513,6 +513,24 @@ export default function AuditView() {
                 <p className="text-xs text-p-text-muted mt-2">
                   {pending > 0 ? `${pending} ${pending === 1 ? "grupo pendiente" : "grupos pendientes"}` : "Confirmando el cierre"}
                 </p>
+                {(() => {
+                  const total = readiness?.subprojects.reduce((sum, sp) => sum + sp.total, 0) ?? 0;
+                  if (total > 0) {
+                    const pct = Math.round(((total - pending) / total) * 100);
+                    return (
+                      <div className="mt-3 space-y-1.5">
+                        <div className="flex justify-between text-[10px] text-p-text-muted font-medium">
+                          <span>{pct}% completado</span>
+                          <span>{total - pending}/{total}</span>
+                        </div>
+                        <div className="h-1.5 w-full bg-p-accent/10 rounded-full overflow-hidden">
+                          <div className="h-full bg-p-accent transition-all duration-300" style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
               <div className="rounded-xl border border-p-border bg-p-surface/70 p-4 opacity-75">
                 <div className="flex items-center gap-2 text-p-text font-semibold text-sm">

@@ -116,6 +116,9 @@ export const useVerbatixStore = create<VerbatixState>((set) => ({
       ? { id, message, type, actionLabel: action.label, onAction: action.onAction }
       : { id, message, type };
     set((s) => {
+      if (s.toasts.some((t) => t.message === message && t.type === type)) {
+        return s;
+      }
       const toasts = [...s.toasts, toast];
       if (toasts.length > MAX_VISIBLE_TOASTS) {
         return { toasts: toasts.slice(toasts.length - MAX_VISIBLE_TOASTS) };

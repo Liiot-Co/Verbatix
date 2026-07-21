@@ -272,8 +272,8 @@ export default function ReportView() {
 
   const studyCrumb = studio
     ? {
-        label: studio.project_name,
-        to: `/projects/${studio.project_id}`,
+        label: studio.name,
+        to: `/rounds/${roundId}`,
       }
     : { label: "Estudio", to: `/rounds/${roundId}` };
 
@@ -289,7 +289,7 @@ export default function ReportView() {
   const studyTitle = studio?.project_name ?? "Reporte del estudio";
 
   return (
-    <div className="space-y-5 max-w-6xl">
+    <div className="space-y-5 max-w-6xl mx-auto">
       <Breadcrumb
         items={[
           { label: "Proyectos", to: "/" },
