@@ -436,10 +436,10 @@ export default function CreationWizard() {
       setCatalogOrigins((current) => {
         const next = { ...current };
         if (next.brands.origin === "inherited_round" && !next.brands.source_subproject_id && brands.length > 0) {
-          next.brands = { ...next.brands, source_subproject_id: brands[0].source_subproject_id };
+          next.brands = { ...next.brands, source_subproject_id: brands[0]?.source_subproject_id ?? null };
         }
         if (next.reasons.origin === "inherited_round" && !next.reasons.source_subproject_id && reasons.length > 0) {
-          next.reasons = { ...next.reasons, source_subproject_id: reasons[0].source_subproject_id };
+          next.reasons = { ...next.reasons, source_subproject_id: reasons[0]?.source_subproject_id ?? null };
         }
         return next;
       });
@@ -1481,7 +1481,7 @@ export default function CreationWizard() {
                                                   origin: option.value,
                                                   source_subproject_id:
                                                     option.value === "inherited_round" && codebookSources[codingType].length > 0
-                                                      ? codebookSources[codingType][0].source_subproject_id
+                                                      ? codebookSources[codingType][0]?.source_subproject_id ?? null
                                                       : null,
                                                 },
                                               }));
@@ -1528,7 +1528,7 @@ export default function CreationWizard() {
                                           ) : (
                                             <div className="mt-1 flex items-center justify-between p-2.5 rounded-lg border border-p-border bg-p-bg-subtle">
                                               <div className="text-sm font-medium text-p-text">
-                                                {codebookSources[codingType][0].project_name} · R{codebookSources[codingType][0].round_number} ({codebookSources[codingType][0].round_name})
+                                                {codebookSources[codingType][0]?.project_name} · R{codebookSources[codingType][0]?.round_number} ({codebookSources[codingType][0]?.round_name})
                                               </div>
                                               <span className="text-[10px] uppercase font-bold text-p-accent bg-p-accent/10 px-2 py-0.5 rounded-full">
                                                 Último

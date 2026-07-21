@@ -188,21 +188,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 </motion.button>
                 {bellOpen && <NotificationsPanel anchorRef={bellRef} onClose={() => setBellOpen(false)} />}
               </div>
-              <div className="relative" ref={menuRef}>
-                <motion.button
-                  onClick={() => setBellOpen((open) => !open)}
-                  whileTap={{ scale: 0.95 }}
-                  className="relative flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-p-text-muted transition-colors hover:bg-p-bg-subtle/60 hover:text-p-text"
-                  title={collapsed ? "Notificaciones" : undefined}
-                  aria-label="Abrir notificaciones"
-                  aria-expanded={bellOpen}
-                >
-                  <motion.span key={unread} animate={unread > 0 ? { rotate: [0, -8, 8, 0] } : { rotate: 0 }} transition={{ duration: 0.32 }}><Bell className="h-4 w-4 shrink-0" /></motion.span>
-                  {!collapsed && <span className="flex-1 text-left text-xs">Notificaciones</span>}
-                  <AnimatePresence>{unread > 0 && <motion.span key={unread} initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }} transition={{ type: "spring", stiffness: 420, damping: 22 }} className="min-w-4 rounded-full bg-p-accent px-1.5 py-0.5 text-center text-[10px] font-bold leading-none text-white">{unread > 99 ? "99+" : unread}</motion.span>}</AnimatePresence>
-                </motion.button>
-                {bellOpen && <NotificationsPanel anchorRef={bellRef} onClose={() => setBellOpen(false)} />}
-              </div>
+
               <div className={`flex items-center gap-1.5 px-2 pb-1 ${collapsed ? "justify-center" : ""}`}>
                 <div className="relative" ref={presenceRef}>
                   <MascotAvatar
