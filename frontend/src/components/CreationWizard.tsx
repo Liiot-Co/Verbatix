@@ -892,7 +892,7 @@ export default function CreationWizard() {
   // configurarlo) o directo en "Revisión" — el cruce de duplicados/perfil
   // se dispara ahí mismo, ya no hace falta ramificar "sin perfil" / "comparar
   // perfil" en dos botones.
-  const handleContinueToReview = async () => {
+  const handleContinueToReview = async (withProfile: boolean = showProfileStep) => {
     if (!importedFileId) {
       const ok = await handleImport();
       if (!ok) return;
@@ -901,7 +901,7 @@ export default function CreationWizard() {
       const projectId = project?.id ?? existingRound?.project_id;
       if (projectId) await runBatch(projectId);
     }
-    goToStep(showProfileStep ? "profile" : "review");
+    goToStep(withProfile ? "profile" : "review");
   };
 
   // Task 3: dispara el cruce explícito (duplicados + perfil) sobre la carga
@@ -1779,31 +1779,30 @@ export default function CreationWizard() {
                     )}
 
                     {pendingQuestions.length === 0 && !batchRunning && !batchDone && (
-                      <>
+                      <div className="grid grid-cols-2 gap-3 pt-2">
                         <button
                           type="button"
-                          onClick={() => setShowProfileStep((v) => !v)}
-                          className={[
-                            "flex items-center gap-1.5 text-xs rounded-lg border px-2.5 py-2 w-full transition-colors",
-                            showProfileStep
-                              ? "border-p-accent/40 bg-p-accent-soft text-p-accent"
-                              : "border-p-border text-p-text-muted hover:bg-p-bg-subtle",
-                          ].join(" ")}
+                          disabled={!canImport || submitting}
+                          className="btn-secondary text-sm py-2 w-full justify-center"
+                          onClick={() => {
+                            setShowProfileStep(false);
+                            void handleContinueToReview(false);
+                          }}
                         >
-                          <Users className="w-3.5 h-3.5 shrink-0" />
-                          {showProfileStep
-                            ? "Perfil de referencia: se configura antes de Revisión"
-                            : "Configurar perfil de referencia (opcional)"}
+                          {submitting ? "Importando..." : "Continuar sin perfil"}
                         </button>
                         <button
                           type="button"
                           disabled={!canImport || submitting}
                           className="btn-primary text-sm py-2 w-full justify-center"
-                          onClick={() => void handleContinueToReview()}
+                          onClick={() => {
+                            setShowProfileStep(true);
+                            void handleContinueToReview(true);
+                          }}
                         >
-                          {submitting ? "Importando..." : "Continuar"}
+                          {submitting ? "Importando..." : "Continuar con perfil"}
                         </button>
-                      </>
+                      </div>
                     )}
 
                     {batchItems.length > 0 && (batchRunning || batchDone) && (
