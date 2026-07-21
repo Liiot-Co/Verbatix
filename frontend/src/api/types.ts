@@ -73,6 +73,10 @@ export interface RoundSummary {
   status: string;
   category_id?: string | null;
   subprojects: RoundSubprojectSummary[];
+  // round-sequence-and-homologation (Task 7): true si la ronda tiene alguna
+  // configuración pendiente (sin subproyectos, homologación sin aprobar, o
+  // archivo subido sin cerrar el import) — el motor no arranca en este estado.
+  setup_incomplete?: boolean;
 }
 
 export interface RoundSubprojectSummary {

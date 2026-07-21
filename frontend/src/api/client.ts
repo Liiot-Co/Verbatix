@@ -110,7 +110,12 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       const parsed = JSON.parse(text);
       if (typeof parsed.detail === "string") message = parsed.detail;
       else if (parsed.detail) {
-        message = JSON.stringify(parsed.detail);
+        // Backend structured errors (round-sequence-and-homologation, etc.)
+        // send `detail: { code, message }` — prefer the human message over
+        // dumping the raw JSON object into the UI.
+        message = typeof parsed.detail.message === "string"
+          ? parsed.detail.message
+          : JSON.stringify(parsed.detail);
         if (typeof parsed.detail.code === "string") code = parsed.detail.code;
       }
     } catch {
@@ -250,6 +255,15 @@ export async function createProject(
 
 export async function getProject(projectId: string): Promise<ProjectDetail> {
   return request<ProjectDetail>(`/projects/${projectId}`);
+}
+
+// round-sequence-and-homologation (Task 1): siguiente round_number esperado
+// del proyecto — el wizard lo consume para bloquear el input.
+export async function getNextRoundNumber(projectId: string): Promise<number> {
+  const { next_round_number } = await request<{ next_round_number: number }>(
+    `/projects/${projectId}/next-round-number`
+  );
+  return next_round_number;
 }
 
 export async function getProjectMembers(projectId: string): Promise<ProjectMember[]> {
