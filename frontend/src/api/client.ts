@@ -571,10 +571,12 @@ export async function getResolutionQueue(
   subprojectId: string,
   limit = 50,
   offset = 0,
-  statuses?: MentionGroupStatus[]
+  statuses?: MentionGroupStatus[],
+  q?: string
 ): Promise<ResolutionQueue> {
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (statuses?.length) qs.set("statuses", statuses.join(","));
+  if (q) qs.set("q", q);
   return request<ResolutionQueue>(`/subprojects/${subprojectId}/resolution/queue?${qs.toString()}`);
 }
 

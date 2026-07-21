@@ -43,6 +43,7 @@ def _round_id_for_subproject(db: Session, subproject_id: uuid.UUID) -> uuid.UUID
 @router.get("/subprojects/{subproject_id}/resolution/queue")
 def resolution_queue(
     subproject_id: uuid.UUID,
+    q: str | None = None,
     statuses: str | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -53,7 +54,7 @@ def resolution_queue(
     require_capability(db, user["id"], "resolution.view")
     require_resolution_phase(resource)
     status_list = statuses.split(",") if statuses else _default_statuses()
-    items, total = get_resolution_queue(db, subproject_id, status_list, limit, offset)
+    items, total = get_resolution_queue(db, subproject_id, status_list, limit, offset, q)
     return {"total": total, "items": items}
 
 

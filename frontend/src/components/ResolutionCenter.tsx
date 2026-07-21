@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Sparkles, X } from "lucide-react";
+import { Sparkles, X, Search } from "lucide-react";
 import { bulkResolve, getResolutionQueue, getResolutionSummary, getRoundCodes } from "@/api/client";
 import type { ResolutionQueueItem, ResolutionSummary, RoundCode } from "@/api/types";
 import ResolutionSidebar from "./ResolutionSidebar";
@@ -23,6 +23,8 @@ export default function ResolutionCenter({
   onClose: () => void;
 }) {
   const showToast = useVerbatixStore((s) => s.showToast);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [queue, setQueue] = useState<ResolutionQueueItem[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<ResolutionSummary | null>(null);
@@ -34,16 +36,21 @@ export default function ResolutionCenter({
   const [focusGroupId, setFocusGroupId] = useState<string | null>(null);
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
+
   const loadQueue = useCallback(() => {
     if (!subprojectId) return;
     Promise.all([
-      getResolutionQueue(subprojectId, PAGE_SIZE, 0).then((res) => {
+      getResolutionQueue(subprojectId, PAGE_SIZE, 0, undefined, debouncedQuery).then((res) => {
         setQueue(res.items);
         setTotal(res.total);
       }),
       getResolutionSummary(subprojectId).then(setSummary),
     ]).finally(() => setLoading(false));
-  }, [subprojectId]);
+  }, [subprojectId, debouncedQuery]);
 
   useEffect(() => {
     setLoading(true);
@@ -151,14 +158,26 @@ export default function ResolutionCenter({
         <div className="card overflow-hidden flex flex-col max-h-[calc(100vh-8rem)]">
           <div className="px-4 py-2.5 border-b border-p-border text-xs font-semibold text-p-text-muted uppercase tracking-wide flex items-center justify-between">
             <span>Cola ({total})</span>
-            {selected.size > 0 && (
-              <button
-                onClick={() => setSelected(new Set())}
-                className="normal-case font-normal text-p-text-faint hover:text-p-text"
-              >
-                {selected.size} seleccionados · limpiar
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-p-text-faint pointer-events-none" />
+                <input
+                  type="search"
+                  placeholder="Buscar..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="input pl-8 py-1.5 h-8 text-xs rounded-lg w-48 normal-case font-normal"
+                />
+              </div>
+              {selected.size > 0 && (
+                <button
+                  onClick={() => setSelected(new Set())}
+                  className="normal-case font-normal text-p-text-faint hover:text-p-text"
+                >
+                  {selected.size} seleccionados · limpiar
+                </button>
+              )}
+            </div>
           </div>
           {selected.size > 0 && (
             <div className="px-4 py-2 border-b border-p-border bg-p-bg-subtle flex items-center gap-1.5 flex-wrap">

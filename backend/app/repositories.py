@@ -1809,29 +1809,36 @@ def get_or_create_subproject(
 
 
 def get_resolution_queue(
-    db: Session, subproject_id: uuid.UUID, statuses: list[str], limit: int, offset: int
+    db: Session, subproject_id: uuid.UUID, statuses: list[str], limit: int, offset: int, q: str | None = None
 ) -> tuple[list[dict], int]:
     """Grupos pendientes ordenados por frecuencia (impacto). `statuses` filtra mention_groups.status."""
+    query_cond = "g.subproject_id = :sp and g.status = any(:statuses)"
+    params = {"sp": subproject_id, "statuses": statuses, "lim": limit, "off": offset}
+    
+    if q:
+        query_cond += " and (g.normalized_text ilike :q or g.sample_text ilike :q)"
+        params["q"] = f"%{q}%"
+
     rows = db.execute(
-        text("""
+        text(f"""
             select g.id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
                    c.id as suggested_code_id, c.code_number as suggested_code_number,
                    c.label as suggested_code_label
             from mention_groups g
             left join codes c on c.id = g.suggested_code_id
-            where g.subproject_id = :sp and g.status = any(:statuses)
+            where {query_cond}
             order by g.frequency_count desc, g.normalized_text
             limit :lim offset :off
         """),
-        {"sp": subproject_id, "statuses": statuses, "lim": limit, "off": offset},
+        params,
     ).mappings().all()
 
     total = db.execute(
-        text("""
-            select count(*) from mention_groups
-            where subproject_id = :sp and status = any(:statuses)
+        text(f"""
+            select count(*) from mention_groups g
+            where {query_cond}
         """),
-        {"sp": subproject_id, "statuses": statuses},
+        params,
     ).scalar()
 
     items = [
