@@ -47,15 +47,15 @@ export default function RoundCodingControls({
   };
 
   return (
-    <div className="space-y-3 rounded-xl border border-p-border bg-p-surface p-3">
-      <div className="space-y-2">
+    <div className="space-y-2.5 rounded-xl border border-p-border bg-p-surface p-2.5">
+      <div className="space-y-1.5">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-p-text-muted">
           Código único por respuesta
         </p>
         <p className="text-xs text-p-text-muted">
           Se pregunta una vez por tipo (Marcas / Razones), no por cada pregunta.
         </p>
-        <div className="flex flex-wrap gap-4">
+        <div className="flex flex-wrap gap-3">
           {codingTypes.map((ct) => {
             const single = value.singleCodeByType[ct] ?? false;
             return (
@@ -81,13 +81,13 @@ export default function RoundCodingControls({
       </div>
 
       {anyMulti && (
-        <div className="space-y-2 border-t border-p-border pt-3">
-          <label className="flex flex-wrap items-center gap-2 text-xs text-p-text-muted">
-            <span className="font-semibold uppercase tracking-wide">Máx. menciones esperado (ronda)</span>
+        <div className="space-y-1.5 border-t border-p-border pt-2">
+          <div className="flex flex-nowrap items-center gap-2 text-xs text-p-text-muted">
+            <span className="font-semibold uppercase tracking-wide whitespace-nowrap">Máx. menciones esperado (ronda)</span>
             <input
               type="number"
               min={1}
-              className="input w-20 py-1 text-xs"
+              className="input w-16 py-1 text-xs"
               aria-label="Máximo esperado de menciones para la ronda"
               value={expected ?? ""}
               placeholder="—"
@@ -100,28 +100,28 @@ export default function RoundCodingControls({
               }}
             />
             {detectedMaxMentions > 0 && (
-              <span className="text-[11px] text-p-text-faint">
+              <span className="text-[11px] text-p-text-faint whitespace-nowrap">
                 Archivo detecta hasta {detectedMaxMentions}
               </span>
             )}
-          </label>
+          </div>
 
           {needsDecision && (
-            <div className="rounded-lg border border-p-warning/40 bg-p-warning/10 p-2 space-y-1.5">
+            <div className="rounded-lg border border-p-warning/40 bg-p-warning/10 p-1.5 space-y-1">
               <p className="text-xs text-p-text-muted">
-                El archivo trae hasta {detectedMaxMentions} menciones (esperado {expected}). ¿Qué hacemos?
+                Archivo trae hasta {detectedMaxMentions} menciones (esperado {expected}). ¿Qué hacemos?
               </p>
-              <div className="flex gap-1.5">
+              <div className="flex gap-1">
                 <button
                   type="button"
-                  className="btn-secondary text-xs py-1 px-2"
+                  className="btn-secondary text-xs py-1 px-1.5"
                   onClick={() => patch({ mentionsDecision: "process_all" })}
                 >
                   Procesar todas
                 </button>
                 <button
                   type="button"
-                  className="btn-primary text-xs py-1 px-2"
+                  className="btn-primary text-xs py-1 px-1.5"
                   onClick={() => patch({ mentionsDecision: "limit_to_expected" })}
                 >
                   Limitar a {expected}
@@ -130,7 +130,7 @@ export default function RoundCodingControls({
             </div>
           )}
           {value.mentionsDecision && (
-            <p className="text-[11px] text-p-accent">
+            <p className="text-[10px] text-p-accent">
               {value.mentionsDecision === "process_all"
                 ? `Decisión: procesar las ${detectedMaxMentions}`
                 : `Decisión: limitar a ${expected}`}

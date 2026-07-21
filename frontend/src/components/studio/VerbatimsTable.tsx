@@ -1,3 +1,4 @@
+import { motion } from "framer-motion";
 import type { VerbatimSummaryRow } from "@/api/types";
 
 interface VerbatimsTableProps {
@@ -22,15 +23,21 @@ export function VerbatimsTable({ loading, rows, search }: VerbatimsTableProps) {
         </thead>
         <tbody>
           {loading ? (
-            Array.from({ length: 6 }).map((_, i) => (
-              <tr key={`skeleton-${i}`} className="border-b border-p-border last:border-0">
+            Array.from({ length: 8 }).map((_, i) => (
+              <motion.tr
+                key={`sk-${i}`}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: i * 0.1, duration: 0.35 }}
+                className="border-b border-p-border last:border-0"
+              >
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-6 rounded" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-10 rounded" /></td>
-                <td className="px-4 py-2.5"><div className="skeleton h-3 w-32 rounded" /></td>
+                <td className="px-4 py-2.5"><div className="skeleton h-3 w-36 rounded" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-3/4 rounded" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-10 rounded ml-auto" /></td>
                 <td className="px-4 py-2.5"><div className="skeleton h-3 w-10 rounded ml-auto" /></td>
-              </tr>
+              </motion.tr>
             ))
           ) : rows.length === 0 ? (
             <tr>

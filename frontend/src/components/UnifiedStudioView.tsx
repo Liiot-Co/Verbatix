@@ -14,7 +14,6 @@ import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { can } from "@/lib/capabilities";
 
 // Decoupled components
-import { AgentProcessingUI } from "./studio/AgentProcessingUI";
 import { StudioHeader } from "./studio/StudioHeader";
 import { StudioSummaryCards } from "./studio/StudioSummaryCards";
 import { VerbatimsTable } from "./studio/VerbatimsTable";
@@ -370,14 +369,8 @@ export default function UnifiedStudioView() {
         </motion.button>
       </div>
 
-      {isProcessingNow && (
-        <div className="card p-4 border border-p-accent/20 bg-p-surface/40 mb-4">
-          <AgentProcessingUI />
-        </div>
-      )}
-
       <VerbatimsTable
-        loading={loading}
+        loading={isProcessingNow || loading}
         rows={visible}
         search={search}
       />

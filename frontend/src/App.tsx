@@ -42,7 +42,7 @@ export default function App() {
                   <Routes>
                     <Route path="/" element={<ProjectDashboard />} />
                     <Route path="/projects/:projectId" element={<ProjectDetail />} />
-                    <Route path="/wizard" element={<CapabilityGuard capability="projects.manage"><CreationWizard /></CapabilityGuard>} />
+                    <Route path="/wizard/:step?" element={<CapabilityGuard capability="projects.manage"><CreationWizard /></CapabilityGuard>} />
                     <Route path="/team" element={<CapabilityGuard capability="users.manage"><TeamAdminPage /></CapabilityGuard>} />
                     <Route path="/notifications" element={<NotificationsInbox />} />
                     <Route path="/rounds/:roundId/add-load" element={<CapabilityGuard capability="rounds.manage"><CreationWizard /></CapabilityGuard>} />

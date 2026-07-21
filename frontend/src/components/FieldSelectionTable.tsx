@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { CodingType, FieldPreview, FieldSelection } from "../api/types";
 import SegmentedControl from "./SegmentedControl";
 
@@ -10,13 +11,7 @@ interface FieldSelectionTableProps {
   fields: FieldPreview[];
   value: FieldSelection[];
   onChange: (next: FieldSelection[]) => void;
-  // true solo cuando el codingScope de la ronda es "both" — con scope único,
-  // el campo hereda el tipo de la ronda sin preguntar (sin segmentado).
   showCodingType: boolean;
-  // Excel: sus filas ya traen question_key desde la columna "Question ID"
-  // del sheet, no desde el nombre de columna — un checkbox/segmentado por
-  // columna no correspondería a nada real en el import. Solo se muestra la
-  // muestra de valores, sin controles.
   readOnly?: boolean;
 }
 
@@ -24,9 +19,30 @@ export default function FieldSelectionTable({
   fields, value, onChange, showCodingType, readOnly = false,
 }: FieldSelectionTableProps) {
   const byField = new Map(value.map((fs) => [fs.field, fs]));
+  const lastClickedRef = useRef<number | null>(null);
 
   const update = (field: string, patch: Partial<FieldSelection>) => {
     onChange(value.map((fs) => (fs.field === field ? { ...fs, ...patch } : fs)));
+  };
+
+  const allIncluded = value.length > 0 && value.every((fs) => fs.included);
+  const someIncluded = value.some((fs) => fs.included);
+
+  const handleSelectAll = () => {
+    onChange(value.map((fs) => ({ ...fs, included: !allIncluded })));
+  };
+
+  const handleCheckboxClick = (e: React.MouseEvent<HTMLInputElement>, index: number) => {
+    if (e.shiftKey && lastClickedRef.current !== null) {
+      e.preventDefault();
+      const from = Math.min(lastClickedRef.current, index);
+      const to = Math.max(lastClickedRef.current, index);
+      const targetFields = new Set(fields.slice(from, to + 1).map((f) => f.field));
+      onChange(value.map((fs) =>
+        targetFields.has(fs.field) ? { ...fs, included: true } : fs
+      ));
+    }
+    lastClickedRef.current = index;
   };
 
   const showTypeColumn = !readOnly && showCodingType;
@@ -39,7 +55,14 @@ export default function FieldSelectionTable({
             <tr className="border-b border-p-border text-[11px] font-semibold uppercase tracking-wide text-p-text-muted">
               {!readOnly && (
                 <th scope="col" className="w-9 px-3 py-2 text-left">
-                  <span className="sr-only">Incluir</span>
+                  <input
+                    type="checkbox"
+                    checked={allIncluded}
+                    ref={(el) => { if (el) el.indeterminate = someIncluded && !allIncluded; }}
+                    onChange={handleSelectAll}
+                    className="h-4 w-4 cursor-pointer rounded border-p-border-mid accent-p-accent"
+                    aria-label="Seleccionar todos los campos"
+                  />
                 </th>
               )}
               <th scope="col" className="px-3 py-2 text-left">Campo</th>
@@ -48,7 +71,7 @@ export default function FieldSelectionTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-p-border">
-            {fields.map((preview) => {
+            {fields.map((preview, i) => {
               const selection = byField.get(preview.field);
               if (!readOnly && !selection) return null;
 
@@ -61,6 +84,7 @@ export default function FieldSelectionTable({
                         type="checkbox"
                         checked={selection.included}
                         onChange={(e) => update(preview.field, { included: e.target.checked })}
+                        onClick={(e) => handleCheckboxClick(e, i)}
                         className="mt-0.5 h-4 w-4 cursor-pointer rounded border-p-border-mid accent-p-accent"
                         aria-label={`Incluir campo ${preview.field}`}
                       />
@@ -87,9 +111,9 @@ export default function FieldSelectionTable({
                   <td className="px-3 py-2.5">
                     {preview.sample_values.length > 0 ? (
                       <div className="flex flex-wrap gap-1.5">
-                        {preview.sample_values.map((sample, i) => (
+                        {preview.sample_values.map((sample, j) => (
                           <span
-                            key={i}
+                            key={j}
                             title={sample}
                             className="max-w-[14rem] truncate rounded-md bg-p-bg-subtle border border-p-border/60 px-2 py-0.5 text-xs text-p-text-muted"
                           >
