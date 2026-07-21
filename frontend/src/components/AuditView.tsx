@@ -457,7 +457,7 @@ export default function AuditView() {
 
   const auditBreadcrumbs = [
     { label: "Proyectos", to: "/" },
-    ...(studio ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
+    ...(studio ? [{ label: studio.study_name, to: `/projects/${studio.study_id}` }] : []),
     ...(studio ? [{ label: studio.name, to: `/rounds/${roundId}/report` }] : []),
     { label: "Auditoría" },
   ];
@@ -580,7 +580,7 @@ export default function AuditView() {
                 <RefreshCw className="w-4 h-4" /> Comprobar ahora
               </button>
               <Link
-                to={studio ? `/projects/${studio.project_id}` : "/"}
+                to={studio ? `/projects/${studio.study_id}` : "/"}
                 className="btn-ghost text-sm"
               >
                 Volver al proyecto
@@ -601,7 +601,7 @@ export default function AuditView() {
           <AlertTriangle className="w-8 h-8 text-p-warning mx-auto" />
           <h1 className="font-heading text-xl font-semibold text-p-text">Auditoría no disponible</h1>
           <p className="text-sm text-p-text-muted">{blockedReason}</p>
-          <Link to={studio ? `/projects/${studio.project_id}` : "/"} className="btn-primary inline-flex justify-center">
+          <Link to={studio ? `/projects/${studio.study_id}` : "/"} className="btn-primary inline-flex justify-center">
             Volver al proyecto
           </Link>
         </div>

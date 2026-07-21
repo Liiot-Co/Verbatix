@@ -12,9 +12,13 @@ export function guessExcelColumnMap(columns: string[]): {
 
   const respondentId = find("respondent id", "serial", "respondent_id");
   const verbatim = find("verbatim");
+  const brands = find("brands", "marcas");
+  const reasons = find("reasons", "razones");
 
   return {
     ...(respondentId !== undefined ? { respondent_id: respondentId } : {}),
     ...(verbatim !== undefined ? { verbatim } : {}),
+    ...(brands !== undefined ? { brands } : {}),
+    ...(reasons !== undefined ? { reasons } : {}),
   };
 }

@@ -31,7 +31,7 @@ class RolesIn(BaseModel):
 
 
 class AssignmentSetIn(BaseModel):
-    project_ids: list[uuid.UUID]
+    study_ids: list[uuid.UUID]
 
 
 class ApproveAssignIn(RolesIn, AssignmentSetIn):
@@ -87,10 +87,10 @@ def list_users(
     rows = db.execute(text("""
         select u.id, u.email, u.name, u.account_status, u.presence_status, u.presence_changed_at, u.created_at,
                coalesce(array_agg(distinct ur.role_code) filter (where ur.role_code is not null), '{}') roles,
-               count(distinct a.project_id) filter (where a.status = 'active' and a.revoked_at is null) assignments_count,
-               coalesce(array_agg(distinct a.project_id) filter (
+               count(distinct a.study_id) filter (where a.status = 'active' and a.revoked_at is null) assignments_count,
+               coalesce(array_agg(distinct a.study_id) filter (
                  where a.status = 'active' and a.revoked_at is null
-               ), '{}') project_ids
+               ), '{}') study_ids
         from users u left join user_roles ur on ur.user_id = u.id
         left join assignments a on a.user_id = u.id
         where (:status is null or u.account_status = :status)
@@ -99,7 +99,7 @@ def list_users(
     """), {"q": q.strip() if q else None, "status": account_status}).mappings().all()
     return [{
         **dict(r), "id": str(r["id"]), "roles": list(r["roles"]),
-        "project_ids": [str(project_id) for project_id in r["project_ids"]],
+        "study_ids": [str(project_id) for project_id in r["study_ids"]],
     } for r in rows]
 
 
@@ -143,10 +143,10 @@ def replace_roles(user_id: uuid.UUID, payload: RolesIn, db: Session = Depends(ge
     return {"id": str(user_id), "roles": roles}
 
 
-def _replace_assignments(db: Session, target_id, project_ids: list[uuid.UUID], actor_id) -> list[uuid.UUID]:
-    """Sync active assignments to `project_ids`. Returns projects newly granted."""
-    unique_ids = list(dict.fromkeys(project_ids))
-    existing_count = db.execute(text("select count(*) from studios where id = any(:ids)"), {"ids": unique_ids}).scalar() if unique_ids else 0
+def _replace_assignments(db: Session, target_id, study_ids: list[uuid.UUID], actor_id) -> list[uuid.UUID]:
+    """Sync active assignments to `study_ids`. Returns projects newly granted."""
+    unique_ids = list(dict.fromkeys(study_ids))
+    existing_count = db.execute(text("select count(*) from studies where id = any(:ids)"), {"ids": unique_ids}).scalar() if unique_ids else 0
     if existing_count != len(unique_ids):
         raise HTTPException(400, "Uno o más proyectos no existen")
     already_active = set(db.execute(text("""
@@ -178,11 +178,11 @@ def _replace_assignments(db: Session, target_id, project_ids: list[uuid.UUID], a
     return newly_assigned
 
 
-def _notify_new_assignments(db: Session, target_id, project_ids: list[uuid.UUID], actor_id) -> None:
+def _notify_new_assignments(db: Session, target_id, study_ids: list[uuid.UUID], actor_id) -> None:
     """Same non-critical channel as POST /projects/{id}/assignments."""
-    if not project_ids or target_id == actor_id:
+    if not study_ids or target_id == actor_id:
         return
-    for project_id in project_ids:
+    for project_id in study_ids:
         try:
             emit(
                 db,
@@ -203,11 +203,11 @@ def _notify_new_assignments(db: Session, target_id, project_ids: list[uuid.UUID]
 def replace_assignments(user_id: uuid.UUID, payload: AssignmentSetIn, db: Session = Depends(get_db),
                         user: CurrentUser = Depends(current_user)):
     require_admin(db, user["id"])
-    newly = _replace_assignments(db, user_id, payload.project_ids, user["id"])
-    _log(db, user["id"], user_id, "assignments.replace", new_value={"project_ids": [str(v) for v in payload.project_ids]})
+    newly = _replace_assignments(db, user_id, payload.study_ids, user["id"])
+    _log(db, user["id"], user_id, "assignments.replace", new_value={"study_ids": [str(v) for v in payload.study_ids]})
     db.commit()
     _notify_new_assignments(db, user_id, newly, user["id"])
-    return {"id": str(user_id), "project_ids": [str(v) for v in payload.project_ids]}
+    return {"id": str(user_id), "study_ids": [str(v) for v in payload.study_ids]}
 
 
 @router.post("/users/{user_id}/approve-and-assign")
@@ -222,28 +222,28 @@ def approve_and_assign(user_id: uuid.UUID, payload: ApproveAssignIn, db: Session
     db.execute(text("delete from user_roles where user_id = :u"), {"u": user_id})
     for role in roles:
         db.execute(text("insert into user_roles (user_id, role_code) values (:u, :r)"), {"u": user_id, "r": role})
-    newly = _replace_assignments(db, user_id, payload.project_ids, user["id"])
+    newly = _replace_assignments(db, user_id, payload.study_ids, user["id"])
     db.execute(text("""
         update users set account_status = 'active', is_active = true,
           approved_by = :actor, approved_at = now() where id = :u
     """), {"actor": user["id"], "u": user_id})
     _log(db, user["id"], user_id, "approve_and_assign", new_value={
-        "roles": roles, "project_ids": [str(v) for v in payload.project_ids],
+        "roles": roles, "study_ids": [str(v) for v in payload.study_ids],
     })
     db.commit()
     _notify_new_assignments(db, user_id, newly, user["id"])
     return {"id": str(user_id), "account_status": "active", "roles": roles,
-            "project_ids": [str(v) for v in payload.project_ids]}
+            "study_ids": [str(v) for v in payload.study_ids]}
 
 
 @router.get("/assignments")
 def all_assignments(db: Session = Depends(get_db), user: CurrentUser = Depends(current_user)):
     require_admin(db, user["id"])
     rows = db.execute(text("""
-        select a.id, a.project_id, p.name project_name, a.user_id, u.email, u.name,
+        select a.id, a.study_id, p.name project_name, a.user_id, u.email, u.name,
                u.account_status, a.assigned_at,
                coalesce(array_agg(distinct ur.role_code) filter (where ur.role_code is not null), '{}') roles
-        from assignments a join studios p on p.id = a.project_id join users u on u.id = a.user_id
+        from assignments a join studies p on p.id = a.study_id join users u on u.id = a.user_id
         left join user_roles ur on ur.user_id = u.id
         where a.status = 'active' and a.revoked_at is null
         group by a.id, p.name, u.email, u.name, u.account_status order by p.name, u.name, u.email

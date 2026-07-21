@@ -31,6 +31,8 @@ import type {
   ProfileMatchResult,
   ProjectDetail,
   ProjectListItem,
+  ProyectoDetail,
+  ProyectoStudyItem,
   ResolutionQueue,
   ResolutionSummary,
   ResolveDecision,
@@ -217,9 +219,9 @@ export async function getAdminUsers(status?: string, q?: string): Promise<AdminU
   return request<AdminUser[]>(`/admin/users?${params}`);
 }
 
-export async function approveAndAssign(userId: string, roles: RoleCode[], projectIds: string[]): Promise<void> {
+export async function approveAndAssign(userId: string, roles: RoleCode[], studyIds: string[]): Promise<void> {
   await request(`/admin/users/${userId}/approve-and-assign`, {
-    method: "POST", headers: jsonHeaders, body: JSON.stringify({ roles, project_ids: projectIds }),
+    method: "POST", headers: jsonHeaders, body: JSON.stringify({ roles, study_ids: studyIds }),
   });
 }
 
@@ -235,26 +237,34 @@ export async function setPresence(status: PresenceStatus): Promise<{ status: Pre
   });
 }
 
+/* ── Proyectos ── */
+
+export async function getProyectoProjects(proyectoId: string): Promise<ProyectoStudyItem[]> {
+  return request<ProyectoStudyItem[]>(`/proyectos/${proyectoId}/projects`);
+}
+
 /* ── Projects ── */
 
 // Bare array, no pagination envelope — that's what the backend actually returns.
-export async function getProjects(): Promise<ProjectListItem[]> {
-  return request<ProjectListItem[]>("/projects");
+export async function getProjects(params?: { q?: string; analytic_target?: string; assigned_user_id?: string }): Promise<ProjectListItem[]> {
+  const qs = params ? "?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([_, v]) => v))).toString() : "";
+  return request<ProjectListItem[]>(`/projects${qs}`);
 }
 
 export async function createProject(
   externalCode: string,
-  name: string
-): Promise<{ id: string; external_code: string; name: string; proyecto_id: string | null; created_at: string }> {
+  name: string,
+  projectId?: string
+): Promise<{ id: string; external_code: string; name: string; project_id: string | null; created_at: string }> {
   return request("/projects", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ external_code: externalCode, name }),
+    body: JSON.stringify({ external_code: externalCode, name, project_id: projectId }),
   });
 }
 
-export async function getProject(projectId: string): Promise<ProjectDetail> {
-  return request<ProjectDetail>(`/projects/${projectId}`);
+export async function getProject(projectId: string): Promise<ProyectoDetail | ProjectDetail> {
+  return request<ProyectoDetail | ProjectDetail>(`/projects/${projectId}`);
 }
 
 // round-sequence-and-homologation (Task 1): siguiente round_number esperado
@@ -293,9 +303,26 @@ export interface CreateRoundInput {
   audit_percentage: number;
 }
 
+export interface UpdateRoundInput {
+  name?: string;
+  min_mentions_threshold?: number;
+  audit_percentage?: number;
+}
+
 export async function createRound(projectId: string, input: CreateRoundInput): Promise<Round> {
   return request<Round>(`/projects/${projectId}/rounds`, {
     method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input),
+  });
+}
+
+/** Actualiza campos de la ronda in-place (sin borrar/recrear).
+ *  threshold/audit solo se pueden editar antes de que haya verbatims
+ *  importados — el backend devuelve 409 con code "round_has_imports" si ya hay. */
+export async function updateRound(roundId: string, input: UpdateRoundInput): Promise<Round> {
+  return request<Round>(`/rounds/${roundId}`, {
+    method: "PATCH",
     headers: jsonHeaders,
     body: JSON.stringify(input),
   });
@@ -332,6 +359,14 @@ export async function getCodebookSources(
 export async function getRound(roundId: string): Promise<RoundStatus> {
   return request<RoundStatus>(`/rounds/${roundId}`);
 }
+
+/** Recupera los metadatos de un archivo ya subido sin re-subirlo.
+ *  Usado al reanudar el wizard: el archivo existe en el servidor pero
+ *  el cliente no tiene el objeto File en memoria. */
+export async function getUploadedFile(roundId: string, fileId: string): Promise<UploadedFile> {
+  return request<UploadedFile>(`/rounds/${roundId}/files/${fileId}`);
+}
+
 
 export async function uploadFile(roundId: string, file: File): Promise<UploadedFile> {
   const form = new FormData();

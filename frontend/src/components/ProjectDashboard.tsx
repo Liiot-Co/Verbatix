@@ -18,6 +18,14 @@ import { PRESENCE_CATALOG, type PresenceStatus } from "@/lib/presence";
 const PAGE_SIZE = 10;
 const RECENT_COUNT = 3;
 
+const ANALYTIC_OPTIONS = [
+  { value: "", label: "Todos" },
+  { value: "brands", label: "Marcas" },
+  { value: "reasons", label: "Razones" },
+  { value: "both", label: "Marcas y Razones" },
+  { value: "none", label: "Sin objetivo" },
+];
+
 const ICON_CLASSES = [
   "project-row-icon-1",
   "project-row-icon-2",
@@ -51,6 +59,7 @@ export default function ProjectDashboard() {
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [filterTarget, setFilterTarget] = useState("");
   const [page, setPage] = useState(1);
   const [presenceOpen, setPresenceOpen] = useState(false);
   const presenceStatus: PresenceStatus = user?.presence_status ?? "disponible";
@@ -72,7 +81,7 @@ export default function ProjectDashboard() {
 
   useEffect(() => {
     setPage(1);
-  }, [searchQuery]);
+  }, [searchQuery, filterTarget]);
 
   const sortedByRecent = useMemo(
     () => [...projects].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
@@ -83,13 +92,19 @@ export default function ProjectDashboard() {
 
   const filteredProjects = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    if (!q) return sortedByRecent;
-    return sortedByRecent.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.external_code.toLowerCase().includes(q)
-    );
-  }, [sortedByRecent, searchQuery]);
+    let result = sortedByRecent;
+    if (filterTarget) {
+      result = result.filter((p) => p.analytic_target === filterTarget);
+    }
+    if (q) {
+      result = result.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          (p.external_code || "").toLowerCase().includes(q)
+      );
+    }
+    return result;
+  }, [sortedByRecent, searchQuery, filterTarget]);
 
   const totalPages = Math.max(1, Math.ceil(filteredProjects.length / PAGE_SIZE));
   const paginatedProjects = filteredProjects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -175,17 +190,29 @@ export default function ProjectDashboard() {
           </div>
         </div>
 
-        <div className="relative w-full">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-p-text-faint pointer-events-none" />
-          <input
-            type="search"
-            placeholder="Buscar proyectos…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={handleSearchKeyDown}
-            className="input pl-9 text-sm rounded-xl"
-            aria-label="Buscar proyectos"
-          />
+        <div className="flex items-center gap-2 flex-wrap w-full">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-p-text-faint pointer-events-none" />
+            <input
+              type="search"
+              placeholder="Buscar proyectos…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              className="input pl-9 text-sm rounded-xl w-full"
+              aria-label="Buscar proyectos"
+            />
+          </div>
+          <select
+            value={filterTarget}
+            onChange={(e) => setFilterTarget(e.target.value)}
+            className="input text-sm rounded-xl py-2"
+            aria-label="Filtrar por objetivo analítico"
+          >
+            {ANALYTIC_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
         </div>
       </div>
 

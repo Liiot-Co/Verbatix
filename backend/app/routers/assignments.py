@@ -17,7 +17,7 @@ from app.services.notifications import emit
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/projects/{project_id}/assignments", tags=["assignments"])
+router = APIRouter(prefix="/api/v1/projects/{study_id}/assignments", tags=["assignments"])
 
 
 class AssignmentIn(BaseModel):
@@ -27,7 +27,7 @@ class AssignmentIn(BaseModel):
 
 @router.post("", status_code=201)
 def create_assignment(
-    project_id: uuid.UUID,
+    study_id: uuid.UUID,
     payload: AssignmentIn,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
@@ -39,17 +39,15 @@ def create_assignment(
     aid = uuid.uuid4()
     db.execute(
         text("""
-            insert into assignments (id, project_id, user_id, role_context, status, assigned_by)
-            values (:id, :p, :u, :ctx, 'active', :by)
-            on conflict (project_id, user_id) do update set
+            insert into assignments (id, study_id, user_id, role_context, status, assigned_by)
+            values (:id, :study_id, :u, :ctx, 'active', :by)
+            on conflict (study_id, user_id) do update set
               role_context = excluded.role_context, status = 'active', assigned_by = excluded.assigned_by,
               revoked_at = null, assigned_at = now()
         """),
-        {"id": aid, "p": project_id, "u": payload.user_id, "ctx": payload.role_context, "by": user["id"]},
+        {"id": aid, "study_id": study_id, "u": payload.user_id, "ctx": payload.role_context, "by": user["id"]},
     )
     db.commit()
-    # Es deliberadamente no-crítica: la asignación ya fue confirmada aunque el
-    # canal de notificaciones falle.
     if payload.user_id != user["id"]:
         try:
             emit(
@@ -57,7 +55,7 @@ def create_assignment(
                 notification_type="project_assigned",
                 title="Nuevo proyecto asignado",
                 body="Te asignaron a un proyecto. Ya puedes revisar su trabajo pendiente.",
-                related_entity_id=project_id,
+                related_entity_id=study_id,
                 user_ids=[payload.user_id],
                 sender_id=user["id"],
             )
@@ -65,16 +63,16 @@ def create_assignment(
         except Exception:
             db.rollback()
             logger.exception("No se pudo emitir la notificación de asignación")
-    return {"project_id": str(project_id), "user_id": str(payload.user_id), "role_context": payload.role_context}
+    return {"study_id": str(study_id), "user_id": str(payload.user_id), "role_context": payload.role_context}
 
 
 @router.get("")
 def list_assignments(
-    project_id: uuid.UUID,
+    study_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_project(db, project_id, user["id"])
+    require_project(db, study_id, user["id"])
     rows = db.execute(
         text("""
             select a.id, a.user_id, u.email, u.name, u.account_status,
@@ -83,11 +81,11 @@ def list_assignments(
             from assignments a
             join users u on u.id = a.user_id
             left join user_roles ur on ur.user_id = u.id
-            where a.project_id = :p and a.status = 'active' and a.revoked_at is null
+            where a.study_id = :study_id and a.status = 'active' and a.revoked_at is null
             group by a.id, u.email, u.name, u.account_status
             order by a.assigned_at desc
         """),
-        {"p": project_id},
+        {"study_id": study_id},
     ).mappings().all()
     return [
         {
@@ -107,7 +105,7 @@ def list_assignments(
 
 @router.delete("/{user_id}", status_code=204)
 def revoke_assignment(
-    project_id: uuid.UUID,
+    study_id: uuid.UUID,
     user_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
@@ -116,10 +114,10 @@ def revoke_assignment(
     updated = db.execute(
         text("""
             update assignments set status = 'reassigned', revoked_at = now()
-            where project_id = :p and user_id = :uid and status = 'active'
+            where study_id = :study_id and user_id = :uid and status = 'active'
             returning id
         """),
-        {"p": project_id, "uid": user_id},
+        {"study_id": study_id, "uid": user_id},
     ).scalar()
     if not updated:
         raise HTTPException(404, "Asignación no encontrada")

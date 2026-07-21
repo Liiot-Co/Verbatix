@@ -82,6 +82,8 @@ def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | Non
     cmap = column_map or {}
     resp_mapped = (cmap.get("respondent_id") or "").strip()
     verbatim_mapped = (cmap.get("verbatim") or "").strip()
+    brands_mapped = (cmap.get("brands") or "").strip()
+    reasons_mapped = (cmap.get("reasons") or "").strip()
 
     def _cells_lower(r) -> list[str]:
         return [str(c).strip().lower() for c in r if c is not None and str(c).strip()]
@@ -91,6 +93,10 @@ def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | Non
             return False
         cells = _cells_lower(r)
         if verbatim_mapped and verbatim_mapped.lower() in cells:
+            return True
+        if brands_mapped and brands_mapped.lower() in cells:
+            return True
+        if reasons_mapped and reasons_mapped.lower() in cells:
             return True
         if resp_mapped and resp_mapped.lower() in cells:
             return True
@@ -128,39 +134,57 @@ def parse_verbatims(content: bytes, sheet: str, column_map: dict[str, str] | Non
     i_realid = col("realid", "real id")
 
     i_q = col("question id")
-    # column_map.verbatim es explícito; si no viene, cae al sniffing actual.
-    if verbatim_mapped and verbatim_mapped.lower() in header:
-        i_txt = header.index(verbatim_mapped.lower())
-    else:
-        i_txt = col("verbatim")
-    if i_txt is None:
-        raise ValueError(f"La hoja '{sheet}' no tiene una columna 'Verbatim'")
+    
+    # We support multiple verbatim columns explicitly mapped (brands, reasons)
+    # or a single verbatim column (verbatim).
+    verbatims_cols = {}
+    if brands_mapped and brands_mapped.lower() in header:
+        verbatims_cols["brands"] = header.index(brands_mapped.lower())
+    if reasons_mapped and reasons_mapped.lower() in header:
+        verbatims_cols["reasons"] = header.index(reasons_mapped.lower())
+    
+    if not verbatims_cols:
+        # Fallback to single verbatim logic
+        if verbatim_mapped and verbatim_mapped.lower() in header:
+            i_txt = header.index(verbatim_mapped.lower())
+        else:
+            i_txt = col("verbatim")
+        if i_txt is None:
+            raise ValueError(f"La hoja '{sheet}' no tiene una columna 'Verbatim'")
+        verbatims_cols["verbatim"] = i_txt
 
     i_in = col("input id 1", "input id")
     i_out = col("output id 1", "output id")
 
     out = []
     for source_row_number, r in enumerate(rows[header_i + 1:], start=header_i + 2):
-        if not r or not r[i_txt]:
+        if not r:
             continue
         resp_val = r[i_resp] if i_resp < len(r) else None
         if resp_val is None or str(resp_val).strip() == "":
             continue
-        out.append({
-            "respondent_external_id": str(resp_val).strip(),
-            "realid": str(r[i_realid]).strip() if i_realid is not None and i_realid < len(r) and r[i_realid] else None,
-            "source_row_number": source_row_number,
-            # Sin Question ID (Excel mínimo: Respondent ID + Verbatim) usamos
-            # una clave estable; el wizard/ronda asigna Marcas o Razones.
-            "question_key": (
-                str(r[i_q]).strip()
-                if i_q is not None and i_q < len(r) and r[i_q] is not None and str(r[i_q]).strip()
-                else "verbatim"
-            ),
-            "original_text": str(r[i_txt]).strip(),
-            "input_code_number": int(r[i_in]) if i_in is not None and i_in < len(r) and isinstance(r[i_in], (int, float)) else None,
-            "truth_code_number": int(r[i_out]) if i_out is not None and i_out < len(r) and isinstance(r[i_out], (int, float)) else None,
-        })
+            
+        for q_key, i_txt in verbatims_cols.items():
+            if not r[i_txt]:
+                continue
+                
+            out.append({
+                "respondent_external_id": str(resp_val).strip(),
+                "realid": str(r[i_realid]).strip() if i_realid is not None and i_realid < len(r) and r[i_realid] else None,
+                "source_row_number": source_row_number,
+                # If explicit brands/reasons mapped, use that as question_key to auto-classify!
+                # If generic 'verbatim', try to use question id or fallback to 'verbatim'.
+                "question_key": (
+                    q_key if q_key in ("brands", "reasons") else (
+                        str(r[i_q]).strip()
+                        if i_q is not None and i_q < len(r) and r[i_q] is not None and str(r[i_q]).strip()
+                        else "verbatim"
+                    )
+                ),
+                "original_text": str(r[i_txt]).strip(),
+                "input_code_number": int(r[i_in]) if i_in is not None and i_in < len(r) and isinstance(r[i_in], (int, float)) else None,
+                "truth_code_number": int(r[i_out]) if i_out is not None and i_out < len(r) and isinstance(r[i_out], (int, float)) else None,
+            })
     return out
 
 

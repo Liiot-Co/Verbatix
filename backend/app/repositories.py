@@ -198,7 +198,7 @@ def project_supervisor_ids(db: Session, project_id: uuid.UUID) -> list[uuid.UUID
         text("""
             select distinct a.user_id
             from assignments a join user_roles ur on ur.user_id = a.user_id
-            where a.project_id = :project_id and a.status = 'active' and a.revoked_at is null
+            where a.study_id = :project_id and a.status = 'active' and a.revoked_at is null
               and ur.role_code = 'supervisor'
         """),
         {"project_id": project_id},
@@ -224,7 +224,7 @@ def create_codebook(
     categorías/rondas — una Ronda 2 puede heredar el mismo libro sin reprocesarlo."""
     cb_id = uuid.uuid4()
     version = db.execute(
-        text("select coalesce(max(version), 0) + 1 from codebooks where project_id = :project and coding_type = :ct"),
+        text("select coalesce(max(version), 0) + 1 from codebooks where study_id = :project and coding_type = :ct"),
         {"project": project_id, "ct": coding_type},
     ).scalar()
     db.execute(
@@ -871,7 +871,7 @@ def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str |
     if not question_key:
         return None
     direct = db.execute(
-        text("select id from questions where project_id = :project and question_key = :qk"),
+        text("select id from questions where study_id = :project and question_key = :qk"),
         {"project": project_id, "qk": question_key},
     ).scalar()
     if direct:
@@ -880,7 +880,7 @@ def _resolve_question_id(db: Session, project_id: uuid.UUID, question_key: str |
         text("""
             select q.id from questions q
             join question_aliases qa on qa.canonical_question_id = q.id
-            where q.project_id = :project and qa.alias_key = :qk
+            where q.study_id = :project and qa.alias_key = :qk
         """),
         {"project": project_id, "qk": question_key},
     ).scalar()
@@ -903,7 +903,7 @@ def classify_question(
     existing = db.execute(
         text("""
             select id, coding_type from questions
-             where project_id = :project and question_key = :qk
+             where study_id = :project and question_key = :qk
         """),
         {"project": project_id, "qk": question_key},
     ).mappings().first()
@@ -912,7 +912,7 @@ def classify_question(
     qid = uuid.uuid4()
     db.execute(
         text("""
-            insert into questions (id, project_id, coding_type, question_key)
+            insert into questions (id, study_id, coding_type, question_key)
             values (:id, :project, :ct, :qk)
         """),
         {
@@ -1027,7 +1027,7 @@ def insert_verbatims(
     for q in db.execute(
         text("""
             SELECT id, question_key, coding_type
-              FROM questions WHERE project_id = :project
+              FROM questions WHERE study_id = :project
         """),
         {"project": project_id},
     ).mappings().all():
@@ -1038,7 +1038,7 @@ def insert_verbatims(
             SELECT qa.alias_key, q.id, q.coding_type
             FROM question_aliases qa
             JOIN questions q ON q.id = qa.canonical_question_id
-            WHERE q.project_id = :project
+            WHERE q.study_id = :project
         """),
         {"project": project_id},
     ).mappings().all():
@@ -1483,7 +1483,7 @@ def next_round_number(db: Session, project_id: uuid.UUID) -> int:
     Task 1) — reutilizable por el wizard (para bloquear el input) y por la
     validación de secuencia en `POST /projects/{id}/rounds` (Task 2)."""
     current_max = db.execute(
-        text("select max(round_number) from rounds where project_id = :project"),
+        text("select max(round_number) from rounds where study_id = :project"),
         {"project": project_id},
     ).scalar()
     return (current_max or 0) + 1
@@ -1767,7 +1767,7 @@ def propagate_group_codes_to_pending(db: Session, subproject_id: uuid.UUID) -> i
 
 def _current_codebook_id(db: Session, project_id: uuid.UUID, coding_type: str) -> uuid.UUID | None:
     return db.execute(
-        text("select id from codebooks where project_id = :project and coding_type = :ct order by version desc limit 1"),
+        text("select id from codebooks where study_id = :project and coding_type = :ct order by version desc limit 1"),
         {"project": project_id, "ct": coding_type},
     ).scalar()
 
@@ -3177,7 +3177,7 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
         text("""
             select r.*, p.name as study_name, p.external_code as project_external_code
             from rounds r
-            join studios p on p.id = r.project_id
+            join studies p on p.id = r.study_id
             where r.id = :id
         """),
         {"id": round_id},

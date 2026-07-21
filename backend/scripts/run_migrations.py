@@ -20,7 +20,7 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
 # backend hay que detectar lo ya materializado y solo registrar el ledger.
 _ALREADY_PRESENT = {
     "000_local_auth_stub.sql": "select to_regclass('auth.users')",
-    "001_schema_v8.sql": "select to_regclass('public.users')",
+    "001_schema_v8.sql": "select to_regclass('public.assignments')",
     "002_local_auth_rbac.sql": (
         "select 1 from information_schema.columns "
         "where table_schema = 'public' and table_name = 'users' "
@@ -75,6 +75,17 @@ _ALREADY_PRESENT = {
         "where conname = 'verbatim_codes_source_check' "
         "and pg_get_constraintdef(oid) like '%llm_suggestion%'"
     ),
+    "010_engine_rule_source.sql": (
+        "select 1 from pg_constraint "
+        "where conname = 'verbatim_codes_source_check' "
+        "and pg_get_constraintdef(oid) like '%engine_rule%'"
+    ),
+    "011_rename_projects_studios.sql": (
+        "select to_regclass('public.studios') is not null or to_regclass('public.studies') is not null"
+    ),
+    "012_fk_rename_studies.sql": (
+        "select to_regclass('public.studies') is not null"
+    ),
 }
 
 
@@ -82,7 +93,11 @@ def _migration_already_materialized(conn, filename: str) -> bool:
     probe = _ALREADY_PRESENT.get(filename)
     if not probe:
         return False
-    return conn.execute(text(probe)).scalar() is not None
+    # If the query returns a boolean, just return it. Otherwise check if not None.
+    val = conn.execute(text(probe)).scalar()
+    if isinstance(val, bool):
+        return val
+    return val is not None
 
 
 def run_migrations():
@@ -113,10 +128,20 @@ def run_migrations():
                 text("SELECT 1 FROM schema_migrations WHERE version = :version"),
                 {"version": file},
             )
-            if result.scalar():
-                continue
+            in_ledger = result.scalar() is not None
 
-            if _migration_already_materialized(conn, file):
+            if in_ledger:
+                if _migration_already_materialized(conn, file):
+                    continue
+                conn.execute(
+                    text("DELETE FROM schema_migrations WHERE version = :version"),
+                    {"version": file},
+                )
+                logger.warning(
+                    f"Ledger has {file} as applied but tables are missing — re-applying"
+                )
+
+            if not in_ledger and _migration_already_materialized(conn, file):
                 conn.execute(
                     text("INSERT INTO schema_migrations (version) VALUES (:version);"),
                     {"version": file},
