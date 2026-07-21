@@ -321,6 +321,7 @@ export interface ProfileCandidateFlag {
   status: "pending" | "approved_keep" | "approved_remove" | "edited" | "resolved";
   serial: string | null;
   realid: string | null;
+  coding_type?: "brands" | "reasons" | null;
 }
 
 export interface ProfileReviewSummary {
@@ -329,6 +330,7 @@ export interface ProfileReviewSummary {
   arrived: number;
   extra: number;
   summary?: string;
+  mode?: "combined" | "split" | null;
 }
 
 export interface LoadReviewState {
@@ -348,11 +350,13 @@ export interface ProfileMatchResult {
   profile_candidates: ProfileCandidateFlag[];
   has_profile: boolean;
   profile_file_id: string | null;
+  mode?: "combined" | "split" | null;
   expected: number;
   arrived: number;
   extra: number;
   summary?: string;
   pending_flags: number;
+  processing?: { status: "queued" | "blocked_on_review" | "blocked_on_setup" };
 }
 
 export interface ImportResult {
@@ -366,7 +370,13 @@ export interface ImportResult {
   // minutes, so the response doesn't wait for it. Poll GET /rounds/{id} for
   // status: 'processing' (still working) -> 'preliminary_ready' (done).
   pending_questions: string[];
-  processing: { status: "queued" | "blocked_on_classification" | "blocked_on_review" };
+  processing: {
+    status:
+      | "queued"
+      | "blocked_on_classification"
+      | "blocked_on_review"
+      | "blocked_on_setup";
+  };
   warnings: string[];
   // REQ-03: presente cuando la ronda ya tenía otra carga validada.
   is_additional_load: boolean;
@@ -380,12 +390,24 @@ export interface ImportResult {
   round_status: string;
 }
 
-export interface RoundProfileSummary {
+export interface RoundProfileItem {
   profile_file_id: string;
   original_filename: string;
   total_rows: number | null;
   expected_respondents: number;
   created_at: string | null;
+  coding_type: "brands" | "reasons" | null;
+}
+
+export interface RoundProfileSummary {
+  profile_file_id: string | null;
+  original_filename: string | null;
+  total_rows: number | null;
+  expected_respondents: number;
+  created_at: string | null;
+  mode?: "combined" | "split";
+  coding_type?: "brands" | "reasons" | null;
+  profiles?: RoundProfileItem[];
 }
 
 // GET /rounds/{id}/loads — las cargas de verbatims de la ronda (REQ-03).

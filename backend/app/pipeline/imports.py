@@ -276,6 +276,7 @@ def get_load_review(db: Session, round_id: uuid.UUID, file_id: uuid.UUID) -> dic
                 "status": row["status"],
                 "serial": row["serial"] or detail.get("serial"),
                 "realid": row["realid"] or detail.get("realid"),
+                "coding_type": detail.get("coding_type"),
             })
 
     # Los avisos de Serial no se persisten: se recomputan con la misma consulta.

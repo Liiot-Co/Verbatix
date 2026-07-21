@@ -388,6 +388,8 @@ export interface ImportSettings {
   // REQ-04: máximo de la ronda + decisión si hay overflow.
   expectedMaxMentions?: number | null | undefined;
   mentionsDecision?: "process_all" | "limit_to_expected" | null | undefined;
+  // REQ-05: diferir el motor hasta cruce/resolución de perfil.
+  deferProcessing?: boolean | undefined;
 }
 
 export async function previewFields(
@@ -427,6 +429,7 @@ export async function importFile(
       single_code_by_type: settings.singleCodeByType ?? null,
       expected_max_mentions: settings.expectedMaxMentions ?? null,
       mentions_decision: settings.mentionsDecision ?? null,
+      defer_processing: settings.deferProcessing ?? false,
     }),
   });
 }
@@ -507,17 +510,21 @@ export async function resolveAllProfileForFile(
 export async function uploadRoundProfile(
   roundId: string,
   file: File,
-  sheet?: string
+  opts?: { sheet?: string; codingType?: "brands" | "reasons" | null }
 ): Promise<{
   profile_file_id: string;
   original_filename: string;
   total_rows: number;
   expected_respondents: number;
+  coding_type: "brands" | "reasons" | null;
   sheet: string;
 }> {
   const form = new FormData();
   form.append("file", file);
-  const qs = sheet ? `?sheet=${encodeURIComponent(sheet)}` : "";
+  const params = new URLSearchParams();
+  if (opts?.sheet) params.set("sheet", opts.sheet);
+  if (opts?.codingType) params.set("coding_type", opts.codingType);
+  const qs = params.toString() ? `?${params.toString()}` : "";
   return request(`/rounds/${roundId}/profile${qs}`, { method: "POST", body: form });
 }
 

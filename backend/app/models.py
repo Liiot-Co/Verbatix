@@ -517,7 +517,7 @@ class ImportReviewFlag(Base):
 
 
 class ProfileFile(Base):
-    """REQ-05: archivo de perfil pactado (solo esquema en v9)."""
+    """REQ-05: archivo de perfil pactado (combinado o por coding_type)."""
 
     __tablename__ = "profile_files"
 
@@ -527,6 +527,8 @@ class ProfileFile(Base):
     storage_path = Column(String, nullable=True)
     total_rows = Column(Integer, nullable=True)
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    # NULL = Excel combinado; 'brands' | 'reasons' = perfil acotado a ese tipo.
+    coding_type = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
 
 

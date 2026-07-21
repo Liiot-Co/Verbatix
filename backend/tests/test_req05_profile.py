@@ -112,6 +112,30 @@ class FakeSession:
             self.profile_files[params["id"]] = dict(params)
             return FakeResult()
 
+        if "select coding_type from profile_files" in sql:
+            pf = self.profile_files.get(params["id"])
+            return FakeResult(rows=[{"coding_type": pf.get("ct")}] if pf else [])
+
+        if (
+            "from profile_entries" in sql
+            and "select respondent_external_id, realid" in sql
+        ):
+            pid = params.get("file") or params.get("id")
+            rows = [
+                {
+                    "respondent_external_id": e["respondent_external_id"],
+                    "realid": e.get("realid"),
+                }
+                for e in self.profile_entries
+                if e["profile_file_id"] == pid
+            ]
+            return FakeResult(rows=rows)
+
+        if "select count(*) from profile_entries" in sql:
+            pid = params.get("file") or params.get("id")
+            n = sum(1 for e in self.profile_entries if e["profile_file_id"] == pid)
+            return FakeResult(scalar=n)
+
         if "insert into profile_entries" in sql:
             quotas = params.get("quotas")
             if isinstance(quotas, str):
@@ -165,6 +189,55 @@ class FakeSession:
             ]
             return FakeResult(rows=rows)
 
+        if "select distinct r.id" in sql or ("from respondents r" in sql and "join verbatims" in sql):
+            ct = params.get("ct")
+            rows = []
+            for r in self.respondents.values():
+                if r["imported_file_id"] != params["file"] or r["round_id"] != params["round"]:
+                    continue
+                has = any(
+                    v.get("respondent_id") == r["id"]
+                    and v.get("coding_type", ct) == ct
+                    for v in self.verbatims
+                )
+                if has or not any(v.get("respondent_id") == r["id"] for v in self.verbatims):
+                    # Si hay verbatims tipados, filtrar; si el fake no tipó, incluir
+                    if any(v.get("respondent_id") == r["id"] and "coding_type" in v for v in self.verbatims):
+                        if not has:
+                            continue
+                    rows.append({
+                        "id": r["id"],
+                        "respondent_external_id": r["respondent_external_id"],
+                        "realid": r["realid"],
+                        "profile_status": r["profile_status"],
+                    })
+            return FakeResult(rows=rows)
+
+        if "select id from subprojects" in sql:
+            sp = getattr(self, "subprojects", {}).get(params.get("ct"))
+            return FakeResult(scalar=sp)
+
+        if "from import_review_flags" in sql and "detail->>'coding_type'" in sql:
+            for f in self.flags.values():
+                if (
+                    f["imported_file_id"] == params.get("file")
+                    and f["respondent_id"] == params.get("resp")
+                    and f["flag_type"] == "not_in_profile"
+                    and (f.get("detail") or {}).get("coding_type") == params.get("ct")
+                ):
+                    return FakeResult(rows=[{"id": f["id"], "status": f["status"], "detail": f["detail"]}])
+            return FakeResult(rows=[])
+
+        if "from import_review_flags" in sql and "select id, status, detail" in sql:
+            for f in self.flags.values():
+                if (
+                    f["imported_file_id"] == params.get("file")
+                    and f["respondent_id"] == params.get("resp")
+                    and f["flag_type"] == "not_in_profile"
+                ):
+                    return FakeResult(rows=[{"id": f["id"], "status": f["status"], "detail": f["detail"]}])
+            return FakeResult(rows=[])
+
         if "update respondents set profile_status" in sql:
             if "id = any(:ids)" in sql or "id = any(:ids)" in sql.replace(" ", ""):
                 ids = params.get("ids") or []
@@ -193,6 +266,7 @@ class FakeSession:
                             "id": f["id"],
                             "respondent_id": f["respondent_id"],
                             "imported_file_id": f["imported_file_id"],
+                            "detail": f.get("detail"),
                             "round_id": ROUND_ID,
                         })
                 return FakeResult(rows=rows)
@@ -296,15 +370,24 @@ class FakeSession:
         if "update import_review_flags set detail" in sql:
             return FakeResult()
 
-        if "update verbatims set mention_group_id = null" in sql:
+        if "update verbatims set mention_group_id = null" in sql or "update verbatims v" in sql:
             if "respondent_id = any(:resps)" in sql:
                 resps = set(params.get("resps") or [])
+                sp = params.get("sp")
+                ct = params.get("ct")
                 for v in self.verbatims:
-                    if v["respondent_id"] in resps and v["imported_file_id"] == params["file"]:
-                        v["mention_group_id"] = None
+                    if v["respondent_id"] not in resps:
+                        continue
+                    if v["imported_file_id"] != params["file"]:
+                        continue
+                    if sp is not None and v.get("subproject_id") not in (None, sp):
+                        continue
+                    if ct is not None and v.get("coding_type") not in (None, ct):
+                        continue
+                    v["mention_group_id"] = None
                 return FakeResult(rowcount=len(resps))
             for v in self.verbatims:
-                if v["respondent_id"] == params["resp"] and v["imported_file_id"] == params["file"]:
+                if v["respondent_id"] == params.get("resp") and v["imported_file_id"] == params["file"]:
                     v["mention_group_id"] = None
             return FakeResult(rowcount=1)
 
@@ -329,12 +412,26 @@ class FakeSession:
 # ── parse ──
 
 
-def test_parse_profile_requires_respondent_id():
+def test_parse_profile_allows_realid_only():
     content = _make_profile_xlsx(
-        [{"realid": "R1"}], missing_serial=True,
+        [{"realid": "R1"}, {"realid": "R2"}], missing_serial=True,
     )
+    sheet, entries = parse_profile_rows(content)
+    assert sheet == "Perfil"
+    assert len(entries) == 2
+    assert entries[0]["respondent_external_id"] is None
+    assert entries[0]["realid"] == "R1"
+
+
+def test_parse_profile_requires_serial_or_realid():
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Sexo", "Edad"])
+    ws.append(["M", 30])
+    buf = io.BytesIO()
+    wb.save(buf)
     with pytest.raises(ProfileFormatError, match="Respondent ID"):
-        parse_profile_rows(content)
+        parse_profile_rows(buf.getvalue())
 
 
 def test_parse_profile_keeps_realid_and_quotas_as_context():
@@ -379,9 +476,8 @@ def test_all_serials_in_profile_zero_candidates():
     assert all(r["profile_status"] == "matched" for r in db.respondents.values())
 
 
-def test_extra_serial_is_candidate_even_if_realid_would_match():
-    """Cruce por Respondent ID, no por realid: mismo realid pero Serial distinto
-    → candidato a exclusión igual."""
+def test_match_by_realid_union_when_serial_differs():
+    """Unión Serial|realid: mismo realid en perfil → matched aunque Serial distinto."""
     db = FakeSession()
     content = _make_profile_xlsx([
         {"serial": "10", "realid": "SAME-PERSON"},
@@ -391,8 +487,29 @@ def test_extra_serial_is_candidate_even_if_realid_would_match():
         db, round_id=ROUND_ID, original_filename="perfil.xlsx",
         storage_path=None, entries=entries, uploaded_by=USER_ID,
     )
-    # Data trae Serial 99 con el mismo realid del perfil — NO debe calzar.
     rid = db.add_respondent("99", "SAME-PERSON")
+
+    result = match_file_against_profile(
+        db, round_id=ROUND_ID, imported_file_id=FILE_ID,
+        profile_file_id=uuid.UUID(saved["profile_file_id"]),
+    )
+    assert result["extra"] == 0
+    assert result["candidates"] == []
+    assert db.respondents[rid]["profile_status"] == "matched"
+
+
+def test_extra_serial_without_realid_overlap_is_candidate():
+    """Serial distinto y realid distinto → candidato."""
+    db = FakeSession()
+    content = _make_profile_xlsx([
+        {"serial": "10", "realid": "PERSON-A"},
+    ])
+    _, entries = parse_profile_rows(content)
+    saved = save_profile_file(
+        db, round_id=ROUND_ID, original_filename="perfil.xlsx",
+        storage_path=None, entries=entries, uploaded_by=USER_ID,
+    )
+    rid = db.add_respondent("99", "PERSON-B")
 
     result = match_file_against_profile(
         db, round_id=ROUND_ID, imported_file_id=FILE_ID,
@@ -403,9 +520,47 @@ def test_extra_serial_is_candidate_even_if_realid_would_match():
     assert result["extra"] == 1
     assert len(result["candidates"]) == 1
     assert result["candidates"][0]["serial"] == "99"
-    assert result["candidates"][0]["realid"] == "SAME-PERSON"
     assert db.respondents[rid]["profile_status"] == "not_in_profile"
     assert any(f["flag_type"] == "not_in_profile" for f in db.flags.values())
+
+
+def test_typed_remove_only_unlinks_that_coding_type():
+    db = FakeSession()
+    brands_sp = uuid.uuid4()
+    reasons_sp = uuid.uuid4()
+    db.subprojects = {"brands": brands_sp, "reasons": reasons_sp}
+    content = _make_profile_xlsx([{"serial": "1", "realid": "A"}])
+    _, entries = parse_profile_rows(content)
+    saved = save_profile_file(
+        db, round_id=ROUND_ID, original_filename="perfil-marcas.xlsx",
+        storage_path=None, entries=entries, uploaded_by=USER_ID,
+        coding_type="brands",
+    )
+    rid = db.add_respondent("99", "X")
+    db.verbatims.append({
+        "respondent_id": rid, "imported_file_id": FILE_ID,
+        "mention_group_id": uuid.uuid4(), "text": "marca",
+        "coding_type": "brands", "subproject_id": brands_sp,
+    })
+    db.verbatims.append({
+        "respondent_id": rid, "imported_file_id": FILE_ID,
+        "mention_group_id": uuid.uuid4(), "text": "razon",
+        "coding_type": "reasons", "subproject_id": reasons_sp,
+    })
+    match_file_against_profile(
+        db, round_id=ROUND_ID, imported_file_id=FILE_ID,
+        profile_file_id=uuid.UUID(saved["profile_file_id"]),
+    )
+    flag_id = next(iter(db.flags))
+    assert db.flags[flag_id]["detail"]["coding_type"] == "brands"
+
+    result = resolve_profile_flag(db, flag_id, "remove", user_id=USER_ID)
+    assert result["status"] == "approved_remove"
+    assert db.respondents[rid]["profile_status"] != "excluded_confirmed"
+    brands_v = next(v for v in db.verbatims if v["coding_type"] == "brands")
+    reasons_v = next(v for v in db.verbatims if v["coding_type"] == "reasons")
+    assert brands_v["mention_group_id"] is None
+    assert reasons_v["mention_group_id"] is not None
 
 
 def test_approve_exclusion_marks_excluded_without_deleting():

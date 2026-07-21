@@ -916,6 +916,9 @@ class ImportIn(BaseModel):
     # Uno ya existente conserva su config original.
     min_mentions_threshold: int | None = None
     audit_percentage: float | None = None
+    # REQ-05: true cuando el analista eligió "continuar con perfil" — no encolar
+    # el motor hasta profile-match / resolución de flags.
+    defer_processing: bool = False
 
 
 class CatalogFileIn(BaseModel):
@@ -1205,7 +1208,14 @@ def import_file(
     # confirma los campos seleccionados — por eso pending_flags es 0 recién
     # importado (aún no hay flags que generar).
     pending_flags = load_review.count_pending_flags(db, file_id)
-    snapshot_status = "blocked" if pending_questions or pending_flags else "ready"
+    # defer_processing: el wizard va a cruzar perfil después; snapshot blocked
+    # hasta que profile-match / resolve dispare el motor.
+    wait_for_profile = bool(payload.defer_processing)
+    snapshot_status = (
+        "blocked"
+        if pending_questions or pending_flags or wait_for_profile
+        else "ready"
+    )
     persist_dataset_snapshot(
         db,
         file_id,
@@ -1221,7 +1231,7 @@ def import_file(
     db.commit()
     if pending_questions:
         processing_status = "blocked_on_classification"
-    elif pending_flags:
+    elif pending_flags or wait_for_profile:
         processing_status = "blocked_on_review"
     elif round_setup_incomplete(db, round_id):
         # round-sequence-and-homologation (Task 6): la ronda quedó con
@@ -1255,13 +1265,19 @@ def upload_profile(
     round_id: uuid.UUID,
     file: UploadFile = File(...),
     sheet: str | None = Query(None),
+    coding_type: str | None = Query(
+        None,
+        description="null = Excel único; brands|reasons = perfil por tipo",
+    ),
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """REQ-05: sube el Excel de perfil pactado (opcional). Cruza por Respondent ID
-    al importar data; sin perfil la ronda funciona igual que antes."""
+    """REQ-05: sube el Excel de perfil pactado (opcional). Cruza por Serial
+    o realid; sin perfil la ronda funciona igual que antes."""
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
+    if coding_type is not None and coding_type not in CODING_TYPES:
+        raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
     content = file.file.read()
     from app.pipeline import profile as profile_mod
     try:
@@ -1279,6 +1295,7 @@ def upload_profile(
         storage_path=f"uploads/{path}",
         entries=entries,
         uploaded_by=user["id"],
+        coding_type=coding_type,
     )
     # Si ya hay encuestados importados, re-cruza contra el perfil nuevo.
     rematch = []
@@ -1311,12 +1328,9 @@ def profile_match(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """REQ-03 + REQ-05: una sola pasada sobre Respondent ID — duplicados por
-    realid contra cargas previas y cruce contra el perfil pactado — sobre una
-    carga ya importada. Se dispara desde el wizard después de que el analista
-    confirma los campos seleccionados (ya no corre dentro de POST .../import).
-    Con "continuar sin perfil" el analista puede volver a llamar este endpoint
-    después para revisar duplicados igual."""
+    """REQ-03 + REQ-05: duplicados por realid (cargas previas) y cruce de perfil
+    por Serial o realid — sobre una carga ya importada. Se dispara desde el
+    wizard (no dentro de POST .../import). Sin perfil solo revisa duplicados."""
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
 
@@ -1342,17 +1356,28 @@ def profile_match(
     db.commit()
 
     full_review = load_review.get_load_review(db, round_id, file_id)
+    pending_flags = full_review["pending_flags"]
+    # Si el import diferió el motor (perfil) y ya no hay flags, encolar ahora.
+    processing_status = _maybe_queue_after_review(
+        db,
+        round_id,
+        pending_flags,
+        already_resolved=False,
+        file_id=file_id,
+    )
     return {
         "duplicates": full_review["duplicates"] if is_additional_load else duplicates,
         "serial_collisions": serial_collisions,
         "profile_candidates": full_review["profile_candidates"],
         "has_profile": profile_review.get("has_profile", False),
         "profile_file_id": profile_review.get("profile_file_id"),
+        "mode": profile_review.get("mode"),
         "expected": profile_review.get("expected", 0),
         "arrived": profile_review.get("arrived", 0),
         "extra": profile_review.get("extra", 0),
         "summary": profile_review.get("summary"),
-        "pending_flags": load_review.count_pending_flags(db, file_id),
+        "pending_flags": pending_flags,
+        "processing": {"status": processing_status},
     }
 
 
@@ -1400,6 +1425,7 @@ def resolve_all_profile_for_file(
         round_id,
         result["pending_flags"],
         already_resolved=bool(result.get("already_resolved")),
+        file_id=file_id,
     )
     return {**result, "processing": {"status": processing_status}}
 

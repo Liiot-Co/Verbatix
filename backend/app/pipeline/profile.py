@@ -1,9 +1,10 @@
 """REQ-05 — Perfil de referencia pactado vs data a procesar.
 
-Cruza por Respondent ID (`respondent_external_id` / Serial), NUNCA por `realid`
-(eso es REQ-03/REQ-06: duplicados entre cargas). Los que están en la data pero
-no en el perfil son candidatos a exclusión; el analista aprueba o mantiene —
-nunca se borra el registro físicamente.
+Cruce por unión: Respondent ID (Serial) **o** realid presentes en el Excel
+de perfil. Modos:
+  - combinado (coding_type NULL): un Excel; exclusión global del encuestado
+  - por tipo (brands|reasons): Excel acotado; exclusión solo desengancha
+    verbatims de ese subproyecto
 """
 from __future__ import annotations
 
@@ -16,14 +17,13 @@ from sqlalchemy.orm import Session
 from app.pipeline.ingest import excel
 from app.repositories import log_action
 
-# Columnas conocidas del Excel de perfil (case-insensitive). El resto va a quotas.
 _SERIAL_ALIASES = ("respondent id", "respondent_id", "serial")
 _REALID_ALIASES = ("realid", "real id")
 _COMPLETION_ALIASES = ("completion indicator", "completion_indicator", "completion")
 
 
 class ProfileFormatError(ValueError):
-    """El Excel de perfil no trae la columna Respondent ID (u otra requerida)."""
+    """El Excel de perfil no trae Respondent ID ni realid (u otra requerida)."""
 
 
 def _norm_header(name: object) -> str:
@@ -49,10 +49,10 @@ def parse_profile_rows(
     content: bytes,
     sheet: str | None = None,
 ) -> tuple[str, list[dict]]:
-    """Lee el Excel de perfil con el importador genérico (`excel.read_rows`).
+    """Lee el Excel de perfil. Requiere Respondent ID y/o realid.
 
-    Devuelve (sheet_usada, filas) donde cada fila tiene:
-      respondent_external_id, realid, completion_indicator, quotas (dict)
+    Devuelve (sheet_usada, filas) con:
+      respondent_external_id, realid, completion_indicator, quotas
     """
     sheets = excel.detect_sheets(content)
     if not sheets:
@@ -64,19 +64,20 @@ def parse_profile_rows(
         raise ProfileFormatError(f"Hoja no encontrada: {sheet_name}") from exc
 
     serial_col = _find_col(columns, _SERIAL_ALIASES)
-    if not serial_col:
-        raise ProfileFormatError(
-            "El perfil debe traer la columna 'Respondent ID' "
-            "(también acepta 'Serial'). No se adivina el mapeo en silencio."
-        )
     realid_col = _find_col(columns, _REALID_ALIASES)
+    if not serial_col and not realid_col:
+        raise ProfileFormatError(
+            "El perfil debe traer 'Respondent ID' (o Serial) y/o 'realid'. "
+            "No se adivina el mapeo en silencio."
+        )
     completion_col = _find_col(columns, _COMPLETION_ALIASES)
     known = {c for c in (serial_col, realid_col, completion_col) if c}
 
     parsed: list[dict] = []
     for row in rows:
-        serial = _cell_str(row.get(serial_col))
-        if not serial:
+        serial = _cell_str(row.get(serial_col)) if serial_col else None
+        realid = _cell_str(row.get(realid_col)) if realid_col else None
+        if not serial and not realid:
             continue
         quotas: dict[str, str] = {}
         for k, v in row.items():
@@ -87,7 +88,7 @@ def parse_profile_rows(
             quotas[str(k)] = str(v).strip()
         parsed.append({
             "respondent_external_id": serial,
-            "realid": _cell_str(row.get(realid_col)) if realid_col else None,
+            "realid": realid,
             "completion_indicator": (
                 _cell_str(row.get(completion_col)) if completion_col else None
             ),
@@ -95,12 +96,13 @@ def parse_profile_rows(
         })
     if not parsed:
         raise ProfileFormatError(
-            "El perfil no tiene filas con Respondent ID válido"
+            "El perfil no tiene filas con Respondent ID o realid válido"
         )
     return sheet_name, parsed
 
 
 def get_latest_profile_file_id(db: Session, round_id: uuid.UUID) -> uuid.UUID | None:
+    """Perfil más reciente de la ronda (cualquier coding_type)."""
     return db.execute(
         text("""
             select id from profile_files
@@ -112,6 +114,42 @@ def get_latest_profile_file_id(db: Session, round_id: uuid.UUID) -> uuid.UUID | 
     ).scalar()
 
 
+def resolve_profile_targets(db: Session, round_id: uuid.UUID) -> dict:
+    """Activos según el modo del upload más reciente.
+
+    Returns:
+      mode: None | 'combined' | 'split'
+      combined_id: uuid | None
+      by_type: {brands?: uuid, reasons?: uuid}
+    """
+    rows = db.execute(
+        text("""
+            select id, coding_type, created_at
+              from profile_files
+             where round_id = :round
+             order by created_at desc
+        """),
+        {"round": round_id},
+    ).mappings().all()
+    if not rows:
+        return {"mode": None, "combined_id": None, "by_type": {}}
+
+    latest = rows[0]
+    if latest["coding_type"] is None:
+        return {
+            "mode": "combined",
+            "combined_id": latest["id"],
+            "by_type": {},
+        }
+
+    by_type: dict[str, uuid.UUID] = {}
+    for row in rows:
+        ct = row["coding_type"]
+        if ct in ("brands", "reasons") and ct not in by_type:
+            by_type[ct] = row["id"]
+    return {"mode": "split", "combined_id": None, "by_type": by_type}
+
+
 def save_profile_file(
     db: Session,
     *,
@@ -120,15 +158,19 @@ def save_profile_file(
     storage_path: str | None,
     entries: list[dict],
     uploaded_by,
+    coding_type: str | None = None,
 ) -> dict:
-    """Persiste profile_files + profile_entries. No borra perfiles previos
-    (historial); el cruce usa siempre el más reciente."""
+    """Persiste profile_files + profile_entries. No borra perfiles previos."""
+    if coding_type is not None and coding_type not in ("brands", "reasons"):
+        raise ValueError(f"coding_type inválido: {coding_type!r}")
+
     profile_id = uuid.uuid4()
     db.execute(
         text("""
             insert into profile_files
-              (id, round_id, original_filename, storage_path, total_rows, uploaded_by)
-            values (:id, :round, :name, :path, :rows, :user)
+              (id, round_id, original_filename, storage_path, total_rows,
+               uploaded_by, coding_type)
+            values (:id, :round, :name, :path, :rows, :user, :ct)
         """),
         {
             "id": profile_id,
@@ -137,6 +179,7 @@ def save_profile_file(
             "path": storage_path,
             "rows": len(entries),
             "user": uploaded_by,
+            "ct": coding_type,
         },
     )
     for entry in entries:
@@ -150,79 +193,137 @@ def save_profile_file(
             {
                 "id": uuid.uuid4(),
                 "file": profile_id,
-                "serial": entry["respondent_external_id"],
+                "serial": entry.get("respondent_external_id"),
                 "realid": entry.get("realid"),
                 "comp": entry.get("completion_indicator"),
                 "quotas": json.dumps(entry.get("quotas")) if entry.get("quotas") else None,
             },
         )
+    serials = {
+        e["respondent_external_id"] for e in entries if e.get("respondent_external_id")
+    }
     return {
         "profile_file_id": str(profile_id),
         "original_filename": original_filename,
         "total_rows": len(entries),
-        "expected_respondents": len({e["respondent_external_id"] for e in entries}),
+        "expected_respondents": len(entries),
+        "coding_type": coding_type,
+        "match_keys": len(serials | {e["realid"] for e in entries if e.get("realid")}),
     }
 
 
-def profile_serial_set(db: Session, profile_file_id: uuid.UUID) -> set[str]:
+def profile_id_sets(db: Session, profile_file_id: uuid.UUID) -> tuple[set[str], set[str]]:
     rows = db.execute(
         text("""
-            select respondent_external_id from profile_entries
+            select respondent_external_id, realid from profile_entries
              where profile_file_id = :file
-               and respondent_external_id is not null
-               and respondent_external_id <> ''
         """),
         {"file": profile_file_id},
-    ).scalars().all()
-    return {str(s).strip() for s in rows if s}
+    ).mappings().all()
+    serials = {
+        str(r["respondent_external_id"]).strip()
+        for r in rows
+        if r["respondent_external_id"] and str(r["respondent_external_id"]).strip()
+    }
+    realids = {
+        str(r["realid"]).strip()
+        for r in rows
+        if r["realid"] and str(r["realid"]).strip()
+    }
+    return serials, realids
 
 
-def match_file_against_profile(
+def profile_serial_set(db: Session, profile_file_id: uuid.UUID) -> set[str]:
+    """Compat: solo serials (tests / callers antiguos)."""
+    serials, _ = profile_id_sets(db, profile_file_id)
+    return serials
+
+
+def _respondents_for_file(
     db: Session,
     *,
     round_id: uuid.UUID,
     imported_file_id: uuid.UUID,
-    profile_file_id: uuid.UUID | None = None,
-) -> dict:
-    """Cruza encuestados de UNA carga por Respondent ID vs el perfil.
+    coding_type: str | None = None,
+) -> list:
+    """Encuestados de la carga. Si coding_type, solo con verbatims de ese tipo."""
+    if coding_type is None:
+        return list(db.execute(
+            text("""
+                select id, respondent_external_id, realid, profile_status
+                  from respondents
+                 where round_id = :round
+                   and imported_file_id = :file
+            """),
+            {"round": round_id, "file": imported_file_id},
+        ).mappings().all())
 
-    Sin perfil → no-op: deja profile_status en not_checked y resumen neutro.
-    Con perfil → matched | not_in_profile + flags pending (idempotente).
-    """
-    pid = profile_file_id or get_latest_profile_file_id(db, round_id)
-    if not pid:
-        return {
-            "has_profile": False,
-            "expected": 0,
-            "arrived": 0,
-            "extra": 0,
-            "candidates": [],
-            "pending_flags": 0,
-        }
-
-    profile_serials = profile_serial_set(db, pid)
-    expected = len(profile_serials)
-
-    respondents = db.execute(
+    return list(db.execute(
         text("""
-            select id, respondent_external_id, realid, profile_status
-              from respondents
-             where round_id = :round
-               and imported_file_id = :file
+            select distinct r.id, r.respondent_external_id, r.realid, r.profile_status
+              from respondents r
+              join verbatims v on v.respondent_id = r.id
+              join subprojects sp on sp.id = v.subproject_id
+             where r.round_id = :round
+               and r.imported_file_id = :file
+               and sp.coding_type = :ct
+               and sp.round_id = :round
         """),
-        {"round": round_id, "file": imported_file_id},
-    ).mappings().all()
+        {"round": round_id, "file": imported_file_id, "ct": coding_type},
+    ).mappings().all())
 
+
+def _subproject_id_for_type(
+    db: Session, round_id: uuid.UUID, coding_type: str,
+) -> uuid.UUID | None:
+    return db.execute(
+        text("""
+            select id from subprojects
+             where round_id = :round and coding_type = :ct
+        """),
+        {"round": round_id, "ct": coding_type},
+    ).scalar()
+
+
+def _in_profile(serial: str, realid: str | None, serials: set[str], realids: set[str]) -> bool:
+    if serial and serial in serials:
+        return True
+    if realid and realid in realids:
+        return True
+    return False
+
+
+def _match_one_profile(
+    db: Session,
+    *,
+    round_id: uuid.UUID,
+    imported_file_id: uuid.UUID,
+    profile_file_id: uuid.UUID,
+    coding_type: str | None,
+) -> dict:
+    serials, realids = profile_id_sets(db, profile_file_id)
+    expected = db.execute(
+        text("select count(*) from profile_entries where profile_file_id = :file"),
+        {"file": profile_file_id},
+    ).scalar() or 0
+    respondents = _respondents_for_file(
+        db,
+        round_id=round_id,
+        imported_file_id=imported_file_id,
+        coding_type=coding_type,
+    )
     arrived = len(respondents)
     candidates: list[dict] = []
 
     for resp in respondents:
         serial = str(resp["respondent_external_id"] or "").strip()
-        if resp["profile_status"] == "excluded_confirmed":
+        realid = str(resp["realid"]).strip() if resp["realid"] else None
+        if resp["profile_status"] == "excluded_confirmed" and coding_type is None:
             continue
+
         existing = db.execute(
             text("""
-                select id, status from import_review_flags
+                select id, status, detail from import_review_flags
                  where imported_file_id = :file
                    and respondent_id = :resp
                    and flag_type = 'not_in_profile'
@@ -231,30 +332,53 @@ def match_file_against_profile(
             """),
             {"file": imported_file_id, "resp": resp["id"]},
         ).mappings().first()
+
+        # En modo split, el flag debe ser del mismo coding_type (detail).
+        if existing and coding_type is not None:
+            raw = existing["detail"]
+            detail_obj = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+            if detail_obj.get("coding_type") not in (None, coding_type):
+                # Flag de otro tipo: buscar uno del tipo actual
+                existing = None
+                typed = db.execute(
+                    text("""
+                        select id, status, detail from import_review_flags
+                         where imported_file_id = :file
+                           and respondent_id = :resp
+                           and flag_type = 'not_in_profile'
+                           and detail->>'coding_type' = :ct
+                         order by created_at desc
+                         limit 1
+                    """),
+                    {"file": imported_file_id, "resp": resp["id"], "ct": coding_type},
+                ).mappings().first()
+                existing = typed
+
         if existing and existing["status"] == "approved_keep":
             continue
         if existing and existing["status"] == "approved_remove":
             continue
 
-        if serial in profile_serials:
-            if resp["profile_status"] != "matched":
+        if _in_profile(serial, realid, serials, realids):
+            if coding_type is None and resp["profile_status"] != "matched":
                 db.execute(
                     text("update respondents set profile_status = 'matched' where id = :id"),
                     {"id": resp["id"]},
                 )
             continue
 
-        # Candidato: Serial de la data NO está en el perfil (aunque realid
-        # pudiera coincidir — el cruce es SOLO por Respondent ID).
-        db.execute(
-            text("update respondents set profile_status = 'not_in_profile' where id = :id"),
-            {"id": resp["id"]},
-        )
+        if coding_type is None:
+            db.execute(
+                text("update respondents set profile_status = 'not_in_profile' where id = :id"),
+                {"id": resp["id"]},
+            )
+
         detail = {
             "serial": serial,
-            "realid": resp["realid"],
-            "profile_file_id": str(pid),
-            "match_key": "respondent_external_id",
+            "realid": realid,
+            "profile_file_id": str(profile_file_id),
+            "match_key": "serial_or_realid",
+            "coding_type": coding_type,
         }
         if existing and existing["status"] == "pending":
             flag_id = existing["id"]
@@ -277,9 +401,10 @@ def match_file_against_profile(
         candidates.append({
             "flag_id": str(flag_id),
             "status": "pending",
-            "serial": serial,
-            "realid": resp["realid"],
+            "serial": serial or None,
+            "realid": realid,
             "respondent_id": str(resp["id"]),
+            "coding_type": coding_type,
         })
 
     pending = db.execute(
@@ -294,18 +419,163 @@ def match_file_against_profile(
 
     return {
         "has_profile": True,
-        "profile_file_id": str(pid),
+        "profile_file_id": str(profile_file_id),
+        "coding_type": coding_type,
         "expected": expected,
         "arrived": arrived,
-        "extra": pending,
+        "extra": len(candidates),
         "candidates": candidates,
         "pending_flags": pending,
         "summary": (
             f"El perfil tiene {expected} esperados; "
             f"en la data llegaron {arrived}; "
-            f"sobran {pending}."
+            f"sobran {len(candidates)}."
         ),
     }
+
+
+def match_file_against_profile(
+    db: Session,
+    *,
+    round_id: uuid.UUID,
+    imported_file_id: uuid.UUID,
+    profile_file_id: uuid.UUID | None = None,
+) -> dict:
+    """Cruza encuestados de UNA carga vs perfil(es) activos.
+
+    Sin perfil → no-op. Con profile_file_id → solo ese archivo.
+    Sin id → según resolve_profile_targets (combinado o split).
+    """
+    if profile_file_id is not None:
+        row = db.execute(
+            text("select coding_type from profile_files where id = :id"),
+            {"id": profile_file_id},
+        ).mappings().first()
+        ct = row["coding_type"] if row else None
+        return _match_one_profile(
+            db,
+            round_id=round_id,
+            imported_file_id=imported_file_id,
+            profile_file_id=profile_file_id,
+            coding_type=ct,
+        )
+
+    targets = resolve_profile_targets(db, round_id)
+    if not targets["mode"]:
+        return {
+            "has_profile": False,
+            "expected": 0,
+            "arrived": 0,
+            "extra": 0,
+            "candidates": [],
+            "pending_flags": 0,
+            "mode": None,
+        }
+
+    if targets["mode"] == "combined":
+        result = _match_one_profile(
+            db,
+            round_id=round_id,
+            imported_file_id=imported_file_id,
+            profile_file_id=targets["combined_id"],
+            coding_type=None,
+        )
+        result["mode"] = "combined"
+        return result
+
+    # split: acumular candidatos de cada tipo presente
+    all_candidates: list[dict] = []
+    expected = arrived = 0
+    parts = []
+    for ct, pid in targets["by_type"].items():
+        part = _match_one_profile(
+            db,
+            round_id=round_id,
+            imported_file_id=imported_file_id,
+            profile_file_id=pid,
+            coding_type=ct,
+        )
+        parts.append(part)
+        all_candidates.extend(part["candidates"])
+        expected += part["expected"]
+        arrived += part["arrived"]
+
+    pending = db.execute(
+        text("""
+            select count(*) from import_review_flags
+             where imported_file_id = :file
+               and flag_type = 'not_in_profile'
+               and status = 'pending'
+        """),
+        {"file": imported_file_id},
+    ).scalar() or 0
+
+    return {
+        "has_profile": bool(targets["by_type"]),
+        "mode": "split",
+        "by_type": {ct: str(pid) for ct, pid in targets["by_type"].items()},
+        "expected": expected,
+        "arrived": arrived,
+        "extra": len(all_candidates),
+        "candidates": all_candidates,
+        "pending_flags": pending,
+        "parts": parts,
+        "summary": (
+            f"Perfiles por tipo: {expected} esperados (suma); "
+            f"llegaron {arrived}; sobran {len(all_candidates)}."
+        ),
+    }
+
+
+def _unlink_verbatims(
+    db: Session,
+    *,
+    respondent_ids: list,
+    imported_file_id: uuid.UUID,
+    coding_type: str | None,
+    round_id: uuid.UUID | None = None,
+) -> None:
+    if not respondent_ids:
+        return
+    if coding_type is None:
+        db.execute(
+            text("""
+                update verbatims
+                   set mention_group_id = null
+                 where respondent_id = any(:resps)
+                   and imported_file_id = :file
+            """),
+            {"resps": respondent_ids, "file": imported_file_id},
+        )
+        return
+
+    sp_id = _subproject_id_for_type(db, round_id, coding_type) if round_id else None
+    if sp_id is None and round_id is not None:
+        return
+    if sp_id is not None:
+        db.execute(
+            text("""
+                update verbatims
+                   set mention_group_id = null
+                 where respondent_id = any(:resps)
+                   and imported_file_id = :file
+                   and subproject_id = :sp
+            """),
+            {"resps": respondent_ids, "file": imported_file_id, "sp": sp_id},
+        )
+    else:
+        db.execute(
+            text("""
+                update verbatims v
+                   set mention_group_id = null
+                  from subprojects sp
+                 where v.subproject_id = sp.id
+                   and sp.coding_type = :ct
+                   and v.respondent_id = any(:resps)
+                   and v.imported_file_id = :file
+            """),
+            {"resps": respondent_ids, "file": imported_file_id, "ct": coding_type},
+        )
 
 
 def resolve_profile_flag(
@@ -316,12 +586,7 @@ def resolve_profile_flag(
     user_id,
     note: str | None = None,
 ) -> dict:
-    """Decisión humana sobre candidato a exclusión (REQ-05).
-
-      keep   -> se procesa con normalidad (approved_keep); registro intacto
-      remove -> profile_status = excluded_confirmed; se desengancha de grupos
-                de mención pero NO se borra el encuestado ni sus verbatims
-    """
+    """keep → approved_keep; remove → exclusión (global o tipada)."""
     flag = db.execute(
         text("""
             select f.id, f.status, f.respondent_id, f.detail, f.imported_file_id,
@@ -342,27 +607,29 @@ def resolve_profile_flag(
             "pending_flags": _count_all_pending(db, flag["imported_file_id"]),
         }
 
+    raw = flag["detail"]
+    detail = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+    coding_type = detail.get("coding_type")
+
     if action == "keep":
         new_status = "approved_keep"
     elif action == "remove":
         new_status = "approved_remove"
-        db.execute(
-            text("""
-                update respondents
-                   set profile_status = 'excluded_confirmed'
-                 where id = :id
-            """),
-            {"id": flag["respondent_id"]},
-        )
-        # Desenganchar de grupos sin borrar verbatims (regla dura REQ-05).
-        db.execute(
-            text("""
-                update verbatims
-                   set mention_group_id = null
-                 where respondent_id = :resp
-                   and imported_file_id = :file
-            """),
-            {"resp": flag["respondent_id"], "file": flag["imported_file_id"]},
+        if coding_type is None:
+            db.execute(
+                text("""
+                    update respondents
+                       set profile_status = 'excluded_confirmed'
+                     where id = :id
+                """),
+                {"id": flag["respondent_id"]},
+            )
+        _unlink_verbatims(
+            db,
+            respondent_ids=[flag["respondent_id"]],
+            imported_file_id=flag["imported_file_id"],
+            coding_type=coding_type,
+            round_id=flag["round_id"],
         )
     else:
         raise ValueError(
@@ -370,8 +637,6 @@ def resolve_profile_flag(
         )
 
     if note:
-        raw = flag["detail"]
-        detail = raw if isinstance(raw, dict) else json.loads(raw or "{}")
         detail["note"] = note
         db.execute(
             text(
@@ -392,7 +657,7 @@ def resolve_profile_flag(
         db, user_id, flag["round_id"], "import_review_flag", flag_id,
         f"profile_review:{action}",
         old_value={"status": "pending"},
-        new_value={"status": new_status, "note": note},
+        new_value={"status": new_status, "note": note, "coding_type": coding_type},
     )
     db.commit()
     return {
@@ -410,11 +675,6 @@ def resolve_profile_flags_bulk(
     *,
     user_id,
 ) -> dict:
-    """Resuelve muchos candidatos a exclusión en UNA transacción (REQ-05).
-
-    keep   -> approved_keep para todos
-    remove -> excluded_confirmed + desenganche de grupos (sin borrar filas)
-    """
     if action not in ("keep", "remove"):
         raise ValueError(f"Acción inválida para perfil: {action!r} (usa keep o remove)")
     if not flag_ids:
@@ -429,7 +689,7 @@ def resolve_profile_flags_bulk(
 
     flags = db.execute(
         text("""
-            select f.id, f.respondent_id, f.imported_file_id, i.round_id
+            select f.id, f.respondent_id, f.imported_file_id, f.detail, i.round_id
               from import_review_flags f
               join imported_files i on i.id = f.imported_file_id
              where f.id = any(:ids)
@@ -440,7 +700,6 @@ def resolve_profile_flags_bulk(
     ).mappings().all()
 
     if not flags:
-        # Ninguno pendiente: devolver conteo si el caller pasó ids conocidos.
         sample = db.execute(
             text("""
                 select f.imported_file_id as file_id, i.round_id
@@ -469,27 +728,34 @@ def resolve_profile_flags_bulk(
     file_id = flags[0]["imported_file_id"]
     round_id = flags[0]["round_id"]
     ids = [row["id"] for row in flags]
-    resp_ids = [row["respondent_id"] for row in flags]
     new_status = "approved_keep" if action == "keep" else "approved_remove"
 
     if action == "remove":
-        db.execute(
-            text("""
-                update respondents
-                   set profile_status = 'excluded_confirmed'
-                 where id = any(:ids)
-            """),
-            {"ids": resp_ids},
-        )
-        db.execute(
-            text("""
-                update verbatims
-                   set mention_group_id = null
-                 where respondent_id = any(:resps)
-                   and imported_file_id = :file
-            """),
-            {"resps": resp_ids, "file": file_id},
-        )
+        # Agrupar por coding_type del detail (None = global)
+        by_ct: dict[str | None, list] = {}
+        for row in flags:
+            raw = row["detail"]
+            detail = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+            ct = detail.get("coding_type")
+            by_ct.setdefault(ct, []).append(row["respondent_id"])
+
+        for ct, resp_ids in by_ct.items():
+            if ct is None:
+                db.execute(
+                    text("""
+                        update respondents
+                           set profile_status = 'excluded_confirmed'
+                         where id = any(:ids)
+                    """),
+                    {"ids": resp_ids},
+                )
+            _unlink_verbatims(
+                db,
+                respondent_ids=resp_ids,
+                imported_file_id=file_id,
+                coding_type=ct,
+                round_id=round_id,
+            )
 
     db.execute(
         text("""
@@ -525,7 +791,6 @@ def resolve_all_pending_profile_flags(
     action: str,
     user_id,
 ) -> dict:
-    """Excluir/mantener TODOS los pendientes de perfil de una carga — 1 query."""
     if action not in ("keep", "remove"):
         raise ValueError(f"Acción inválida para perfil: {action!r} (usa keep o remove)")
 
@@ -567,33 +832,55 @@ def _count_all_pending(db: Session, file_id: uuid.UUID) -> int:
 
 
 def get_profile_summary(db: Session, round_id: uuid.UUID) -> dict | None:
-    """Resumen del perfil más reciente de la ronda (para la UI)."""
-    row = db.execute(
-        text("""
-            select id, original_filename, total_rows, created_at
-              from profile_files
-             where round_id = :round
-             order by created_at desc
-             limit 1
-        """),
-        {"round": round_id},
-    ).mappings().first()
-    if not row:
+    """Resumen del/los perfiles activos según el modo del más reciente."""
+    targets = resolve_profile_targets(db, round_id)
+    if not targets["mode"]:
         return None
-    expected = db.execute(
-        text("""
-            select count(distinct respondent_external_id)
-              from profile_entries
-             where profile_file_id = :id
-               and respondent_external_id is not null
-               and respondent_external_id <> ''
-        """),
-        {"id": row["id"]},
-    ).scalar() or 0
+
+    def _one(pid: uuid.UUID, coding_type: str | None) -> dict:
+        row = db.execute(
+            text("""
+                select id, original_filename, total_rows, created_at, coding_type
+                  from profile_files
+                 where id = :id
+            """),
+            {"id": pid},
+        ).mappings().first()
+        serials, realids = profile_id_sets(db, pid)
+        n_rows = db.execute(
+            text("select count(*) from profile_entries where profile_file_id = :id"),
+            {"id": pid},
+        ).scalar() or 0
+        return {
+            "profile_file_id": str(row["id"]),
+            "original_filename": row["original_filename"],
+            "total_rows": row["total_rows"],
+            "expected_respondents": n_rows,
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "coding_type": coding_type,
+            "match_keys": len(serials | realids),
+        }
+
+    if targets["mode"] == "combined":
+        one = _one(targets["combined_id"], None)
+        return {
+            **one,
+            "mode": "combined",
+            "profiles": [one],
+        }
+
+    profiles = [
+        _one(pid, ct) for ct, pid in sorted(targets["by_type"].items())
+    ]
     return {
-        "profile_file_id": str(row["id"]),
-        "original_filename": row["original_filename"],
-        "total_rows": row["total_rows"],
-        "expected_respondents": expected,
-        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "mode": "split",
+        "profile_file_id": profiles[0]["profile_file_id"] if profiles else None,
+        "original_filename": (
+            " + ".join(p["original_filename"] for p in profiles) if profiles else None
+        ),
+        "total_rows": sum((p["total_rows"] or 0) for p in profiles),
+        "expected_respondents": sum(p["expected_respondents"] for p in profiles),
+        "created_at": profiles[0]["created_at"] if profiles else None,
+        "coding_type": None,
+        "profiles": profiles,
     }

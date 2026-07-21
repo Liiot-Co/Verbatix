@@ -15,9 +15,15 @@ type Props = {
   showToast: (message: string, kind?: "success" | "error" | "info") => void;
 };
 
+const TYPE_LABEL: Record<string, string> = {
+  brands: "Marcas",
+  reasons: "Razones",
+};
+
 /**
  * REQ-05 — cruce vs perfil + decisión masiva o por fila.
- * No borra registros: "excluir" marca excluded_confirmed y saca del motor.
+ * No borra registros: "excluir" marca excluded_confirmed (combinado) o
+ * desengancha solo el tipo (split).
  */
 export default function ProfileReviewPanel({
   roundId,
@@ -36,6 +42,32 @@ export default function ProfileReviewPanel({
   );
   const pendingCount = pending.length;
   const hasProfile = Boolean(summary?.has_profile) || candidates.length > 0;
+  const isSplit = summary?.mode === "split"
+    || candidates.some((c) => c.coding_type === "brands" || c.coding_type === "reasons");
+
+  const groups = useMemo(() => {
+    if (!isSplit) {
+      return [{ key: "all", label: null as string | null, items: candidates }];
+    }
+    const order = ["brands", "reasons", "other"] as const;
+    const map: Record<string, ProfileCandidateFlag[]> = {
+      brands: [],
+      reasons: [],
+      other: [],
+    };
+    for (const c of candidates) {
+      if (c.coding_type === "brands") map.brands.push(c);
+      else if (c.coding_type === "reasons") map.reasons.push(c);
+      else map.other.push(c);
+    }
+    return order
+      .filter((k) => map[k].length > 0)
+      .map((k) => ({
+        key: k,
+        label: k === "other" ? "Sin tipo" : TYPE_LABEL[k],
+        items: map[k],
+      }));
+  }, [candidates, isSplit]);
 
   if (!hasProfile) return null;
 
@@ -72,7 +104,6 @@ export default function ProfileReviewPanel({
     const targetStatus = action === "keep" ? "approved_keep" : "approved_remove";
     const pendingIds = new Set(pending.map((p) => p.flag_id));
     try {
-      // UNA petición para toda la carga — no N /resolve por flag.
       const result = await resolveAllProfileForFile(roundId, fileId, action);
       applyStatuses(pendingIds, targetStatus);
       playSuccess();
@@ -113,7 +144,8 @@ export default function ProfileReviewPanel({
                   Cruce con perfil
                 </h2>
                 <p className="text-[11px] text-p-text-muted">
-                  Cuenta personas (Respondent ID), no filas de verbatim · nada se borra
+                  Calza por Respondent ID o realid · nada se borra
+                  {isSplit ? " · exclusión por tipo (Marcas / Razones)" : ""}
                 </p>
               </div>
             </div>
@@ -135,7 +167,7 @@ export default function ProfileReviewPanel({
 
         <p className="mt-2.5 text-xs text-p-text-muted leading-relaxed">
           {summary?.summary
-            ?? `El perfil tiene ${expected} Respondent ID; en la data hay ${arrived} distintos; ${extra} no están en el perfil.`}
+            ?? `El perfil tiene ${expected} IDs; en la data hay ${arrived}; ${extra} no están en el perfil.`}
         </p>
       </div>
 
@@ -143,7 +175,7 @@ export default function ProfileReviewPanel({
         {candidates.length === 0 ? (
           <div className="flex items-center gap-2 rounded-xl border border-p-success/25 bg-p-success/5 px-3 py-2.5 text-sm text-p-text">
             <Check className="h-4 w-4 text-p-success shrink-0" />
-            Todos los Respondent ID calzan con el perfil.
+            Todos los IDs calzan con el perfil.
           </div>
         ) : (
           <>
@@ -182,61 +214,78 @@ export default function ProfileReviewPanel({
               O decide uno por uno si hace falta una excepción.
             </p>
 
-            <div className="max-h-64 overflow-y-auto rounded-xl border border-p-border divide-y divide-p-border">
-              {candidates.map((flag) => {
-                const isPending = flag.status === "pending";
-                const rowBusy = busyAction === flag.flag_id;
-                return (
-                  <div
-                    key={flag.flag_id}
-                    className="flex items-center justify-between gap-3 px-3 py-2.5 bg-p-bg-subtle/40 hover:bg-p-bg-subtle/80 transition-colors"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-p-text truncate">
-                        Respondent ID {flag.serial ?? "—"}
-                      </div>
-                      <div className="text-[10px] text-p-text-faint font-mono truncate">
-                        realid {flag.realid ?? "—"}
-                      </div>
-                    </div>
-                    {!isPending ? (
-                      <span
-                        className={
-                          flag.status === "approved_remove"
-                            ? "badge-pending shrink-0"
-                            : "badge-success shrink-0"
-                        }
-                      >
-                        {flag.status === "approved_keep"
-                          ? "Se mantiene"
-                          : flag.status === "approved_remove"
-                            ? "Excluido"
-                            : flag.status}
-                      </span>
-                    ) : (
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          type="button"
-                          className="btn-ghost text-[11px] py-1 px-2"
-                          disabled={Boolean(busyAction)}
-                          onClick={() => void resolveOne(flag, "keep")}
-                        >
-                          {rowBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Mantener"}
-                        </button>
-                        <button
-                          type="button"
-                          className="text-[11px] py-1 px-2 rounded-lg text-p-error hover:bg-p-error/10 disabled:opacity-50"
-                          disabled={Boolean(busyAction)}
-                          onClick={() => void resolveOne(flag, "remove")}
-                        >
-                          Excluir
-                        </button>
-                      </div>
-                    )}
+            {groups.map((group) => (
+              <div key={group.key} className="space-y-1.5">
+                {group.label && (
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-p-text-muted px-0.5">
+                    {group.label}
+                    {" · "}
+                    {group.items.filter((i) => i.status === "pending").length} pendientes
                   </div>
-                );
-              })}
-            </div>
+                )}
+                <div className="max-h-64 overflow-y-auto rounded-xl border border-p-border divide-y divide-p-border">
+                  {group.items.map((flag) => {
+                    const isPending = flag.status === "pending";
+                    const rowBusy = busyAction === flag.flag_id;
+                    return (
+                      <div
+                        key={flag.flag_id}
+                        className="flex items-center justify-between gap-3 px-3 py-2.5 bg-p-bg-subtle/40 hover:bg-p-bg-subtle/80 transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-p-text truncate">
+                            {flag.serial
+                              ? `Respondent ID ${flag.serial}`
+                              : `realid ${flag.realid ?? "—"}`}
+                          </div>
+                          <div className="text-[10px] text-p-text-faint font-mono truncate">
+                            {flag.serial && flag.realid
+                              ? `realid ${flag.realid}`
+                              : flag.serial
+                                ? "sin realid"
+                                : "sin Respondent ID"}
+                          </div>
+                        </div>
+                        {!isPending ? (
+                          <span
+                            className={
+                              flag.status === "approved_remove"
+                                ? "badge-pending shrink-0"
+                                : "badge-success shrink-0"
+                            }
+                          >
+                            {flag.status === "approved_keep"
+                              ? "Se mantiene"
+                              : flag.status === "approved_remove"
+                                ? "Excluido"
+                                : flag.status}
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              className="btn-ghost text-[11px] py-1 px-2"
+                              disabled={Boolean(busyAction)}
+                              onClick={() => void resolveOne(flag, "keep")}
+                            >
+                              {rowBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Mantener"}
+                            </button>
+                            <button
+                              type="button"
+                              className="text-[11px] py-1 px-2 rounded-lg text-p-error hover:bg-p-error/10 disabled:opacity-50"
+                              disabled={Boolean(busyAction)}
+                              onClick={() => void resolveOne(flag, "remove")}
+                            >
+                              Excluir
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </>
         )}
       </div>

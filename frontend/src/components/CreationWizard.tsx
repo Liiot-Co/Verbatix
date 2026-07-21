@@ -297,6 +297,11 @@ export default function CreationWizard() {
   // explícitamente desde "Datos". Sin esa elección, "Datos" avanza directo
   // a "Revisión" como si el paso no existiera.
   const [showProfileStep, setShowProfileStep] = useState(false);
+  // combined = un Excel; split = uno por Marcas y otro por Razones (solo dual).
+  const [profileMode, setProfileMode] = useState<"combined" | "split">("combined");
+  const [splitProfiles, setSplitProfiles] = useState<
+    Partial<Record<CodingType, RoundProfileSummary>>
+  >({});
 
   // Pasos realmente visibles en el stepper y en la navegación secuencial —
   // "profile" solo entra en la lista una vez que la persona elige
@@ -581,20 +586,58 @@ export default function CreationWizard() {
     }
   };
 
-  const handleProfileUpload = async (file: File) => {
+  const handleProfileUpload = async (
+    file: File,
+    codingType?: CodingType | null,
+  ) => {
     if (!effectiveRoundId) return;
     setProfileUploading(true);
     try {
-      const result = await uploadRoundProfile(effectiveRoundId, file);
-      setRoundProfile({
+      const result = await uploadRoundProfile(effectiveRoundId, file, {
+        codingType: codingType ?? null,
+      });
+      const summary: RoundProfileSummary = {
         profile_file_id: result.profile_file_id,
         original_filename: result.original_filename,
         total_rows: result.total_rows,
         expected_respondents: result.expected_respondents,
         created_at: null,
-      });
-      showToast(`Perfil: ${result.expected_respondents} Respondent ID esperados`, "success");
+        coding_type: result.coding_type ?? codingType ?? null,
+        mode: codingType ? "split" : "combined",
+      };
+      if (codingType) {
+        setSplitProfiles((prev) => ({ ...prev, [codingType]: summary }));
+        setRoundProfile(null);
+        setProfileMode("split");
+      } else {
+        setRoundProfile(summary);
+        setSplitProfiles({});
+        setProfileMode("combined");
+      }
+      showToast(
+        `Perfil${codingType ? ` (${CODING_LABELS[codingType]})` : ""}: ${result.expected_respondents} IDs esperados`,
+        "success",
+      );
       playTick();
+      if (importedFileId) {
+        // Rematch inmediato si ya importamos (candidatos tipados / combinados).
+        try {
+          const match = await matchProfile(effectiveRoundId, importedFileId);
+          setDuplicates(match.duplicates);
+          setSerialCollisions(match.serial_collisions);
+          setProfileCandidates(match.profile_candidates);
+          setProfileSummary({
+            has_profile: match.has_profile,
+            expected: match.expected,
+            arrived: match.arrived,
+            extra: match.extra,
+            mode: match.mode ?? null,
+            ...(match.summary !== undefined ? { summary: match.summary } : {}),
+          });
+        } catch {
+          /* el useEffect de revisión reintentará */
+        }
+      }
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Perfil inválido", "error");
     } finally {
@@ -814,7 +857,9 @@ export default function CreationWizard() {
   // Importa la carga de verbatims. Ya NO ejecuta el cruce de perfil ni la
   // detección de duplicados (Task 3/4) — eso corre aparte, explícitamente,
   // desde el paso "Revisión" vía matchProfile().
-  const handleImport = async (): Promise<boolean> => {
+  // deferProcessing: true cuando eligió "continuar con perfil" para no
+  // arrancar el motor antes del cruce.
+  const handleImport = async (opts?: { deferProcessing?: boolean }): Promise<boolean> => {
     if (!effectiveRoundId || !uploaded || !verbatimsSheet || !(isDau || (columnMap.verbatim && columnMap.respondent_id))) {
       return false;
     }
@@ -827,6 +872,7 @@ export default function CreationWizard() {
         columnMap as ColumnMap,
         {
           sourceLabel: sourceLabel.trim() || undefined,
+          deferProcessing: opts?.deferProcessing ?? false,
           // Solo .dau: en Excel "field" es la columna del sheet, que no
           // corresponde al question_key real de cada fila (viene de la
           // columna "Question ID"), así que field_selections no aplicaría.
@@ -860,8 +906,11 @@ export default function CreationWizard() {
       setImportedCount(result.imported.verbatims);
       setImportedFileId(uploaded.file_id);
       playSuccess();
+      const deferred = opts?.deferProcessing ?? false;
       showToast(
-        `Importados ${result.imported.verbatims} verbatims${result.imported.codes ? ` y ${result.imported.codes} códigos` : ""} · codificando en el motor...`,
+        deferred
+          ? `Importados ${result.imported.verbatims} verbatims · el motor espera el cruce de perfil`
+          : `Importados ${result.imported.verbatims} verbatims${result.imported.codes ? ` y ${result.imported.codes} códigos` : ""} · codificando en el motor...`,
         "success"
       );
       return true;
@@ -902,7 +951,7 @@ export default function CreationWizard() {
   // perfil" en dos botones.
   const handleContinueToReview = async (withProfile: boolean = showProfileStep) => {
     if (!importedFileId) {
-      const ok = await handleImport();
+      const ok = await handleImport({ deferProcessing: withProfile });
       if (!ok) return;
     }
     if (batchItems.length > 0 && !isAddLoadMode) {
@@ -928,6 +977,7 @@ export default function CreationWizard() {
         expected: result.expected,
         arrived: result.arrived,
         extra: result.extra,
+        mode: result.mode ?? null,
         ...(result.summary !== undefined ? { summary: result.summary } : {}),
       });
     } catch {
@@ -1871,55 +1921,155 @@ export default function CreationWizard() {
                       <ChevronLeft className="w-3.5 h-3.5" /> Datos
                     </motion.button>
 
-                    <div className="card p-4 space-y-2.5">
+                    <div className="card p-4 space-y-3">
                       <div className="flex items-center gap-1.5 pb-1 border-b border-p-border">
                         <Users className="w-3.5 h-3.5 text-p-accent shrink-0" />
                         <h2 className="text-xs font-semibold text-p-text uppercase tracking-wide">
-                          Perfil de referencia (opcional)
+                          Perfil de referencia
                         </h2>
                       </div>
-                      {roundProfile ? (
-                        <p className="text-xs text-p-text">
-                          Activo: <span className="font-medium">{roundProfile.original_filename}</span>
-                          {" · "}
-                          {roundProfile.expected_respondents} esperados
-                        </p>
-                      ) : (
-                        <p className="text-xs text-p-text-muted">
-                          Excel pactado con el cliente (columna Respondent ID). Si lo subes, se cruza al instante contra
-                          los verbatims ya importados.
-                        </p>
+                      <p className="text-xs text-p-text-muted leading-relaxed">
+                        Excel pactado con el cliente (columna Respondent ID y/o realid).
+                        El motor no arranca hasta cruzar y resolver candidatos.
+                      </p>
+
+                      {activeCodingTypes.length > 1 && (
+                        <div className="flex rounded-xl border border-p-border p-0.5 bg-p-bg-subtle gap-0.5">
+                          <button
+                            type="button"
+                            className={[
+                              "flex-1 text-xs py-2 rounded-lg transition-colors",
+                              profileMode === "combined"
+                                ? "bg-p-surface text-p-text font-semibold shadow-sm"
+                                : "text-p-text-muted hover:text-p-text",
+                            ].join(" ")}
+                            onClick={() => {
+                              setProfileMode("combined");
+                              setSplitProfiles({});
+                            }}
+                          >
+                            Un solo Excel
+                          </button>
+                          <button
+                            type="button"
+                            className={[
+                              "flex-1 text-xs py-2 rounded-lg transition-colors",
+                              profileMode === "split"
+                                ? "bg-p-surface text-p-text font-semibold shadow-sm"
+                                : "text-p-text-muted hover:text-p-text",
+                            ].join(" ")}
+                            onClick={() => {
+                              setProfileMode("split");
+                              setRoundProfile(null);
+                            }}
+                          >
+                            Uno por Marcas / Razones
+                          </button>
+                        </div>
                       )}
-                      <label className={[
-                        "btn-secondary text-xs py-1.5 px-2.5 inline-flex cursor-pointer",
-                        profileUploading ? "opacity-50 pointer-events-none" : "",
-                      ].join(" ")}>
-                        <input
-                          type="file"
-                          accept=".xlsx,.xls"
-                          className="sr-only"
-                          disabled={profileUploading}
-                          onChange={async (e) => {
-                            const f = e.target.files?.[0];
-                            e.target.value = "";
-                            if (!f) return;
-                            await handleProfileUpload(f);
-                          }}
-                        />
-                        {profileUploading
-                          ? "Subiendo…"
-                          : roundProfile
-                            ? "Cambiar perfil"
-                            : "Subir perfil .xlsx"}
-                      </label>
+
+                      {profileMode === "combined" || activeCodingTypes.length < 2 ? (
+                        <div className="space-y-2">
+                          {roundProfile ? (
+                            <p className="text-xs text-p-text">
+                              Activo:{" "}
+                              <span className="font-medium">{roundProfile.original_filename}</span>
+                              {" · "}
+                              {roundProfile.expected_respondents} esperados
+                            </p>
+                          ) : (
+                            <p className="text-xs text-p-text-muted">
+                              Sube un Excel que cubra toda la carga (marcas y razones juntas).
+                            </p>
+                          )}
+                          <label className={[
+                            "btn-secondary text-xs py-1.5 px-2.5 inline-flex cursor-pointer",
+                            profileUploading ? "opacity-50 pointer-events-none" : "",
+                          ].join(" ")}>
+                            <input
+                              type="file"
+                              accept=".xlsx,.xls"
+                              className="sr-only"
+                              disabled={profileUploading}
+                              onChange={async (e) => {
+                                const f = e.target.files?.[0];
+                                e.target.value = "";
+                                if (!f) return;
+                                await handleProfileUpload(f, null);
+                              }}
+                            />
+                            {profileUploading
+                              ? "Subiendo…"
+                              : roundProfile
+                                ? "Cambiar perfil"
+                                : "Subir perfil .xlsx"}
+                          </label>
+                        </div>
+                      ) : (
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          {(["brands", "reasons"] as CodingType[])
+                            .filter((ct) => activeCodingTypes.includes(ct))
+                            .map((ct) => {
+                              const p = splitProfiles[ct];
+                              return (
+                                <div
+                                  key={ct}
+                                  className="rounded-xl border border-p-border bg-p-bg-subtle/50 p-3 space-y-2"
+                                >
+                                  <div className="text-xs font-semibold text-p-text">
+                                    {CODING_LABELS[ct]}
+                                  </div>
+                                  {p ? (
+                                    <p className="text-[11px] text-p-text-muted leading-snug">
+                                      <span className="font-medium text-p-text">{p.original_filename}</span>
+                                      <br />
+                                      {p.expected_respondents} IDs esperados
+                                    </p>
+                                  ) : (
+                                    <p className="text-[11px] text-p-text-faint">
+                                      Sin archivo aún
+                                    </p>
+                                  )}
+                                  <label className={[
+                                    "btn-secondary text-[11px] py-1 px-2 inline-flex cursor-pointer w-full justify-center",
+                                    profileUploading ? "opacity-50 pointer-events-none" : "",
+                                  ].join(" ")}>
+                                    <input
+                                      type="file"
+                                      accept=".xlsx,.xls"
+                                      className="sr-only"
+                                      disabled={profileUploading}
+                                      onChange={async (e) => {
+                                        const f = e.target.files?.[0];
+                                        e.target.value = "";
+                                        if (!f) return;
+                                        await handleProfileUpload(f, ct);
+                                      }}
+                                    />
+                                    {profileUploading
+                                      ? "Subiendo…"
+                                      : p
+                                        ? "Cambiar"
+                                        : "Subir .xlsx"}
+                                  </label>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
                     </div>
 
                     <button
                       type="button"
                       className="btn-primary text-sm py-2 w-full justify-center"
+                      disabled={
+                        profileMode === "split" && activeCodingTypes.length > 1
+                          ? !activeCodingTypes.every((ct) => splitProfiles[ct])
+                          : !roundProfile
+                      }
                       onClick={() => goToStep("review")}
                     >
-                      Continuar
+                      Continuar a revisión
                     </button>
                   </div>
                 )}
@@ -1937,7 +2087,7 @@ export default function CreationWizard() {
                       <ChevronLeft className="w-3.5 h-3.5" /> {showProfileStep ? "Perfil" : "Datos"}
                     </motion.button>
 
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                    <div className={`grid gap-3 mb-4 ${showProfileStep ? "grid-cols-2 md:grid-cols-4" : "grid-cols-2 md:grid-cols-3"}`}>
                       <div className="card p-3 space-y-1.5 border-p-border-mid bg-p-surface shadow-sm hover:border-p-accent/30 transition-colors">
                         <div className="text-[10px] uppercase font-bold text-p-text-muted tracking-wide flex items-center gap-1.5">
                           <Check className="w-3.5 h-3.5 text-p-success" /> Importación
@@ -1966,14 +2116,18 @@ export default function CreationWizard() {
                         </div>
                       </div>
 
-                      <div className="card p-3 space-y-1.5 border-p-border-mid bg-p-surface shadow-sm hover:border-p-accent/30 transition-colors">
-                        <div className="text-[10px] uppercase font-bold text-p-text-muted tracking-wide flex items-center gap-1.5">
-                          <Users className="w-3.5 h-3.5 text-p-accent" /> Perfil de referencia
+                      {showProfileStep && (
+                        <div className="card p-3 space-y-1.5 border-p-border-mid bg-p-surface shadow-sm hover:border-p-accent/30 transition-colors">
+                          <div className="text-[10px] uppercase font-bold text-p-text-muted tracking-wide flex items-center gap-1.5">
+                            <Users className="w-3.5 h-3.5 text-p-accent" /> Perfil de referencia
+                          </div>
+                          <div className="text-sm font-medium text-p-text truncate">
+                            {profileSummary?.has_profile
+                              ? (profileMode === "split" ? "Por Marcas / Razones" : "Validación activada")
+                              : "Pendiente de cruzar"}
+                          </div>
                         </div>
-                        <div className="text-sm font-medium text-p-text truncate">
-                          {profileSummary?.has_profile ? "Validación activada" : "Sin validación de perfil"}
-                        </div>
-                      </div>
+                      )}
                     </div>
                     
                     <div className="rounded-xl bg-p-bg-subtle border border-p-border p-3.5 text-xs text-p-text flex items-start gap-2.5">
@@ -1982,17 +2136,21 @@ export default function CreationWizard() {
                         <span className="relative w-2 h-2 rounded-full bg-p-success"></span>
                       </div>
                       <p className="leading-relaxed">
-                        El motor de IA ya está procesando las muestras en segundo plano para los subproyectos: <span className="font-semibold text-p-text">{activeCodingTypes.map(t => CODING_LABELS[t]).join(" y ")}</span>. 
-                        {(matchingProfile || profileSummary?.has_profile || profileCandidates.length > 0)
-                          && " Revisa las incidencias de duplicados o candidatos a exclusión por perfil abajo antes de finalizar la configuración."}
+                        {showProfileStep
+                          ? <>Revisa el cruce de perfil (y duplicados si hay) antes de que el motor procese{" "}
+                            <span className="font-semibold text-p-text">{activeCodingTypes.map(t => CODING_LABELS[t]).join(" y ")}</span>.
+                            Al resolver los pendientes, el procesamiento arranca solo.</>
+                          : <>El motor de IA procesa en segundo plano:{" "}
+                            <span className="font-semibold text-p-text">{activeCodingTypes.map(t => CODING_LABELS[t]).join(" y ")}</span>.
+                            {(duplicates.length > 0) && " Revisa duplicados abajo si aplica."}</>}
                       </p>
                     </div>
 
-                    {matchingProfile && (
+                    {matchingProfile && showProfileStep && (
                       <div className="card p-4 text-sm text-p-text-muted">Cruzando con el perfil…</div>
                     )}
 
-                    {!matchingProfile && (profileSummary?.has_profile || profileCandidates.length > 0) && effectiveRoundId && importedFileId && (
+                    {showProfileStep && !matchingProfile && (profileSummary?.has_profile || profileCandidates.length > 0) && effectiveRoundId && importedFileId && (
                       <ProfileReviewPanel
                         roundId={effectiveRoundId}
                         fileId={importedFileId}
@@ -2002,7 +2160,7 @@ export default function CreationWizard() {
                         showToast={showToast}
                         onAllResolved={() => {
                           playSuccess();
-                          showToast("Revisión de perfil resuelta.", "success");
+                          showToast("Revisión de perfil resuelta · motor en cola.", "success");
                         }}
                       />
                     )}
@@ -2137,7 +2295,7 @@ export default function CreationWizard() {
                         <div>% de auditoría: <span className="font-semibold text-p-text">{rAudit}</span></div>
                         <div>Tipos codificados: <span className="font-semibold text-p-text">{activeCodingTypes.map((t) => CODING_LABELS[t]).join(", ")}</span></div>
                       </div>
-                      {profileSummary?.has_profile && (
+                      {showProfileStep && profileSummary?.has_profile && (
                         <p className="text-xs text-p-text-muted">
                           Perfil: {profileSummary.expected} esperados · {profileSummary.arrived} llegaron · {profileSummary.extra} de más.
                         </p>
