@@ -1048,7 +1048,7 @@ export default function CreationWizard() {
     } finally {
       setMatchingProfile(false);
     }
-  }, [effectiveRoundId, importedFileId, showToast]);
+  }, [effectiveRoundId, importedFileId, showToast, setProfileCandidates]);
 
   const handleBulkResolveDuplicates = useCallback(
     async (action: "keep" | "remove") => {
