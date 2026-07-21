@@ -232,6 +232,21 @@ def test_discover_catalog_clusters_typo_seeds_as_aliases():
     assert by_alias["gloriaa"] == by_alias["gloria"]
 
 
+def test_discover_catalog_merges_edan_into_frequent_edam_seed():
+    seeds = [
+        {"id": uuid.uuid4(), "normalized_text": "edam", "sample_text": "Edam", "frequency_count": 30},
+        {"id": uuid.uuid4(), "normalized_text": "edan", "sample_text": "Edan", "frequency_count": 10},
+    ]
+    db = _FreqSession(codebook_id=uuid.uuid4(), seeds=seeds)
+
+    catalog = discover_catalog_from_frequency(db, uuid.uuid4(), min_mentions=2)
+
+    assert len(db.inserted_codes) == 1
+    assert db.inserted_codes[0]["label"] == "Edam"
+    by_alias = {item.alias_normalized: item.code_id for item in catalog}
+    assert by_alias["edan"] == by_alias["edam"] == db.inserted_codes[0]["id"]
+
+
 def test_discover_catalog_numbering_skips_system_range():
     seeds = [
         {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 10},

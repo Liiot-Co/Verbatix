@@ -30,7 +30,7 @@ from app.pipeline.fuzzy import (
     load_catalog_aliases,
 )
 from app.pipeline.fuzzy.models import SCORE_THRESHOLD, SYSTEM_ALIAS_VARIANTS
-from app.pipeline.fuzzy.scoring import best_brand_candidate
+from app.pipeline.fuzzy.scoring import best_brand_candidate, is_safe_brand_autocommit
 from app.pipeline.llm import classify_round
 from app.pipeline.llm.client import propose_brand_codes
 from app.pipeline.normalize import normalize, strip_leading_article
@@ -215,13 +215,17 @@ def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> 
             }
             continue
         candidate = best_brand_candidate(normalized, catalog)
+        used_stripped_form = False
         if candidate is None and stripped != normalized:
             candidate = best_brand_candidate(stripped, catalog)
+            used_stripped_form = candidate is not None
         if candidate:
             matched_by_group[str(group["id"])] = {
                 "code_id": candidate.code_id, "score": candidate.score,
                 "matched_alias": candidate.alias, "source": "engine_fuzzy",
                 "margin": candidate.margin,
+                "candidate": candidate,
+                "used_stripped_form": used_stripped_form,
             }
 
     auto_coded = 0
@@ -243,12 +247,18 @@ def _process_brands(db: Session, subproject_id: uuid.UUID, threshold: float) -> 
                 auto_commit = settings.auto_commit_exact_approved
             else:
                 # Auto-cierre de fuzzy solo si pasa el gate calibrado (score +
-                # margen top1-top2). Los bloqueos de recall (palabra corta/común,
-                # substring, longitudes) ya los aplicó rank_brand_candidates.
+                # margen top1-top2), o la recuperación ortográfica conservadora
+                # de un solo token. Se evalúa el texto ORIGINAL para que quitar
+                # un artículo no habilite falsos positivos multipalabra.
                 auto_commit = (
                     settings.auto_commit_brand_fuzzy
-                    and match["score"] >= settings.brand_fuzzy_autocommit_score
-                    and match.get("margin", 0.0) >= settings.brand_fuzzy_autocommit_margin
+                    and is_safe_brand_autocommit(
+                        g["normalized_text"],
+                        match["candidate"],
+                        score_threshold=settings.brand_fuzzy_autocommit_score,
+                        margin_threshold=settings.brand_fuzzy_autocommit_margin,
+                        used_stripped_form=match["used_stripped_form"],
+                    )
                 )
             state = "auto_coded" if auto_commit else "suggested"
             update_groups_params.append({

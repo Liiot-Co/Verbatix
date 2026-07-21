@@ -17,8 +17,9 @@ from pydantic import BaseModel, Field
 # Score mínimo (0-100) para aceptar un match como clasificación automática.
 # QUEMADO a propósito: el análisis sobre datos reales mostró que los typos de
 # marca legítimos caen por encima de ~80 (layve->laive 80, glorai->gloria 83)
-# mientras los falsos positivos quedan debajo (edan->edam 75). Se expone como
-# constante para moverlo a config/env sin tocar la lógica.
+# mientras coincidencias genéricas ambiguas quedan debajo. Las marcas de cuatro
+# letras usan un gate ortográfico separado y más estricto en fuzzy/scoring.py.
+# Se expone como constante para moverlo a config/env sin tocar la lógica.
 SCORE_THRESHOLD: float = 80.0
 
 # Solo las marcas se clasifican por similitud sintáctica. Las razones son

@@ -327,6 +327,60 @@ def test_process_subproject_runs_fuzzy_for_brands():
     fuzzy_mock.assert_called_once()
 
 
+def test_process_brands_autocodes_safe_typos_and_preserves_risky_suggestions():
+    from app.pipeline.fuzzy.models import CodeAlias
+    from app.pipeline.process import _process_brands
+
+    groups = [
+        {"id": uuid.uuid4(), "normalized_text": "edan", "frequency_count": 10},
+        {"id": uuid.uuid4(), "normalized_text": "braetted", "frequency_count": 1},
+        {"id": uuid.uuid4(), "normalized_text": "breat", "frequency_count": 1},
+        {"id": uuid.uuid4(), "normalized_text": "filadelfia", "frequency_count": 1},
+        {"id": uuid.uuid4(), "normalized_text": "el artesano", "frequency_count": 1},
+    ]
+    catalog = [
+        CodeAlias(code_id="edam", alias_normalized="edam"),
+        CodeAlias(code_id="braedt", alias_normalized="braed"),
+        CodeAlias(code_id="braedt", alias_normalized="bredt"),
+        CodeAlias(code_id="philadelphia", alias_normalized="philadelfia"),
+        CodeAlias(code_id="parmesano", alias_normalized="parmesano"),
+    ]
+    group_updates = []
+
+    def fake_execute(stmt, params=None):
+        sql = str(stmt)
+        if "select id, normalized_text, frequency_count from mention_groups" in sql:
+            return FakeResult(mapping_rows=groups)
+        if "alias_kind = 'negative'" in sql:
+            return FakeResult(mapping_rows=[])
+        if sql.strip().startswith("update mention_groups") and isinstance(params, list):
+            group_updates.extend(params)
+        return FakeResult()
+
+    with (
+        patch("app.pipeline.process.load_catalog_aliases", return_value=catalog),
+        patch.object(settings, "auto_commit_brand_fuzzy", True),
+        patch.object(settings, "brand_fuzzy_autocommit_score", 82.0),
+        patch.object(settings, "brand_fuzzy_autocommit_margin", 5.0),
+    ):
+        result = _process_brands(
+            FakeSession(execute=fake_execute),
+            SUBPROJECT_BRANDS,
+            80.0,
+        )
+
+    state_by_group = {row["id"]: row["status"] for row in group_updates}
+    assert [state_by_group[group["id"]] for group in groups] == [
+        "auto_coded",
+        "auto_coded",
+        "suggested",
+        "auto_coded",
+        "suggested",
+    ]
+    assert result["groups_classified"] == 3
+    assert result["suggestions"] == 2
+
+
 def test_process_subproject_skips_fuzzy_for_reasons():
     """Marcas -> fuzzy puro; Razones nunca toca el motor fuzzy (va directo a
     caché semántico + LLM) — bug preexistente corregido en la migración v8: el
