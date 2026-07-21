@@ -54,14 +54,6 @@ class RoundIn(BaseModel):
     category_id: uuid.UUID | None = None
     min_mentions_threshold: int = 3
     audit_percentage: float = 10
-    origin_mode: str = "from_scratch"
-    source_round_id: uuid.UUID | None = None
-    # REQ-07: la elección real es por catálogo/subproyecto. Los campos legacy
-    # anteriores se conservan para el warm-start semántico de Razones.
-    catalog_origins: dict[str, CatalogOriginIn] | None = None
-    # Compatibilidad del cargador por lote: varias rondas creadas juntas
-    # comparten el catálogo inicial, igual que antes de REQ-07.
-    reuse_catalogs_from_round_id: uuid.UUID | None = None
 
 
 def _catalog_source(
@@ -245,17 +237,10 @@ def create_round(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Crea la ronda y solo los subproyectos pedidos en `catalog_origins`
-    (Marcas, Razones o ambos). Cada uno lleva su origen de catálogo (REQ-07:
-    `scratch` / `inherited_round` / `imported_client_catalog`)."""
+    """Crea la ronda sola, sin subprojects — el paso 2 del wizard los crea
+    vía `POST /rounds/{id}/subprojects` (REQ-07)."""
     require_project(db, project_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
-
-    selections = payload.catalog_origins or {
-        coding_type: CatalogOriginIn(origin="scratch")
-        for coding_type in CODING_TYPES
-    }
-    selected_types = _validate_catalog_origins(selections)
 
     round_id = uuid.uuid4()
     db.execute(
@@ -263,7 +248,7 @@ def create_round(
             insert into rounds (id, project_id, category_id, name, round_number,
                                 min_mentions_threshold, audit_percentage, origin_mode,
                                 source_round_id, created_by)
-            values (:id, :p, :cat, :n, :num, :thr, :pct, :om, :src, :u)
+            values (:id, :p, :cat, :n, :num, :thr, :pct, 'from_scratch', null, :u)
         """),
         {
             "id": round_id,
@@ -273,40 +258,19 @@ def create_round(
             "num": payload.round_number,
             "thr": payload.min_mentions_threshold,
             "pct": payload.audit_percentage,
-            "om": "from_scratch",
-            "src": None,
             "u": user["id"],
         },
     )
-
-    subprojects, reasons_source_round_id = _create_subprojects(
-        db, project_id, round_id, selections, selected_types,
-        payload.min_mentions_threshold, payload.audit_percentage,
-        payload.reuse_catalogs_from_round_id,
-    )
-
-    if reasons_source_round_id:
-        db.execute(
-            text("""
-                update rounds
-                   set origin_mode = 'homologated', source_round_id = :source
-                 where id = :id
-            """),
-            {"source": reasons_source_round_id, "id": round_id},
-        )
-
     db.commit()
 
     return {
         "id": str(round_id),
         "project_id": str(project_id),
         **payload.model_dump(mode="json"),
-        "origin_mode": "homologated" if reasons_source_round_id else "from_scratch",
-        "source_round_id": (
-            str(reasons_source_round_id) if reasons_source_round_id else None
-        ),
+        "origin_mode": "from_scratch",
+        "source_round_id": None,
         "status": "created",
-        "subprojects": list(subprojects.values()),
+        "subprojects": [],
     }
 
 
