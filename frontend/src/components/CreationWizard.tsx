@@ -705,6 +705,8 @@ export default function CreationWizard() {
     && mentionDecisionsReady
   );
 
+  const hasUnsavedChanges = (!!uploaded && !importedCount) || !!roundProfile;
+
   const loadCatalogPreview = async (
     codingType: CodingType,
     catalogFile: UploadedFile,
@@ -1023,6 +1025,15 @@ export default function CreationWizard() {
   }, [step, uploaded, round]);
 
   useKeyboardShortcuts("wizard");
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [hasUnsavedChanges]);
 
   // Focus refs when step changes
   useEffect(() => {
@@ -1435,156 +1446,137 @@ export default function CreationWizard() {
                           })}
                         </div>
 
-                        {activeCodingTypes.map((codingType) => {
+                        {activeCodingTypes.length > 1 && (
+                          <div className="flex gap-4 border-b border-p-border mb-3" role="tablist">
+                            {activeCodingTypes.map((codingType) => {
+                              const active = (expandedCodingType || activeCodingTypes[0]) === codingType;
+                              return (
+                                <button
+                                  key={codingType}
+                                  type="button"
+                                  role="tab"
+                                  aria-selected={active}
+                                  onClick={() => {
+                                    setExpandedCodingType(codingType);
+                                    playTick();
+                                  }}
+                                  className={[
+                                    "pb-2 text-sm font-medium border-b-2 transition-colors",
+                                    active
+                                      ? "border-p-accent text-p-text"
+                                      : "border-transparent text-p-text-muted hover:text-p-text hover:border-p-border-mid",
+                                  ].join(" ")}
+                                >
+                                  {CODING_LABELS[codingType]}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {(() => {
+                          const codingType = (expandedCodingType && activeCodingTypes.includes(expandedCodingType))
+                            ? expandedCodingType
+                            : activeCodingTypes[0];
+                          if (!codingType) return null;
+
                           const selection = catalogOrigins[codingType];
-                          const expanded = expandedCodingType === codingType;
-                          const selectedOption = ORIGIN_OPTIONS.find((option) => option.value === selection.origin);
                           const source = codebookSources[codingType].find(
                             (candidate) => candidate.source_subproject_id === selection.source_subproject_id
                           );
-                          const needsSource = selection.origin === "inherited_round" && !selection.source_subproject_id;
-                          // round-sequence-and-homologation (Task 9, ajustado):
-                          // en una ronda no-primera del proyecto se puede
-                          // heredar u homologar, pero nunca crear desde cero
-                          // — se oculta esa opción del radiogroup en vez de
-                          // fijar un único origen.
                           const originOptions = hasExistingRounds
                             ? ORIGIN_OPTIONS.filter((option) => option.value !== "scratch")
                             : ORIGIN_OPTIONS.filter((option) => option.value !== "inherited_round");
 
                           return (
-                            <div key={codingType} className="rounded-xl border border-p-border overflow-hidden">
-                              <button
-                                type="button"
-                                aria-expanded={expanded}
-                                onClick={() => {
-                                  setExpandedCodingType(expanded ? null : codingType);
-                                  playTick();
-                                }}
-                                className="w-full flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-p-bg-subtle transition-colors"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span className="text-sm font-semibold text-p-text">{CODING_LABELS[codingType]}</span>
-                                  <span
-                                    className={[
-                                      "text-[11px] font-medium px-2 py-0.5 rounded-full truncate",
-                                      needsSource
-                                        ? "bg-p-warning/15 text-p-text-muted"
-                                        : "bg-p-accent-soft text-p-accent",
-                                    ].join(" ")}
-                                  >
-                                    {needsSource
-                                      ? "Heredar · falta elegir el libro"
-                                      : selection.origin === "inherited_round" && source
-                                        ? `Heredar · ${source.project_name} R${source.round_number}`
-                                        : selectedOption?.label}
-                                  </span>
-                                </div>
-                                <ChevronDown
-                                  className={[
-                                    "w-4 h-4 shrink-0 text-p-text-muted transition-transform duration-200",
-                                    expanded ? "rotate-180" : "",
-                                  ].join(" ")}
-                                />
-                              </button>
-                              <AnimatePresence initial={false}>
-                                {expanded && (
-                                  <motion.div
-                                    initial={{ height: 0, opacity: 0 }}
-                                    animate={{ height: "auto", opacity: 1 }}
-                                    exit={{ height: 0, opacity: 0 }}
-                                    transition={{ duration: 0.2, ease: [0.19, 1, 0.22, 1] as const }}
-                                  >
-                                    <div role="radiogroup" className="px-3 pb-3 pt-1 space-y-1.5">
-                                      {originOptions.map((option) => {
-                                        const active = selection.origin === option.value;
-                                        return (
-                                          <button
-                                            key={option.value}
-                                            type="button"
-                                            role="radio"
-                                            aria-checked={active}
-                                            disabled={subprojectsCreated}
-                                            onClick={() => {
-                                              setCatalogOrigins((current) => ({
-                                                ...current,
-                                                [codingType]: {
-                                                  origin: option.value,
-                                                  source_subproject_id:
-                                                    option.value === "inherited_round" && codebookSources[codingType].length > 0
-                                                      ? codebookSources[codingType][0]?.source_subproject_id ?? null
-                                                      : null,
-                                                },
-                                              }));
-                                              playTick();
-                                            }}
-                                            className={[
-                                              "w-full flex items-start gap-2.5 text-left rounded-lg border p-2.5 transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
-                                              active
-                                                ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
-                                                : "border-p-border hover:bg-p-bg-subtle",
-                                            ].join(" ")}
-                                          >
-                                            <span
-                                              className={[
-                                                "mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full border flex items-center justify-center",
-                                                active ? "border-p-accent" : "border-p-border-mid",
-                                              ].join(" ")}
-                                            >
-                                              {active && <span className="w-2 h-2 rounded-full bg-p-accent" />}
-                                            </span>
-                                            <span className="min-w-0">
-                                              <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
-                                                {option.label}
-                                              </span>
-                                              <span className="block text-xs text-p-text-muted mt-0.5">
-                                                {option.description}
-                                              </span>
-                                            </span>
-                                          </button>
-                                        );
-                                      })}
+                            <div key={codingType} role="tabpanel" className="animate-in fade-in slide-in-from-bottom-2">
+                              <div role="radiogroup" className="space-y-2">
+                                {originOptions.map((option) => {
+                                  const active = selection.origin === option.value;
+                                  return (
+                                    <button
+                                      key={option.value}
+                                      type="button"
+                                      role="radio"
+                                      aria-checked={active}
+                                      disabled={subprojectsCreated}
+                                      onClick={() => {
+                                        setCatalogOrigins((current) => ({
+                                          ...current,
+                                          [codingType]: {
+                                            origin: option.value,
+                                            source_subproject_id:
+                                              option.value === "inherited_round" && codebookSources[codingType].length > 0
+                                                ? codebookSources[codingType][0]?.source_subproject_id ?? null
+                                                : null,
+                                          },
+                                        }));
+                                        playTick();
+                                      }}
+                                      className={[
+                                        "w-full flex items-start gap-2.5 text-left rounded-lg border p-3 transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
+                                        active
+                                          ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
+                                          : "border-p-border hover:bg-p-bg-subtle",
+                                      ].join(" ")}
+                                    >
+                                      <span
+                                        className={[
+                                          "mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full border flex items-center justify-center",
+                                          active ? "border-p-accent" : "border-p-border-mid",
+                                        ].join(" ")}
+                                      >
+                                        {active && <span className="w-2 h-2 rounded-full bg-p-accent" />}
+                                      </span>
+                                      <span className="min-w-0">
+                                        <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
+                                          {option.label}
+                                        </span>
+                                        <span className="block text-xs text-p-text-muted mt-0.5">
+                                          {option.description}
+                                        </span>
+                                      </span>
+                                    </button>
+                                  );
+                                })}
 
-                                      {selection.origin === "inherited_round" && (
-                                        <div className="pt-1.5">
-                                          <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                                            Libro oficial a heredar
-                                          </label>
-                                          {codebookSources[codingType].length === 0 ? (
-                                            <p className="mt-1.5 text-xs text-p-text-muted rounded-lg bg-p-bg-subtle p-2.5">
-                                              Aún no hay libros oficiales de {CODING_LABELS[codingType]} disponibles.
-                                              Un libro queda oficial cuando su ronda cierra la auditoría, o cuando se homologa
-                                              el libro de códigos del cliente.
-                                            </p>
-                                          ) : (
-                                            <div className="mt-1 flex items-center justify-between p-2.5 rounded-lg border border-p-border bg-p-bg-subtle">
-                                              <div className="text-sm font-medium text-p-text">
-                                                {codebookSources[codingType][0]?.project_name} · R{codebookSources[codingType][0]?.round_number} ({codebookSources[codingType][0]?.round_name})
-                                              </div>
-                                              <span className="text-[10px] uppercase font-bold text-p-accent bg-p-accent/10 px-2 py-0.5 rounded-full">
-                                                Último
-                                              </span>
-                                            </div>
-                                          )}
-                                          {source && (
-                                            <p className="mt-2 text-xs text-p-text-muted">
-                                              Vas a heredar {source.codes} códigos, {source.aliases} alias y {source.nets} netos.
-                                            </p>
-                                          )}
+                                {selection.origin === "inherited_round" && (
+                                  <div className="pt-2">
+                                    <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                      Libro oficial a heredar
+                                    </label>
+                                    {codebookSources[codingType].length === 0 ? (
+                                      <p className="mt-1.5 text-xs text-p-text-muted rounded-lg bg-p-bg-subtle p-2.5">
+                                        Aún no hay libros oficiales de {CODING_LABELS[codingType]} disponibles.
+                                        Un libro queda oficial cuando su ronda cierra la auditoría, o cuando se homologa
+                                        el libro de códigos del cliente.
+                                      </p>
+                                    ) : (
+                                      <div className="mt-1.5 flex items-center justify-between p-3 rounded-lg border border-p-border bg-p-bg-subtle">
+                                        <div className="text-sm font-medium text-p-text">
+                                          {codebookSources[codingType][0]?.project_name} · R{codebookSources[codingType][0]?.round_number} ({codebookSources[codingType][0]?.round_name})
                                         </div>
-                                      )}
-                                      {selection.origin === "imported_client_catalog" && (
-                                        <p className="text-xs text-p-text-muted pt-1">
-                                          Sube el archivo del cliente abajo y revisa códigos, alias y netos antes de confirmarlo.
-                                        </p>
-                                      )}
-                                    </div>
-                                  </motion.div>
+                                        <span className="text-[10px] uppercase font-bold text-p-accent bg-p-accent/10 px-2 py-0.5 rounded-full">
+                                          Último
+                                        </span>
+                                      </div>
+                                    )}
+                                    {source && (
+                                      <p className="mt-2 text-xs text-p-text-muted">
+                                        Vas a heredar {source.codes} códigos, {source.aliases} alias y {source.nets} netos.
+                                      </p>
+                                    )}
+                                  </div>
                                 )}
-                              </AnimatePresence>
+                                {selection.origin === "imported_client_catalog" && (
+                                  <p className="text-xs text-p-text-muted pt-1">
+                                    Sube el archivo del cliente abajo y revisa códigos, alias y netos antes de confirmarlo.
+                                  </p>
+                                )}
+                              </div>
                             </div>
                           );
-                        })}
+                        })()}
 
                         {importedCatalogTypes.length > 0 && round && (
                           <div className="space-y-3 pt-1">
@@ -2106,6 +2098,8 @@ export default function CreationWizard() {
             </AnimatePresence>
           </div>
       </div>
+
+
     </div>
   );
 }
