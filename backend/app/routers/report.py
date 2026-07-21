@@ -19,8 +19,6 @@ _DEFAULT_FORMATS = {"excel", "sql", "onenextcase"}  # mdd pending Task 11
 
 
 def _parse_export_formats(formats: str | None) -> set[str]:
-    """`formats=excel,sql` -> {"excel", "sql"}; None -> the backward-compatible
-    default (all formats except mdd, still pending Task 11)."""
     if formats is None:
         return _DEFAULT_FORMATS
     selected = {f.strip() for f in formats.split(",") if f.strip()}
@@ -76,7 +74,7 @@ def export_codebook(
         text("""
             select p.external_code, r.round_number
             from rounds r
-            join studios p on p.id = r.project_id
+            join studies p on p.id = r.study_id
             where r.id = :id
         """),
         {"id": round_id},

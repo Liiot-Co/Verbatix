@@ -83,7 +83,7 @@ def classify_round(db: Session, subproject_id: uuid.UUID) -> dict:
                    cat.name as product_category, sp.single_code_per_response
               from subprojects sp
               join rounds r on r.id = sp.round_id
-              join studios p on p.id = r.project_id
+              join studies p on p.id = r.study_id
               left join categories cat on cat.id = r.category_id
              where sp.id = :sp
         """),

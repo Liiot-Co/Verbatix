@@ -16,8 +16,8 @@ export interface CodebookSource {
   round_id: string;
   codebook_id: string;
   version: number;
-  project_id: string;
-  project_name: string;
+  study_id: string;
+  study_name: string;
   round_name: string;
   round_number: number;
   codes: number;
@@ -86,6 +86,17 @@ export interface RoundSubprojectSummary {
   auto_coded: number;
 }
 
+// GET /proyectos/{id}/projects — estudios agrupados por proyecto, cada uno
+// con su objetivo analítico (brands, reasons, both) y resumen de rondas.
+export interface ProyectoStudyItem {
+  id: string;
+  external_code: string;
+  name: string;
+  created_at: string;
+  rounds_count: number;
+  analytic_target: "brands" | "reasons" | "both" | "none";
+}
+
 // GET /projects returns a bare array, no pagination envelope.
 export interface ProjectListItem {
   id: string;
@@ -93,7 +104,9 @@ export interface ProjectListItem {
   name: string;
   studies_count: number;
   rounds_count: number;
+  analytic_target: "brands" | "reasons" | "both" | "none";
   created_at: string;
+  project_id: string | null;
   assigned_users_count: number;
   assigned_users_preview: AssignedUserPreview[];
 }
@@ -112,11 +125,30 @@ export interface ProjectMember extends AssignedUserPreview {
   assigned_at: string;
 }
 
-export interface ProjectDetail {
+export interface ProyectoStudy {
   id: string;
   external_code: string;
   name: string;
-  proyecto_id: string | null;
+  created_at: string;
+  project_id: string | null;
+  rounds_count: number;
+  analytic_target: "brands" | "reasons" | "both" | "none";
+}
+
+export interface ProyectoDetail {
+  kind: "proyecto";
+  id: string;
+  name: string;
+  created_at: string;
+  studies: ProyectoStudy[];
+}
+
+export interface ProjectDetail {
+  kind: "studio";
+  id: string;
+  external_code: string;
+  name: string;
+  project_id: string | null;
   rounds: RoundSummary[];
   categories: { id: string; name: string }[];
   created_at: string;
@@ -126,7 +158,7 @@ export interface ProjectDetail {
 // codebook y procesamiento — cuelga del estudio, no del proyecto.
 export interface Round {
   id: string;
-  project_id: string;
+  study_id: string;
   name: string;
   round_number: number;
   min_mentions_threshold: number;
@@ -166,10 +198,11 @@ export interface RoundCounters {
 
 export interface RoundNavContext {
   study_name: string;
+  study_external_code: string | null;
   category_name: string | null;
-  project_id: string;
-  project_name: string;
-  project_external_code: string | null;
+  study_id: string;
+  project_id: string | null;
+  project_name: string | null;
 }
 
 // Bloque `audit` de GET /rounds/{id}: el estado que leen los badges y el
@@ -234,7 +267,9 @@ export interface FieldSelection {
 export interface ColumnMap {
   respondent_id?: string;
   question_key?: string;
-  verbatim: string;
+  verbatim?: string;
+  brands?: string;
+  reasons?: string;
   input_code?: string;
 }
 
@@ -551,7 +586,7 @@ export interface UserProfile {
 
 export interface AdminUser extends UserProfile {
   assignments_count: number;
-  project_ids: string[];
+  study_ids: string[];
 }
 
 /* ── Resolution Center (Fase 4) ── */

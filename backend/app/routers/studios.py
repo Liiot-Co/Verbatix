@@ -1,7 +1,7 @@
 """CRUD de Ronda (ola de datos de un Estudio: su propio Excel, verbatims,
 codebook heredado, procesamiento) y sus Subproyectos (Marcas/Razones, v8).
 
-No hay "crear Estudio" aquí — el Estudio (`projects`) se crea vía
+No hay "crear Estudio" aquí — el Estudio (`studies`) se crea vía
 routers/projects.py. Crear una Ronda crea sus subproyectos de inmediato, uno
 por coding_type, cada uno con el origen de catálogo que el analista eligió
 (REQ-07: `scratch` / `inherited_round` / `imported_client_catalog` — sección
@@ -59,10 +59,6 @@ class RoundIn(BaseModel):
     name: str
     round_number: int
     category_id: uuid.UUID | None = None
-    # Umbral de frecuencia para promover una marca/razón a código nuevo en el
-    # bootstrap desde cero. 2 (no 3) para que las marcas reales poco frecuentes
-    # también obtengan su código y no caigan al residuo (sube la cobertura de
-    # ~87% a ~91% con la misma precisión, medido contra el LC real del cliente).
     min_mentions_threshold: int = 2
     audit_percentage: float = 10
 
@@ -76,10 +72,10 @@ def _catalog_source(
     source = db.execute(
         text("""
             select sp.id as subproject_id, sp.coding_type, sp.codebook_id,
-                   sp.round_id, r.project_id, p.proyecto_id
+                   sp.round_id, r.study_id, p.project_id
               from subprojects sp
               join rounds r on r.id = sp.round_id
-              join studios p on p.id = r.project_id
+              join studies p on p.id = r.study_id
               join codebooks cb on cb.id = sp.codebook_id
              where sp.id = :source
                and cb.status in ('approved', 'exported')
@@ -87,16 +83,16 @@ def _catalog_source(
         {"source": source_subproject_id},
     ).mappings().first()
     target = db.execute(
-        text("select proyecto_id from studios where id = :id"),
+        text("select project_id from studies where id = :id"),
         {"id": target_project_id},
     ).mappings().first()
     if not source:
         raise HTTPException(400, "El catálogo origen no existe o todavía no está aprobado")
-    same_project = source["project_id"] == target_project_id
+    same_project = source["study_id"] == target_project_id
     same_client = (
         target
-        and target["proyecto_id"] is not None
-        and source["proyecto_id"] == target["proyecto_id"]
+        and target["project_id"] is not None
+        and source["project_id"] == target["project_id"]
     )
     if not same_project and not same_client:
         raise HTTPException(400, "El catálogo origen pertenece a otro cliente")
@@ -107,7 +103,7 @@ def _catalog_source(
 
 def _create_catalog_for_origin(
     db: Session,
-    project_id: uuid.UUID,
+    study_id: uuid.UUID,
     coding_type: str,
     selection: CatalogOriginIn,
 ) -> tuple[uuid.UUID, dict, uuid.UUID | None]:
@@ -118,11 +114,11 @@ def _create_catalog_for_origin(
         if not selection.source_subproject_id:
             raise HTTPException(400, f"Falta catálogo origen para {coding_type}")
         source = _catalog_source(
-            db, project_id, coding_type, selection.source_subproject_id
+            db, study_id, coding_type, selection.source_subproject_id
         )
         codebook_id = create_codebook(
             db,
-            project_id,
+            study_id,
             coding_type,
             source["codebook_id"],
             origin="inherited_round",
@@ -132,7 +128,7 @@ def _create_catalog_for_origin(
         return codebook_id, {**copied, "reused": False}, source["round_id"]
 
     codebook_id = create_codebook(
-        db, project_id, coding_type, origin=selection.origin
+        db, study_id, coding_type, origin=selection.origin
     )
     if selection.origin == "scratch":
         seed_system_codes(db, codebook_id)
@@ -155,7 +151,7 @@ def _validate_catalog_origins(selections: dict[str, CatalogOriginIn]) -> list[st
 
 def _create_subprojects(
     db: Session,
-    project_id: uuid.UUID,
+    study_id: uuid.UUID,
     round_id: uuid.UUID,
     selections: dict[str, CatalogOriginIn],
     selected_types: list[str],
@@ -173,12 +169,12 @@ def _create_subprojects(
                   from rounds r
                   join subprojects sp on sp.round_id = r.id
                   join codebooks cb on cb.id = sp.codebook_id
-                 where r.id = :source and r.project_id = :project
+                 where r.id = :source and r.study_id = :project
                    and cb.status in ('approved', 'exported')
             """),
             {
                 "source": reuse_catalogs_from_round_id,
-                "project": project_id,
+                "project": study_id,
             },
         ).mappings().all()
         reused_catalogs = {row["coding_type"]: dict(row) for row in rows}
@@ -196,7 +192,7 @@ def _create_subprojects(
             source_catalog = reused_catalogs[coding_type]
             cb_id = create_codebook(
                 db,
-                project_id,
+                study_id,
                 coding_type,
                 source_catalog["codebook_id"],
                 origin="inherited_round",
@@ -211,7 +207,7 @@ def _create_subprojects(
             source_subproject_id = source_catalog["source_subproject_id"]
         else:
             cb_id, inherited, source_round_id = _create_catalog_for_origin(
-                db, project_id, coding_type, selection
+                db, study_id, coding_type, selection
             )
             catalog_origin = selection.origin
             source_subproject_id = selection.source_subproject_id
@@ -260,9 +256,6 @@ def get_next_round_number(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Siguiente `round_number` esperado del proyecto (round-sequence-and-
-    homologation, Task 1): el wizard lo consume para bloquear el input cuando
-    ya existen rondas previas."""
     require_project(db, project_id, user["id"])
     return {"next_round_number": next_round_number(db, project_id)}
 
@@ -274,17 +267,11 @@ def create_round(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Crea la ronda sola, sin subprojects — el paso 2 del wizard los crea
-    vía `POST /rounds/{id}/subprojects` (REQ-07)."""
     require_project(db, project_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
 
-    # round-sequence-and-homologation (Task 2): si el proyecto ya tiene
-    # rondas, la nueva debe ser exactamente max+1 — sin huecos ni saltos.
-    # Si todavía no tiene ninguna, se acepta cualquier número (incluida una
-    # "ronda 5" inicial), sin restricción.
     has_existing_rounds = db.execute(
-        text("select 1 from rounds where project_id = :project limit 1"),
+        text("select 1 from rounds where study_id = :project limit 1"),
         {"project": project_id},
     ).scalar()
     if has_existing_rounds:
@@ -302,7 +289,7 @@ def create_round(
     round_id = uuid.uuid4()
     db.execute(
         text("""
-            insert into rounds (id, project_id, category_id, name, round_number,
+            insert into rounds (id, study_id, category_id, name, round_number,
                                 min_mentions_threshold, audit_percentage, origin_mode,
                                 source_round_id, created_by)
             values (:id, :p, :cat, :n, :num, :thr, :pct, 'from_scratch', null, :u)
@@ -322,7 +309,7 @@ def create_round(
 
     return {
         "id": str(round_id),
-        "project_id": str(project_id),
+        "study_id": str(project_id),
         **payload.model_dump(mode="json"),
         "origin_mode": "from_scratch",
         "source_round_id": None,
@@ -343,21 +330,12 @@ def create_round_subprojects(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Crea los subproyectos (Marcas/Razones) de una ronda ya existente,
-    paso 2 del wizard tras elegir el origen de catálogo (REQ-07)."""
     round_row = require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
-    project_id = round_row["project_id"]
+    study_id = round_row["study_id"]
 
     selected_types = _validate_catalog_origins(payload.catalog_origins)
 
-    # round-sequence-and-homologation (Task 3, ajustado): las rondas que no
-    # son la primera del proyecto pueden heredar el libro de una ronda/estudio
-    # anterior o homologar un libro externo — el libro no se crea desde cero
-    # nunca en una ronda no-primera (no hay nada que "empezar" en esa ronda).
-    # "Primera ronda del proyecto" usa el mismo criterio que la secuencia
-    # (round_number == 1) — la única forma de tener round_number > 1 es
-    # habiendo empezado en 1 y avanzado consecutivamente.
     if round_row["round_number"] != 1:
         invalid_origins = [
             coding_type
@@ -388,7 +366,7 @@ def create_round_subprojects(
         )
 
     subprojects, reasons_source_round_id = _create_subprojects(
-        db, project_id, round_id, payload.catalog_origins, selected_types,
+        db, study_id, round_id, payload.catalog_origins, selected_types,
         round_row["min_mentions_threshold"], round_row["audit_percentage"],
         payload.reuse_catalogs_from_round_id,
     )
@@ -418,7 +396,6 @@ def list_codebook_sources(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Catálogos oficiales heredables del mismo tipo y cliente."""
     require_project(db, project_id, user["id"])
     if coding_type not in CODING_TYPES:
         raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
@@ -428,7 +405,7 @@ def list_codebook_sources(
             with distinct_cb as (
                 select distinct on (cb.id)
                        sp.id as source_subproject_id, sp.round_id, cb.id as codebook_id,
-                       cb.version, p.id as project_id, p.name as project_name,
+                       cb.version, p.id as study_id, p.name as study_name,
                        r.name as round_name, r.round_number, r.created_at,
                        (select count(*) from codes c
                          where c.codebook_id = cb.id and c.is_active) as codes,
@@ -437,14 +414,14 @@ def list_codebook_sources(
                         where a.codebook_id = cb.id and c.is_active) as aliases,
                        (select count(*) from nets n
                          where n.codebook_id = cb.id) as nets
-                  from studios target
-                  join studios p
+                  from studies target
+                  join studies p
                     on p.id = target.id
                     or (
-                      target.proyecto_id is not null
-                      and p.proyecto_id = target.proyecto_id
+                      target.study_id is not null
+                      and p.project_id = target.project_id
                     )
-                  join rounds r on r.project_id = p.id
+                  join rounds r on r.study_id = p.id
                   join subprojects sp on sp.round_id = r.id
                   join codebooks cb on cb.id = sp.codebook_id
                  where target.id = :project
@@ -463,7 +440,8 @@ def list_codebook_sources(
             "source_subproject_id": str(row["source_subproject_id"]),
             "round_id": str(row["round_id"]),
             "codebook_id": str(row["codebook_id"]),
-            "project_id": str(row["project_id"]),
+            "study_id": str(row["study_id"]),
+            "study_name": row["study_name"],
         }
         for row in rows
     ]
@@ -485,6 +463,77 @@ def delete_round(
     db.commit()
 
 
+class RoundPatch(BaseModel):
+    name: str | None = None
+    min_mentions_threshold: int | None = None
+    audit_percentage: float | None = None
+
+
+@router.patch("/rounds/{round_id}")
+def patch_round(
+    round_id: uuid.UUID,
+    payload: RoundPatch,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+
+    numeric_fields = {
+        k: v
+        for k, v in [
+            ("min_mentions_threshold", payload.min_mentions_threshold),
+            ("audit_percentage", payload.audit_percentage),
+        ]
+        if v is not None
+    }
+    if numeric_fields:
+        has_imports = db.execute(
+            text(
+                "select 1 from verbatims v "
+                "join subprojects sp on sp.id = v.subproject_id "
+                "where sp.round_id = :r limit 1"
+            ),
+            {"r": round_id},
+        ).scalar()
+        if has_imports:
+            raise HTTPException(
+                409,
+                {
+                    "code": "round_has_imports",
+                    "message": (
+                        "No se puede cambiar el umbral de menciones ni el porcentaje "
+                        "de auditoría: la ronda ya tiene verbatims importados. "
+                        "Si necesitas otro valor debes eliminar esta ronda y crear una nueva."
+                    ),
+                },
+            )
+
+    updates: dict = {}
+    if payload.name is not None:
+        updates["name"] = payload.name.strip()
+    updates.update(numeric_fields)
+
+    if not updates:
+        raise HTTPException(400, {"code": "nothing_to_update", "message": "Nada que actualizar"})
+
+    set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+    db.execute(
+        text(f"update rounds set {set_clause}, updated_at = now() where id = :id"),
+        {**updates, "id": round_id},
+    )
+    db.commit()
+
+    row = db.execute(
+        text(
+            "select id, name, round_number, min_mentions_threshold, audit_percentage, status "
+            "from rounds where id = :id"
+        ),
+        {"id": round_id},
+    ).mappings().first()
+    return {k: str(v) if isinstance(v, uuid.UUID) else v for k, v in dict(row).items()}
+
+
 @router.get("/rounds/{round_id}")
 def get_round(
     round_id: uuid.UUID,
@@ -497,11 +546,13 @@ def get_round(
 
     nav = db.execute(
         text("""
-            select p.id as project_id, p.name as project_name,
-                   p.external_code as project_external_code,
+            select p.id as study_id, p.name as study_name,
+                   p.external_code as study_external_code,
+                   proj.id as project_id, proj.name as project_name,
                    cat.name as category_name
             from rounds r
-            join studios p on p.id = r.project_id
+            join studies p on p.id = r.study_id
+            left join projects proj on proj.id = p.project_id
             left join categories cat on cat.id = r.category_id
             where r.id = :id
         """),
@@ -535,7 +586,7 @@ def get_round(
     ).mappings().all()
     audit_by_sp = {}
     for a in audit_rows:
-        audit_by_sp.setdefault(a["subproject_id"], a)  # primera fila = más reciente (order by desc)
+        audit_by_sp.setdefault(a["subproject_id"], a)
 
     subprojects = []
     for sp in subproject_rows:
@@ -587,11 +638,12 @@ def get_round(
     }
     return {
         **round_out,
-        "study_name": nav["project_name"] if nav else None,
+        "study_name": nav["study_name"] if nav else None,
+        "study_external_code": nav["study_external_code"] if nav else None,
         "category_name": nav["category_name"] if nav else None,
-        "project_id": str(nav["project_id"]) if nav else None,
+        "study_id": str(nav["study_id"]) if nav else None,
+        "project_id": str(nav["project_id"]) if nav and nav["project_id"] else None,
         "project_name": nav["project_name"] if nav else None,
-        "project_external_code": nav["project_external_code"] if nav else None,
         "counters": counters,
         "audit": audit,
         "subprojects": subprojects,
@@ -599,13 +651,8 @@ def get_round(
 
 
 class SubprojectUpdateIn(BaseModel):
-    # min_mentions_threshold/audit_percentage NO son editables acá a propósito:
-    # se fijan una sola vez, al importar el archivo que crea el subproyecto
-    # (ver ImportIn), porque cambiarlas mientras el motor ya procesó con el
-    # valor viejo deja el catálogo por frecuencia y el muestreo de auditoría
-    # inconsistentes (bug real reportado en producción).
     origin_mode: str | None = None
-    source_round_id: uuid.UUID | None = None  # solo con origin_mode='homologated'
+    source_round_id: uuid.UUID | None = None
 
 
 @router.patch("/subprojects/{subproject_id}")
@@ -615,8 +662,6 @@ def update_subproject(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Homologación por subproyecto — lo único que sigue siendo editable después
-    de creado (min_mentions_threshold/audit_percentage ya no, ver SubprojectUpdateIn)."""
     sp = require_subproject(db, subproject_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
 
@@ -638,16 +683,12 @@ def update_subproject(
             ).scalar()
             if source_sp_id:
                 updates["source_subproject_id"] = source_sp_id
-                # Solo clona si este codebook es nuevo (nada más que los códigos
-                # de sistema) — mismo criterio que create_round tenía antes de
-                # que la homologación se moviera acá (evita duplicar códigos si
-                # ya tenía contenido propio).
                 has_own_codes = db.execute(
                     text("select exists(select 1 from codes where codebook_id = :cb and not is_system)"),
                     {"cb": sp["codebook_id"]},
                 ).scalar()
-                if not has_own_codes and source_round["project_id"] != sp["project_id"]:
-                    clone_codebook(db, source_round["project_id"], sp["coding_type"], sp["codebook_id"])
+                if not has_own_codes and source_round["study_id"] != sp["study_id"]:
+                    clone_codebook(db, source_round["study_id"], sp["coding_type"], sp["codebook_id"])
 
     if not updates:
         raise HTTPException(400, "Nada que actualizar")
@@ -757,8 +798,6 @@ def list_verbatims(
                 "normalized_text": r["normalized_text"],
                 "coding_status": r["coding_status"],
                 "mention_group_id": str(r["mention_group_id"]) if r["mention_group_id"] else None,
-                # REQ-03: de qué carga vino; NULL = importado antes de v9 sin
-                # trazabilidad ("Carga original / sin registrar" en la UI).
                 "source_label": r["source_label"],
                 "codes": r["codes"],
             }
@@ -774,8 +813,6 @@ def verbatims_summary(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Tabla CÓDIGO/MENCIÓN PRINCIPAL/CONTENIDO/FRECUENCIA/% — agrupada por código
-    (codificados) o por mención (pendientes), nunca por verbatim individual."""
     resource = require_subproject(db, subproject_id, user["id"])
     require_capability(db, user["id"], "resolution.view")
     require_resolution_phase(resource)
@@ -792,8 +829,6 @@ def upload_file(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    # El archivo sigue yendo por round_id, no por subproject_id (sección 2.4:
-    # un solo .dau/Excel reparte verbatims entre los 2 subproyectos).
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
     content = file.file.read()
@@ -803,15 +838,12 @@ def upload_file(
     detected_sheets = dau.detect_sheets(content) if file_type == "dau" else excel.detect_sheets(content)
     total_rows = sum(s["rows"] for s in detected_sheets)
 
-    # REQ-03: subir dos veces el mismo archivo no debe duplicar en silencio —
-    # se avisa (la UI muestra la advertencia antes de confirmar el import).
     duplicate_file = load_review.find_checksum_duplicate(db, round_id, checksum)
 
     file_id = uuid.uuid4()
     path = f"{round_id}/{file_id}/{file.filename}"
     storage.upload("uploads", path, content)
 
-    # source_label editable en la confirmación; por defecto, filename limpio.
     suggested_label = load_review.suggest_source_label(file.filename)
 
     db.execute(
@@ -840,6 +872,54 @@ def upload_file(
     }
 
 
+@router.get("/rounds/{round_id}/files/{file_id}")
+def get_uploaded_file(
+    round_id: uuid.UUID,
+    file_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_round(db, round_id, user["id"])
+    require_capability(db, user["id"], "rounds.manage")
+
+    meta = db.execute(
+        text(
+            "select id, original_filename, total_rows, file_type, source_label, status "
+            "from imported_files where id = :id and round_id = :round"
+        ),
+        {"id": file_id, "round": round_id},
+    ).mappings().first()
+    if not meta:
+        raise HTTPException(404, "Archivo no encontrado")
+
+    storage_path = db.execute(
+        text("select storage_path from imported_files where id = :id"),
+        {"id": file_id},
+    ).scalar()
+    detected_sheets: list = []
+    if storage_path:
+        try:
+            bucket, _, path = storage_path.partition("/")
+            content = storage.download(bucket, path)
+            if meta["file_type"] == "dau":
+                detected_sheets = dau.detect_sheets(content)
+            else:
+                detected_sheets = excel.detect_sheets(content)
+        except Exception:
+            pass
+
+    return {
+        "file_id": str(meta["id"]),
+        "original_filename": meta["original_filename"],
+        "total_rows": meta["total_rows"] or 0,
+        "detected_sheets": detected_sheets,
+        "status": meta["status"],
+        "file_type": meta["file_type"],
+        "suggested_source_label": meta["source_label"],
+        "duplicate_of": None,
+    }
+
+
 class PreviewFieldsIn(BaseModel):
     sheet: str | None = None
 
@@ -852,9 +932,6 @@ def preview_fields(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Metadata por campo/columna del archivo ya subido (sugerencia, razón,
-    muestra de valores) para que el analista elija qué procesar antes de
-    importar — no inserta nada, se puede llamar N veces (patrón catalog-preview)."""
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
     meta = db.execute(
@@ -885,35 +962,19 @@ def preview_fields(
 class FieldSelection(BaseModel):
     field: str
     included: bool = True
-    # Clasificación elegida en el wizard (solo cuando el scope de la ronda es
-    # "both"); si viene, insert_verbatims crea el Question directo y ese campo
-    # nunca cae en pending_questions.
     coding_type: str | None = None
 
 
 class ImportIn(BaseModel):
     verbatims_sheet: str
     codebook_sheet: str | None = None
-    # Solo si se envía codebook_sheet: no hay forma de inferir a qué subproyecto
-    # (Marcas o Razones) pertenece un libro de códigos importado desde Excel —
-    # a diferencia de los verbatims, que se reparten solos por questions.coding_type.
     codebook_coding_type: str | None = None
     column_map: dict[str, str] | None = None
-    # REQ-03: etiqueta de la carga ('Dimension Parte 1'), confirmada/editada por
-    # el analista antes de importar. None conserva la sugerida en el upload.
     source_label: str | None = None
-    # None = comportamiento actual (todos los campos incluidos, sin pre-clasificar).
-    # Solo el wizard nuevo de selección de campos lo envía.
     field_selections: list[FieldSelection] | None = None
-    # REQ-08: una vez por Marcas / Razones (según aplique en la ronda).
     single_code_by_type: dict[str, bool] | None = None
-    # REQ-04: máximo esperado de la ronda + decisión si el archivo trae más.
     expected_max_mentions: int | None = None
     mentions_decision: str | None = None
-    # Red de seguridad para rondas creadas antes de REQ-07 (sin catalog_origins,
-    # ver get_or_create_subproject en repositories.py): solo se usan si esta
-    # importación todavía tiene que crear el subproyecto de este coding_type.
-    # Uno ya existente conserva su config original.
     min_mentions_threshold: int | None = None
     audit_percentage: float | None = None
     # REQ-05: true cuando el analista eligió "continuar con perfil" — no encolar
@@ -931,7 +992,8 @@ def _catalog_file_context(
     round_id: uuid.UUID,
     file_id: uuid.UUID,
     coding_type: str,
-) -> tuple[dict, dict]:
+    require_target: bool = True
+) -> tuple[dict, dict | None]:
     if coding_type not in CODING_TYPES:
         raise HTTPException(400, "coding_type debe ser 'brands' o 'reasons'")
     meta = db.execute(
@@ -953,9 +1015,9 @@ def _catalog_file_context(
     ).mappings().first()
     if not meta:
         raise HTTPException(404, "Archivo no encontrado")
-    if not target or target["origin"] != "imported_client_catalog":
+    if require_target and (not target or target["origin"] != "imported_client_catalog"):
         raise HTTPException(400, "Ese catálogo no fue configurado como importado")
-    return dict(meta), dict(target)
+    return dict(meta), dict(target) if target else None
 
 
 @router.post("/rounds/{round_id}/files/{file_id}/catalog-preview")
@@ -969,7 +1031,7 @@ def preview_client_catalog(
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
     meta, _ = _catalog_file_context(
-        db, round_id, file_id, payload.coding_type
+        db, round_id, file_id, payload.coding_type, require_target=False
     )
     bucket, _, path = meta["storage_path"].partition("/")
     try:
@@ -1037,7 +1099,7 @@ def import_file(
 ):
     round_row = require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
-    project_id = round_row["project_id"]
+    study_id = round_row["study_id"]
 
     if payload.codebook_sheet and payload.codebook_coding_type not in CODING_TYPES:
         raise HTTPException(400, "codebook_coding_type debe ser 'brands' o 'reasons' si se envía codebook_sheet")
@@ -1066,11 +1128,8 @@ def import_file(
         else:
             rows = excel.parse_verbatims(content, payload.verbatims_sheet, payload.column_map)
     except (ValueError, KeyError) as exc:
-        # KeyError: la hoja no existe en el workbook; ValueError: no es de verbatims.
         raise HTTPException(400, f"Hoja de verbatims inválida: {exc}") from exc
 
-    # REQ-03: ¿es la primera carga de la ronda o una carga adicional? Se decide
-    # ANTES de insertar (después, esta misma carga ya contaría como previa).
     is_additional_load = load_review.round_has_previous_load(db, round_id, file_id)
 
     n_codes = n_aliases = 0
@@ -1112,7 +1171,7 @@ def import_file(
 
     try:
         n_inserted, df, pending_questions, skipped_by_type = insert_verbatims(
-            db, round_id, project_id, file_id, rows,
+            db, round_id, study_id, file_id, rows,
             min_mentions_threshold=payload.min_mentions_threshold,
             audit_percentage=payload.audit_percentage,
             field_selections=(
@@ -1166,8 +1225,6 @@ def import_file(
     ).scalars().all()
     for sp_id in subproject_ids:
         build_mention_groups(db, sp_id)
-        # Texto ya resuelto en una corrida anterior: el verbatim nuevo hereda los
-        # códigos del grupo cerrado sin reabrirlo (REQ-03, carga incremental).
         propagate_group_codes_to_pending(db, sp_id)
 
     if payload.source_label is not None and payload.source_label.strip():
@@ -1176,10 +1233,6 @@ def import_file(
             {"label": payload.source_label.strip(), "id": file_id},
         )
 
-    # REQ-03 (duplicados por Respondent ID) y REQ-05 (cruce de perfil) ya no
-    # corren acá — ambos usan Respondent ID y se disparan juntos, explícitamente,
-    # desde POST .../files/{file_id}/profile-match, después de que el analista
-    # confirma los campos seleccionados.
     review = {"duplicates": [], "serial_collisions": [], "profile_candidates": []}
     review["profile"] = {"has_profile": False, "expected": 0, "arrived": 0, "extra": 0}
 
@@ -1192,21 +1245,6 @@ def import_file(
         {"id": round_id},
     )
 
-    # Auto-process right after import so the user never has to notice/click a
-    # separate "Procesar" step. Submitted to the in-process scheduler (own DB
-    # session, bounded concurrency across rounds) instead of running inline —
-    # the LLM pass can take minutes and blocking the response left the frontend
-    # with nothing but a spinner. Round stays 'files_uploaded' until the worker
-    # flips it to 'preliminary_ready'; the frontend polls GET /rounds/{id}.
-    # Si hay preguntas pendientes de clasificar, NO se procesa todavía — el
-    # analista debe responder Marcas/Razones primero (Tarea 9), y el caller
-    # reintenta el import (mismo archivo) una vez resueltas.
-    # REQ-03 / REQ-05: con flags pendientes (duplicados o candidatos a exclusión)
-    # tampoco — el motor se dispara al resolver el último flag. Ambos ya no
-    # corren acá: se disparan juntos, explícitamente, desde
-    # POST .../files/{file_id}/profile-match, después de que el analista
-    # confirma los campos seleccionados — por eso pending_flags es 0 recién
-    # importado (aún no hay flags que generar).
     pending_flags = load_review.count_pending_flags(db, file_id)
     # defer_processing: el wizard va a cruzar perfil después; snapshot blocked
     # hasta que profile-match / resolve dispare el motor.
@@ -1234,9 +1272,6 @@ def import_file(
     elif pending_flags or wait_for_profile:
         processing_status = "blocked_on_review"
     elif round_setup_incomplete(db, round_id):
-        # round-sequence-and-homologation (Task 6): la ronda quedó con
-        # configuración incompleta en algún otro paso (ej. homologación de
-        # catálogo de cliente sin aprobar) — el motor no debe arrancar.
         processing_status = "blocked_on_setup"
     else:
         processing_status = "queued"
@@ -1297,7 +1332,6 @@ def upload_profile(
         uploaded_by=user["id"],
         coding_type=coding_type,
     )
-    # Si ya hay encuestados importados, re-cruza contra el perfil nuevo.
     rematch = []
     file_ids = db.execute(
         text("""
@@ -1382,7 +1416,7 @@ def profile_match(
 
 
 class ResolveAllProfileIn(BaseModel):
-    action: str  # 'keep' | 'remove'
+    action: str
 
 
 @router.post("/rounds/{round_id}/files/{file_id}/profile-review/resolve-all")
@@ -1393,8 +1427,6 @@ def resolve_all_profile_for_file(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Mantener/excluir TODOS los candidatos a exclusión de una carga (REQ-05)
-    en UNA sola transacción — no N peticiones por Respondent ID."""
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
     if payload.action not in ("keep", "remove"):
@@ -1436,7 +1468,6 @@ def get_profile(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """REQ-05: resumen del perfil más reciente de la ronda (o null)."""
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
     from app.pipeline import profile as profile_mod
@@ -1449,8 +1480,6 @@ def list_loads(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """REQ-03: las cargas de verbatims de la ronda, con su etiqueta y contadores —
-    lo que la UI usa para desambiguar 'Serial 1 — Carga: Parte 1'."""
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
     rows = db.execute(
@@ -1491,9 +1520,6 @@ def load_review_state(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """REQ-03: las 3 secciones de revisión de una carga adicional — duplicados
-    reales (con flag y estado), avisos de Serial repetido (informativos) y las
-    columnas sin calzar viven en pending_questions del propio import."""
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
     exists = db.execute(
@@ -1506,13 +1532,13 @@ def load_review_state(
 
 
 class ResolveFlagIn(BaseModel):
-    action: str  # 'keep' | 'remove' | 'edit'
+    action: str
     note: str | None = None
 
 
 class BulkResolveProfileIn(BaseModel):
     flag_ids: list[uuid.UUID]
-    action: str  # 'keep' | 'remove'
+    action: str
 
 
 def _maybe_queue_after_review(
@@ -1523,17 +1549,10 @@ def _maybe_queue_after_review(
     already_resolved: bool,
     file_id: uuid.UUID | None = None,
 ) -> str:
-    """Dispara el motor una sola vez cuando ya no quedan flags pendientes.
-
-    Si se pasa `file_id`, también cierra su dataset_snapshot a 'ready' —
-    el snapshot de ingestión queda 'blocked' mientras haya flags de
-    duplicados/perfil pendientes de esa carga (ver import_file)."""
     if pending_flags > 0:
         return "blocked_on_review"
     if already_resolved:
         return "queued"
-    # Los 'remove' pudieron dejar grupos pendientes vacíos y frecuencias
-    # desactualizadas: se limpia y recalcula antes de disparar el motor.
     load_review.cleanup_orphan_groups(db, round_id)
     subproject_ids = db.execute(
         text("select id from subprojects where round_id = :round"),
@@ -1545,8 +1564,6 @@ def _maybe_queue_after_review(
         persist_dataset_snapshot(db, file_id, status="ready")
     db.commit()
     if round_setup_incomplete(db, round_id):
-        # round-sequence-and-homologation (Task 6): mismo chequeo centralizado
-        # antes de disparar el motor — no se salta aunque ya no queden flags.
         return "blocked_on_setup"
     scheduler.submit(round_id)
     return "queued"
@@ -1558,7 +1575,6 @@ def bulk_resolve_profile_flags(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Mantener todos / excluir todos (REQ-05) en una sola transacción."""
     from app.pipeline import profile as profile_mod
 
     if payload.action not in ("keep", "remove"):
@@ -1606,9 +1622,6 @@ def resolve_import_flag(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Decisión humana sobre un flag de importación (REQ-03 duplicados o
-    REQ-05 candidatos a exclusión por perfil). Al resolver el ÚLTIMO flag
-    pendiente de la carga se dispara el motor sobre la ronda."""
     flag_round = db.execute(
         text("""
             select i.round_id, i.id as file_id from import_review_flags f
@@ -1717,9 +1730,6 @@ def classify_question_endpoint(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """El analista responde '¿esta variable es Marcas o Razones?' (sección 2.5/2.6)
-    — una sola vez por estudio, para siempre. El caller reintenta el import
-    (POST .../import de nuevo, mismo archivo) una vez respondidas todas."""
     require_project(db, project_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
     if payload.coding_type not in CODING_TYPES:

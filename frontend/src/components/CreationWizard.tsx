@@ -20,6 +20,7 @@ import { playSuccess, playTick } from "@/lib/sound";
 import Breadcrumb, { type Crumb } from "./Breadcrumb";
 import FieldSelectionTable, { initialFieldSelections } from "./FieldSelectionTable";
 import ProfileReviewPanel from "./ProfileReviewPanel";
+import DuplicatesReviewTable from "./DuplicatesReviewTable";
 import RoundCodingControls, {
   detectedMaxFromFields,
   hasPendingRoundMentionDecision,
@@ -41,6 +42,7 @@ import {
   previewFields,
   resolveImportFlag,
   uploadFile,
+  deleteRound,
   uploadRoundProfile,
 } from "@/api/client";
 import type {
@@ -255,6 +257,9 @@ export default function CreationWizard() {
   const [rAudit, setRAudit] = useState(wizardPrefsRef.current.audit ?? 10);
 
   const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
+  const [rawFile, setRawFile] = useState<File | null>(null);
+  const [isSetupDirty, setIsSetupDirty] = useState(false);
+  const [isDataDirty, setIsDataDirty] = useState(false);
   const [sourceLabel, setSourceLabel] = useState("");
   const [verbatimsSheet, setVerbatimsSheet] = useState("");
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
@@ -277,7 +282,7 @@ export default function CreationWizard() {
   const [serialCollisions, setSerialCollisions] = useState<SerialCollision[]>([]);
   const [profileCandidates, setProfileCandidates] = useState<ProfileCandidateFlag[]>([]);
   const [profileSummary, setProfileSummary] = useState<ProfileReviewSummary | null>(null);
-  const [editNotes, setEditNotes] = useState<Record<string, string>>({});
+
   const [resolvingFlagId, setResolvingFlagId] = useState<string | null>(null);
 
   // Archivos adicionales soltados junto al primero: cada uno se convierte en
@@ -335,11 +340,11 @@ export default function CreationWizard() {
     getRound(resumeRoundId)
       .then((detail) => {
         setProject({
-          id: detail.project_id,
-          name: detail.project_name,
-          external_code: detail.project_external_code ?? "",
+          id: detail.study_id,
+          name: detail.study_name,
+          external_code: detail.study_external_code ?? "",
         });
-        setActiveProjectId(detail.project_id);
+        setActiveProjectId(detail.study_id);
         setRound(detail);
         setRName(detail.name);
         setRRoundNumber(detail.round_number);
@@ -389,6 +394,7 @@ export default function CreationWizard() {
     const roundId = searchParams.get("roundId");
     if (!projectId || roundId) return;
     getProject(projectId).then((detail) => {
+      if (detail.kind !== "studio") return;
       setProject(detail);
       setActiveProjectId(detail.id);
 
@@ -506,6 +512,41 @@ export default function CreationWizard() {
   // Tarea 1/2: la sección "Libro de códigos" (dentro de Configuración) crea
   // los subprojects vía POST /rounds/{id}/subprojects, después de elegir el
   // origen.
+  const handleRecreateRound = async (fileOverride?: File) => {
+    if (!project) return null;
+    const file = fileOverride || rawFile;
+    if (!file) return null;
+    
+    setSubmitting(true);
+    try {
+      if (round) {
+        await deleteRound(round.id);
+      }
+      setRound(null);
+      setSubprojectsCreated(false);
+      
+      const created = await createRound(project.id, {
+        name: rName.trim(),
+        round_number: rRoundNumber,
+        min_mentions_threshold: rThreshold,
+        audit_percentage: rAudit,
+      });
+      setRound(created);
+      
+      const result = await uploadFile(created.id, file);
+      setUploaded(result);
+      setSourceLabel(file.name);
+      setIsSetupDirty(false);
+      setIsDataDirty(true);
+      return created;
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Error recreando la ronda", "error");
+      return null;
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const ensureRound = async (): Promise<Round | null> => {
     if (round) return round;
     if (!project || !rName.trim()) return null;
@@ -541,6 +582,10 @@ export default function CreationWizard() {
       setExpandedCodingType(missingSource);
       showToast(`Elige el libro a heredar para ${CODING_LABELS[missingSource]}`, "error");
       return;
+    }
+    if (isSetupDirty && rawFile) {
+      const recreated = await handleRecreateRound();
+      if (!recreated) return;
     }
     if (!round) return;
     if (subprojectsCreated) {
@@ -648,11 +693,18 @@ export default function CreationWizard() {
     async (accepted: File[]) => {
       const [file, ...rest] = accepted;
       if (!file) return;
+      setRawFile(file);
+      setIsSetupDirty(false);
+      setIsDataDirty(false);
       let targetRoundId: string;
       if (isAddLoadMode) {
         if (!existingRoundId) return;
         targetRoundId = existingRoundId;
       } else {
+        if (round) {
+          await handleRecreateRound(file);
+          return;
+        }
         const r = await ensureRound();
         if (!r) return;
         targetRoundId = r.id;
@@ -748,7 +800,10 @@ export default function CreationWizard() {
     effectiveRoundId
     && uploaded
     && verbatimsSheet
-    && (isDau || (columnMap.verbatim && columnMap.respondent_id))
+    && (isDau || (
+      columnMap.respondent_id &&
+      activeCodingTypes.every(ct => columnMap[ct])
+    ))
     && catalogsReady
     && mentionDecisionsReady
   );
@@ -791,11 +846,19 @@ export default function CreationWizard() {
     if (!round || !catalogFile || !sheet) return;
     setSubmitting(true);
     try {
+      if (!subprojectsCreated) {
+        const selectedOrigins = Object.fromEntries(
+          activeCodingTypes.map((ct) => [ct, catalogOrigins[ct]])
+        ) as Partial<Record<CodingType, CatalogOriginSelection>>;
+        const result = await createRoundSubprojects(round.id, { catalog_origins: selectedOrigins });
+        setRound((current) => (current ? { ...current, subprojects: result.subprojects } : current));
+        setSubprojectsCreated(true);
+      }
       await importClientCatalog(round.id, catalogFile.file_id, sheet, codingType);
       setCatalogConfirmed((current) => ({ ...current, [codingType]: true }));
       showToast(`Libro de códigos de ${CODING_LABELS[codingType]} homologado`, "success");
-    } catch {
-      showToast("No se pudo homologar el libro de códigos", "error");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "No se pudo homologar el libro de códigos", "error");
     } finally {
       setSubmitting(false);
     }
@@ -859,7 +922,7 @@ export default function CreationWizard() {
   // deferProcessing: true cuando eligió "continuar con perfil" para no
   // arrancar el motor antes del cruce.
   const handleImport = async (opts?: { deferProcessing?: boolean }): Promise<boolean> => {
-    if (!effectiveRoundId || !uploaded || !verbatimsSheet || !(isDau || (columnMap.verbatim && columnMap.respondent_id))) {
+    if (!effectiveRoundId || !uploaded || !verbatimsSheet || !(isDau || (columnMap.respondent_id && activeCodingTypes.every(ct => columnMap[ct])))) {
       return false;
     }
     setSubmitting(true);
@@ -922,7 +985,7 @@ export default function CreationWizard() {
   };
 
   const handleClassifyQuestions = async () => {
-    const projectIdForClassify = isAddLoadMode ? existingRound?.project_id : project?.id;
+    const projectIdForClassify = isAddLoadMode ? existingRound?.study_id : project?.id;
     if (!projectIdForClassify || pendingQuestions.length === 0) return;
     setSubmitting(true);
     try {
@@ -949,15 +1012,16 @@ export default function CreationWizard() {
   // se dispara ahí mismo, ya no hace falta ramificar "sin perfil" / "comparar
   // perfil" en dos botones.
   const handleContinueToReview = async (withProfile: boolean = showProfileStep) => {
-    if (!importedFileId) {
+    if (!importedFileId || isDataDirty) {
       const ok = await handleImport({ deferProcessing: withProfile });
       if (!ok) return;
+      setIsDataDirty(false);
     }
     if (batchItems.length > 0 && !isAddLoadMode) {
-      const projectId = project?.id ?? existingRound?.project_id;
+      const projectId = project?.id ?? existingRound?.study_id;
       if (projectId) await runBatch(projectId);
     }
-    goToStep(withProfile ? "profile" : "review");
+    goToStep("review");
   };
 
   // Task 3: dispara el cruce explícito (duplicados + perfil) sobre la carga
@@ -985,6 +1049,36 @@ export default function CreationWizard() {
       setMatchingProfile(false);
     }
   }, [effectiveRoundId, importedFileId, showToast]);
+
+  const handleBulkResolveDuplicates = useCallback(
+    async (action: "keep" | "remove") => {
+      const pending = duplicates.filter((d) => d.status === "pending");
+      if (pending.length === 0) return;
+      
+      let successCount = 0;
+      for (const d of pending) {
+        try {
+          const result = await resolveImportFlag(d.flag_id, action);
+          setDuplicates((current) =>
+            current.map((curr) => (curr.flag_id === d.flag_id ? { ...curr, status: result.status } : curr))
+          );
+          successCount++;
+        } catch {
+          // continue
+        }
+      }
+      
+      if (successCount === pending.length) {
+        showToast("Todos los duplicados resueltos", "success");
+        playSuccess();
+      } else if (successCount > 0) {
+        showToast(`Se resolvieron ${successCount} de ${pending.length}`, "info");
+      } else {
+        showToast("No se pudieron resolver los duplicados", "error");
+      }
+    },
+    [duplicates, showToast]
+  );
 
   // Al entrar a "Revisión" con una carga ya importada, corre el cruce una
   // vez automáticamente (con o sin perfil — sin perfil solo trae duplicados).
@@ -1014,7 +1108,7 @@ export default function CreationWizard() {
         const result = await resolveImportFlag(
           flag.flag_id,
           action,
-          action === "edit" ? editNotes[flag.flag_id] : undefined
+          undefined
         );
         if (kind === "duplicate") {
           setDuplicates((current) =>
@@ -1032,7 +1126,7 @@ export default function CreationWizard() {
         setResolvingFlagId(null);
       }
     },
-    [resolvingFlagId, editNotes, showToast]
+    [resolvingFlagId, showToast]
   );
 
   const goToRoundOutcome = () => {
@@ -1043,12 +1137,12 @@ export default function CreationWizard() {
 
   const stepIndex = visibleSteps.findIndex((s) => s.key === step);
 
-  const activeStudyName = isAddLoadMode ? existingRound?.project_name : project?.name;
+  const activeStudyName = isAddLoadMode ? existingRound?.study_name : project?.name;
   const crumbs: Crumb[] = [{ label: "Proyectos", to: "/" }];
   if (activeStudyName) {
     crumbs.push({
       label: activeStudyName,
-      to: isAddLoadMode ? `/projects/${existingRound?.project_id}` : `/projects/${project?.id}`,
+      to: isAddLoadMode ? `/projects/${existingRound?.study_id}` : `/projects/${project?.id}`,
     });
   }
   crumbs.push({ label: isAddLoadMode ? (existingRound?.name ?? "Ronda") : "Nueva ronda" });
@@ -1213,39 +1307,50 @@ export default function CreationWizard() {
                         <motion.input
                           ref={roundRef}
                           autoFocus
-                          disabled={!!round}
                           className="input w-full text-sm"
                           value={rName}
-                          onChange={(e) => setRName(e.target.value)}
+                          onChange={(e) => {
+                            setRName(e.target.value);
+                            setIsSetupDirty(true);
+                          }}
                           whileFocus={{ scale: 1.002 }}
                         />
                         <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Número de ronda</div>
-                        <motion.input
-                          type="number"
-                          min={1}
-                          disabled={!!round || hasExistingRounds}
-                          className="input w-full text-sm"
-                          value={rRoundNumber}
-                          onChange={(e) => setRRoundNumber(Number(e.target.value))}
-                          whileFocus={{ scale: 1.002 }}
-                        />
+                        {hasExistingRounds ? (
+                          <div className="text-sm text-p-text font-medium bg-p-bg-subtle border border-p-border-mid px-3 py-2 rounded-lg cursor-not-allowed text-opacity-80">
+                            {rRoundNumber}
+                          </div>
+                        ) : (
+                          <motion.input
+                            type="number"
+                            min={1}
+                            className="input w-full text-sm"
+                            value={rRoundNumber}
+                            onChange={(e) => {
+                              setRRoundNumber(Number(e.target.value));
+                              setIsSetupDirty(true);
+                            }}
+                            whileFocus={{ scale: 1.002 }}
+                          />
+                        )}
                         {hasExistingRounds && (
-                          <p className="text-xs text-p-text-faint">
-                            El proyecto ya tiene rondas — el número sigue la secuencia y no se puede editar.
+                          <p className="text-[10px] text-p-text-faint mt-1">
+                            Sigue la secuencia de rondas del proyecto automáticamente.
                           </p>
                         )}
 
-
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-2 gap-3 mt-2">
                           <div>
                             <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</div>
                             <motion.input
                               type="number"
                               min={1}
-                              disabled={!!round}
                               className="input w-full text-sm mt-1"
                               value={rThreshold}
-                              onChange={(e) => setRThreshold(Number(e.target.value))}
+                              onChange={(e) => {
+                                setRThreshold(Number(e.target.value));
+                                setIsSetupDirty(true);
+                              }}
                               whileFocus={{ scale: 1.002 }}
                             />
                           </div>
@@ -1255,17 +1360,16 @@ export default function CreationWizard() {
                               type="number"
                               min={0}
                               max={100}
-                              disabled={!!round}
                               className="input w-full text-sm mt-1"
                               value={rAudit}
-                              onChange={(e) => setRAudit(Number(e.target.value))}
+                              onChange={(e) => {
+                                setRAudit(Number(e.target.value));
+                                setIsSetupDirty(true);
+                              }}
                               whileFocus={{ scale: 1.002 }}
                             />
                           </div>
                         </div>
-                        <p className="text-xs text-p-text-faint">
-                          Se fijan al soltar el archivo — no se pueden cambiar después de importar.
-                        </p>
                       </div>
                     )}
 
@@ -1347,113 +1451,19 @@ export default function CreationWizard() {
                           </div>
                         )}
 
-                        <div>
-                          <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de respuestas (verbatims)</label>
-                          <select
-                            className="input w-full text-sm mt-1"
-                            value={verbatimsSheet}
-                            onChange={(e) => {
-                              setVerbatimsSheet(e.target.value);
-                              if (uploaded && uploaded.file_type !== "dau") {
-                                const sheet = uploaded.detected_sheets.find((s) => s.name === e.target.value);
-                                setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
-                              } else {
-                                setColumnMap({});
-                              }
-                            }}
-                          >
-                            {uploaded.detected_sheets.map((s) => (
-                              <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {isDau && activeSheet && (
-                          <div className="text-xs text-p-text-muted bg-p-bg-subtle rounded-lg p-2.5">
-                            Se importarán las respuestas abiertas detectadas en cada registro (
-                            {activeSheet.columns.length} campos, excluyendo id/fechas/metadata de la plataforma).
-                          </div>
-                        )}
-
-                        {!isDau && activeSheet && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                            <div>
-                              <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                                Columna Respondent ID
-                              </label>
-                              <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
-                                Se cruza con el perfil de referencia
-                              </p>
-                              <select
-                                className="input w-full text-sm"
-                                value={columnMap.respondent_id ?? ""}
-                                onChange={(e) => setColumnMap((m) => ({ ...m, respondent_id: e.target.value }))}
-                              >
-                                <option value="">Elegir columna...</option>
-                                {activeSheet.columns.map((c) => (
-                                  <option key={c} value={c}>{c}</option>
-                                ))}
-                              </select>
-                            </div>
-                            <div>
-                              <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                                Columna de verbatim
-                              </label>
-                              <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
-                                Texto abierto a clasificar
-                              </p>
-                              <select
-                                className="input w-full text-sm"
-                                value={columnMap.verbatim ?? ""}
-                                onChange={(e) => setColumnMap((m) => ({ ...m, verbatim: e.target.value }))}
-                              >
-                                <option value="">Elegir columna...</option>
-                                {activeSheet.columns.map((c) => (
-                                  <option key={c} value={c}>{c}</option>
-                                ))}
-                              </select>
-                            </div>
-                          </div>
-                        )}
-
-                        {isAddLoadMode && (
-                          <div className="flex gap-1.5 pt-1">
-                            <motion.button
-                              whileHover={{ scale: 1.02 }}
-                              whileTap={{ scale: 0.98 }}
-                              className="btn-primary text-sm py-2 flex-1 justify-center"
-                              onClick={() => void handleContinueToData()}
-                            >
-                              Continuar <span className="opacity-60 font-normal">(Enter)</span>
-                            </motion.button>
-                            <motion.button
-                              whileHover={{ scale: 1.02 }}
-                              whileTap={{ scale: 0.98 }}
-                              className="btn-ghost text-sm py-2 px-3"
-                              onClick={() => {
-                                setUploaded(null);
-                                setColumnMap({});
-                                setBatchItems([]);
-                              }}
-                            >
-                              Cambiar archivo
-                            </motion.button>
-                          </div>
-                        )}
-                        {!isAddLoadMode && (
-                          <motion.button
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                            className="btn-ghost text-xs py-1.5 px-3 self-start"
-                            onClick={() => {
-                              setUploaded(null);
-                              setColumnMap({});
-                              setBatchItems([]);
-                            }}
-                          >
-                            Cambiar archivo
-                          </motion.button>
-                        )}
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          className="btn-ghost text-xs py-1.5 px-3 self-start mt-1 -ml-1"
+                          onClick={() => {
+                            setUploaded(null);
+                            setRawFile(null);
+                            setColumnMap({});
+                            setBatchItems([]);
+                          }}
+                        >
+                          Cambiar archivo
+                        </motion.button>
                       </motion.div>
                     )}
 
@@ -1575,6 +1585,7 @@ export default function CreationWizard() {
                                         aria-checked={active}
                                         disabled={subprojectsCreated}
                                         onClick={() => {
+                                          setIsSetupDirty(true);
                                           setCatalogOrigins((current) => ({
                                             ...current,
                                             [codingType]: {
@@ -1627,7 +1638,7 @@ export default function CreationWizard() {
                                     ) : (
                                       <div className="mt-1.5 flex items-center justify-between p-3 rounded-lg border border-p-border bg-p-bg-subtle">
                                         <div className="text-sm font-medium text-p-text">
-                                          {codebookSources[codingType][0]?.project_name} · R{codebookSources[codingType][0]?.round_number}
+                                          {codebookSources[codingType][0]?.study_name} • R{codebookSources[codingType][0]?.round_number}
                                         </div>
                                         <span className="text-[10px] uppercase font-bold text-p-accent bg-p-accent/10 px-2 py-0.5 rounded-full">
                                           Último
@@ -1778,6 +1789,90 @@ export default function CreationWizard() {
                     </motion.button>
 
                     <div className="space-y-1.5">
+                      {uploaded && !isDau && (
+                        <div className="space-y-3 mb-4 p-3 bg-p-surface rounded-xl border border-p-border">
+                          <div>
+                            <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                              Hoja de respuestas
+                            </label>
+                            <select
+                              className="input w-full text-sm mt-1"
+                              value={verbatimsSheet}
+                              onChange={(e) => {
+                                setIsDataDirty(true);
+                                setVerbatimsSheet(e.target.value);
+                                const sheet = uploaded.detected_sheets.find((s) => s.name === e.target.value);
+                                setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
+                              }}
+                            >
+                              <option value="">Selecciona hoja</option>
+                              {uploaded.detected_sheets.map((s) => (
+                                <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {activeSheet && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                              <div>
+                                <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                  Columna Respondent ID
+                                </label>
+                                <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
+                                  Identificador único
+                                </p>
+                                <select
+                                  className="input w-full text-sm"
+                                  value={columnMap.respondent_id ?? ""}
+                                  onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, respondent_id: e.target.value })); }}
+                                >
+                                  <option value="">Elegir columna...</option>
+                                  {activeSheet.columns.map((c) => (
+                                    <option key={c} value={c}>{c}</option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              {activeCodingTypes.includes("brands") && (
+                                <div>
+                                  <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                    Columna de marcas
+                                  </label>
+                                  <select
+                                    className="input w-full text-sm mt-1"
+                                    value={columnMap.brands ?? ""}
+                                    onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, brands: e.target.value })); }}
+                                  >
+                                    <option value="">Elegir columna...</option>
+                                    {activeSheet.columns.map((c) => (
+                                      <option key={c} value={c}>{c}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              )}
+
+                              {activeCodingTypes.includes("reasons") && (
+                                <div>
+                                  <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                    Columna de razones
+                                  </label>
+                                  <select
+                                    className="input w-full text-sm mt-1"
+                                    value={columnMap.reasons ?? ""}
+                                    onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, reasons: e.target.value })); }}
+                                  >
+                                    <option value="">Elegir columna...</option>
+                                    {activeSheet.columns.map((c) => (
+                                      <option key={c} value={c}>{c}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
                         {isDau ? "Campos a clasificar" : "Muestra de valores"}
                       </label>
@@ -1847,7 +1942,7 @@ export default function CreationWizard() {
                           className="btn-secondary text-sm py-2 w-full justify-center"
                           onClick={() => {
                             setShowProfileStep(false);
-                            void handleContinueToReview(false);
+                            void handleContinueToReview();
                           }}
                         >
                           {submitting ? "Importando..." : "Continuar sin perfil"}
@@ -1858,7 +1953,7 @@ export default function CreationWizard() {
                           className="btn-primary text-sm py-2 w-full justify-center"
                           onClick={() => {
                             setShowProfileStep(true);
-                            void handleContinueToReview(true);
+                            void handleContinueToReview();
                           }}
                         >
                           {submitting ? "Importando..." : "Continuar con perfil"}
@@ -2165,89 +2260,11 @@ export default function CreationWizard() {
                     )}
 
                     {!matchingProfile && duplicates.length > 0 && (
-                      <section className="card p-4 space-y-3">
-                        <div className="flex items-center gap-2">
-                          <Users className="w-4 h-4 text-p-warning" />
-                          <h2 className="text-sm font-bold uppercase tracking-wide text-p-text">
-                            Posibles duplicados reales
-                          </h2>
-                          <span className={
-                            duplicates.some((d) => d.status === "pending") ? "badge-warning" : "badge-success"
-                          }>
-                            {duplicates.filter((d) => d.status === "pending").length > 0
-                              ? `${duplicates.filter((d) => d.status === "pending").length} pendientes`
-                              : "Resueltos"}
-                          </span>
-                        </div>
-                        <p className="text-xs text-p-text-muted">
-                          El mismo ID real (persona) ya existe en otra carga de esta ronda. Decide por cada uno; el ID
-                          real nunca se modifica.
-                        </p>
-                        <div className="space-y-2">
-                          {duplicates.map((flag) => (
-                            <div key={flag.flag_id} className="rounded-lg border border-p-border bg-p-bg-subtle p-3 space-y-2">
-                              <div className="flex items-center justify-between gap-2 flex-wrap">
-                                <div className="text-xs text-p-text">
-                                  <span className="font-semibold">Serial {flag.serial ?? "—"}</span>
-                                  <span className="text-p-text-muted"> · ID real </span>
-                                  <code className="text-[11px]">{flag.realid ?? "—"}</code>
-                                  {flag.matches.map((m, i) => (
-                                    <span key={i} className="text-p-text-muted">
-                                      {" "}· ya existe como Serial {m.serial ?? "—"} — Carga: {m.source_label}
-                                    </span>
-                                  ))}
-                                </div>
-                                {flag.status !== "pending" ? (
-                                  <span className={flag.status === "approved_remove" ? "badge-pending" : "badge-success"}>
-                                    {flag.status === "approved_keep"
-                                      ? "Se mantienen ambos"
-                                      : flag.status === "approved_remove"
-                                        ? "Carga nueva descartada"
-                                        : "Editado"}
-                                  </span>
-                                ) : (
-                                  <div className="flex items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      className="btn-primary text-xs py-1.5 px-2.5"
-                                      disabled={resolvingFlagId === flag.flag_id}
-                                      onClick={() => void handleResolve(flag, "keep")}
-                                    >
-                                      Mantener ambos
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn-ghost text-xs py-1.5 px-2.5"
-                                      disabled={resolvingFlagId === flag.flag_id}
-                                      onClick={() => void handleResolve(flag, "edit")}
-                                    >
-                                      Guardar con nota
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn-ghost text-xs py-1.5 px-2.5 text-p-error"
-                                      disabled={resolvingFlagId === flag.flag_id}
-                                      onClick={() => void handleResolve(flag, "remove")}
-                                    >
-                                      Quitar de esta carga
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                              {flag.status === "pending" && (
-                                <input
-                                  className="input w-full text-xs"
-                                  placeholder="Nota opcional (se guarda con la decisión 'Guardar con nota')"
-                                  value={editNotes[flag.flag_id] ?? ""}
-                                  onChange={(e) =>
-                                    setEditNotes((current) => ({ ...current, [flag.flag_id]: e.target.value }))
-                                  }
-                                />
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </section>
+                      <DuplicatesReviewTable
+                        duplicates={duplicates}
+                        onResolve={handleResolve}
+                        onBulkResolve={handleBulkResolveDuplicates}
+                      />
                     )}
 
                     {!matchingProfile && serialCollisions.length > 0 && (

@@ -260,7 +260,7 @@ export default function UnifiedStudioView() {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => navigate(`/projects/${round.project_id}`)}
+          onClick={() => navigate(`/projects/${round.study_id}`)}
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-p-text-faint hover:text-p-text hover:bg-p-bg-subtle transition-colors"
           title="Volver"
           aria-label="Volver"
@@ -270,7 +270,7 @@ export default function UnifiedStudioView() {
         <Breadcrumb
           items={[
             { label: "Proyectos", to: "/" },
-            { label: round.project_name, to: `/projects/${round.project_id}` },
+            { label: round.study_name, to: `/projects/${round.study_id}` },
             { label: "Procesamiento" },
           ]}
         />

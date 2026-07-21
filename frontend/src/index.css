@@ -355,7 +355,7 @@
   .btn-danger {
     @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm text-p-error
            border border-p-border hover:bg-red-50 transition-all duration-150 ease-out-expo active:scale-[0.98]
-           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-error/40 focus-visible:ring-offset-2 focus-visible:ring-offset-p-surface;
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600/40 focus-visible:ring-offset-2 focus-visible:ring-offset-p-surface;
   }
 
   /* Confidence bar — filled based on --conf CSS var */

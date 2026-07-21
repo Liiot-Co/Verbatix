@@ -120,7 +120,7 @@ def test_replace_assignments_reports_only_newly_granted_projects():
 
     def execute(query, params=None):
         sql = str(query)
-        if "select count(*) from studios" in sql:
+        if "select count(*) from studies" in sql:
             return Result(scalar=2)
         if "select project_id from assignments" in sql:
             result = Result()

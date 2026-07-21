@@ -41,7 +41,7 @@ export default function TeamAdminPage() {
   const openUser = (user: AdminUser) => {
     setSelected(user);
     setRoles(user.roles);
-    setProjectIds(user.project_ids);
+    setProjectIds(user.study_ids);
   };
   const saveUser = async () => {
     if (!selected || saving) return;
