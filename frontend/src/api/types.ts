@@ -282,6 +282,21 @@ export interface LoadReviewState {
   requires_review: boolean;
 }
 
+// POST /rounds/{id}/files/{file_id}/profile-match — cruce explícito de
+// duplicados + perfil sobre una carga ya importada (Task 3/4).
+export interface ProfileMatchResult {
+  duplicates: DuplicateFlag[];
+  serial_collisions: SerialCollision[];
+  profile_candidates: ProfileCandidateFlag[];
+  has_profile: boolean;
+  profile_file_id: string | null;
+  expected: number;
+  arrived: number;
+  extra: number;
+  summary?: string;
+  pending_flags: number;
+}
+
 export interface ImportResult {
   imported: {
     verbatims: number;

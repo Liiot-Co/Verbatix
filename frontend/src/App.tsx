@@ -11,7 +11,6 @@ import CapabilityGuard from "@/components/CapabilityGuard";
 import ProjectDashboard from "@/components/ProjectDashboard";
 import ProjectDetail from "@/components/ProjectDetail";
 import CreationWizard from "@/components/CreationWizard";
-import AddLoadView from "@/components/AddLoadView";
 import UnifiedStudioView from "@/components/UnifiedStudioView";
 import AuditView from "@/components/AuditView";
 import ReportView from "@/components/ReportView";
@@ -46,7 +45,7 @@ export default function App() {
                     <Route path="/wizard" element={<CapabilityGuard capability="projects.manage"><CreationWizard /></CapabilityGuard>} />
                     <Route path="/team" element={<CapabilityGuard capability="users.manage"><TeamAdminPage /></CapabilityGuard>} />
                     <Route path="/notifications" element={<NotificationsInbox />} />
-                    <Route path="/rounds/:roundId/add-load" element={<CapabilityGuard capability="rounds.manage"><AddLoadView /></CapabilityGuard>} />
+                    <Route path="/rounds/:roundId/add-load" element={<CapabilityGuard capability="rounds.manage"><CreationWizard /></CapabilityGuard>} />
                     <Route path="/rounds/:roundId" element={<UnifiedStudioView />} />
                     <Route path="/rounds/:roundId/preliminary" element={<UnifiedStudioView />} />
                     <Route path="/rounds/:roundId/verbatims" element={<UnifiedStudioView />} />

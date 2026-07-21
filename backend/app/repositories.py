@@ -725,16 +725,18 @@ def insert_verbatims(
             guessed = guess_coding_type(qk)
             # Solo auto-clasifica si el tipo adivinado existe en esta ronda;
             # si no, queda pendiente para que el analista elija entre los tipos
-            # configurados (nunca se inventa un subproyecto a ciegas).
+            # configurados (nunca se inventa un subproyecto a ciegas). Un patrón
+            # reconocido (NBS_UNAID*, VYK*) de un tipo que la ronda NO tiene
+            # configurado NUNCA cae al fallback de tipo único: eso ocultaría al
+            # analista que esa pregunta no corresponde al alcance de la ronda.
             # Excel mínimo (Respondent ID + Verbatim, sin Question ID) usa la
-            # clave sintética "verbatim": si la ronda tiene un solo tipo, se
-            # asigna ahí sin pedir clasificación.
+            # clave sintética "verbatim" (guessed=None): si la ronda tiene un
+            # solo tipo, se asigna ahí sin pedir clasificación.
+            if guessed is None and len(configured_types) == 1:
+                guessed = next(iter(configured_types))
             if guessed is None or guessed not in configured_types:
-                if len(configured_types) == 1:
-                    guessed = next(iter(configured_types))
-                else:
-                    pending.add(qk)
-                    continue
+                pending.add(qk)
+                continue
             qid = classify_question(db, project_id, qk, guessed)
             q_info = {
                 "id": qid,

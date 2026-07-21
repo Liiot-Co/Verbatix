@@ -25,6 +25,7 @@ import type {
   PreliminarySummary,
   ProcessResult,
   ProfileCandidateFlag,
+  ProfileMatchResult,
   ProjectDetail,
   ProjectListItem,
   ResolutionQueue,
@@ -38,6 +39,7 @@ import type {
   RoundProfileSummary,
   RoundReport,
   RoundStatus,
+  RoundSubproject,
   SignupPayload,
   SignupResponse,
   UploadedFile,
@@ -258,15 +260,27 @@ export interface CreateRoundInput {
   round_number: number;
   min_mentions_threshold: number;
   audit_percentage: number;
-  origin_mode: "from_scratch" | "homologated";
-  source_round_id?: string | null | undefined;
+}
+
+export async function createRound(projectId: string, input: CreateRoundInput): Promise<Round> {
+  return request<Round>(`/projects/${projectId}/rounds`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input),
+  });
+}
+
+export interface CreateRoundSubprojectsInput {
   /** Solo los tipos elegidos (Marcas, Razones o ambos). El origen es obligatorio por tipo. */
   catalog_origins: Partial<Record<"brands" | "reasons", CatalogOriginSelection>>;
   reuse_catalogs_from_round_id?: string | null;
 }
 
-export async function createRound(projectId: string, input: CreateRoundInput): Promise<Round> {
-  return request<Round>(`/projects/${projectId}/rounds`, {
+export async function createRoundSubprojects(
+  roundId: string,
+  input: CreateRoundSubprojectsInput
+): Promise<{ round_id: string; subprojects: RoundSubproject[] }> {
+  return request(`/rounds/${roundId}/subprojects`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify(input),
@@ -386,14 +400,25 @@ export async function importFile(
   });
 }
 
-/* ── REQ-03: cargas múltiples ── */
-
 export async function getRoundLoads(roundId: string): Promise<RoundLoad[]> {
   return request<RoundLoad[]>(`/rounds/${roundId}/loads`);
 }
 
 export async function getLoadReview(roundId: string, fileId: string): Promise<LoadReviewState> {
   return request<LoadReviewState>(`/rounds/${roundId}/files/${fileId}/review`);
+}
+
+/** Task 3/4: cruce explícito de duplicados + perfil por Respondent ID sobre
+ * una carga ya importada — se dispara desde el wizard después de que el
+ * analista confirma los campos seleccionados (ya no corre dentro de import). */
+export async function matchProfile(
+  roundId: string,
+  fileId: string
+): Promise<ProfileMatchResult> {
+  return request<ProfileMatchResult>(
+    `/rounds/${roundId}/files/${fileId}/profile-match`,
+    { method: "POST", headers: jsonHeaders }
+  );
 }
 
 export async function resolveImportFlag(

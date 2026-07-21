@@ -301,9 +301,9 @@ def match_file_against_profile(
         "candidates": candidates,
         "pending_flags": pending,
         "summary": (
-            f"El perfil tiene {expected} Respondent ID; "
-            f"en la data hay {arrived} Respondent ID distintos; "
-            f"{pending} no están en el perfil (candidatos a exclusión)."
+            f"El perfil tiene {expected} esperados; "
+            f"en la data llegaron {arrived}; "
+            f"sobran {pending}."
         ),
     }
 

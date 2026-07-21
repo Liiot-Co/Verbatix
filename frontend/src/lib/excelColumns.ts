@@ -10,8 +10,11 @@ export function guessExcelColumnMap(columns: string[]): {
   const find = (...aliases: string[]) =>
     normalized.find((c) => aliases.includes(c.low))?.raw;
 
+  const respondentId = find("respondent id", "serial", "respondent_id");
+  const verbatim = find("verbatim");
+
   return {
-    respondent_id: find("respondent id", "serial", "respondent_id"),
-    verbatim: find("verbatim"),
+    ...(respondentId !== undefined ? { respondent_id: respondentId } : {}),
+    ...(verbatim !== undefined ? { verbatim } : {}),
   };
 }
