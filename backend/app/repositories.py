@@ -3116,7 +3116,7 @@ def _build_codebook_nets(db: Session, codebook_id: uuid.UUID, total_verbatims: i
 
     code_rows = db.execute(
         text("""
-            select c.id, c.code_number, c.label, n.name as net_name, n.display_order as net_order
+            select c.id, c.code_number, c.label, c.is_system, n.name as net_name, n.display_order as net_order
             from codes c
             left join net_codes nc on nc.code_id = c.id
             left join nets n on n.id = nc.net_id
@@ -3137,6 +3137,7 @@ def _build_codebook_nets(db: Session, codebook_id: uuid.UUID, total_verbatims: i
             "frequency": freq,
             "pct": round(freq / total_verbatims, 6) if total_verbatims else 0.0,
             "net_name": row["net_name"],
+            "is_system": bool(row["is_system"]),
         }
 
     net_rows = db.execute(
@@ -3145,7 +3146,7 @@ def _build_codebook_nets(db: Session, codebook_id: uuid.UUID, total_verbatims: i
     ).mappings().all()
 
     def _by_frequency_desc(c: dict):
-        return (-c["frequency"], c["code_number"])
+        return (c["is_system"], -c["frequency"], c["code_number"])
 
     fallback_net = f"NETO {fallback_label.upper()}"
     if net_rows:
