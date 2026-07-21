@@ -31,7 +31,7 @@ def create_project(
     try:
         db.execute(
             text("""
-                insert into projects (id, external_code, name, proyecto_id, created_by)
+                insert into studios (id, external_code, name, proyecto_id, created_by)
                 values (:id, :code, :name, :proyecto, :u)
             """),
             {
@@ -84,7 +84,7 @@ def list_projects(
                        order by coalesce(u.name, u.email) limit 3
                      ) preview
                    ), '[]'::jsonb) assigned_users_preview
-            from projects p
+            from studios p
             left join rounds r on r.project_id = p.id
             where :ids is null or p.id = any(:ids)
             group by p.id
@@ -119,7 +119,7 @@ def delete_project(
     # evita que PostgreSQL intente borrar questions aún referenciadas.
     db.execute(text("delete from rounds where project_id = :id"), {"id": project_id})
     deleted = db.execute(
-        text("delete from projects where id = :id returning id"),
+        text("delete from studios where id = :id returning id"),
         {"id": project_id},
     ).scalar()
     if not deleted:
@@ -135,7 +135,7 @@ def get_project(
 ):
     require_project(db, project_id, user["id"])
     project = db.execute(
-        text("select id, external_code, name, proyecto_id, created_at from projects where id = :id"),
+        text("select id, external_code, name, proyecto_id, created_at from studios where id = :id"),
         {"id": project_id},
     ).mappings().first()
 

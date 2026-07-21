@@ -112,7 +112,7 @@ class AuditComment(Base):
 class Proyecto(Base):
     """Nivel jerárquico superior: agrupa uno o varios Estudios (projects)."""
 
-    __tablename__ = "proyectos"
+    __tablename__ = "projects"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
@@ -125,7 +125,7 @@ class Proyecto(Base):
 
 
 class Project(Base):
-    __tablename__ = "projects"
+    __tablename__ = "studios"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     external_code = Column(String, unique=True, nullable=True)

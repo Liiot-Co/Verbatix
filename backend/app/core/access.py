@@ -76,10 +76,10 @@ def require_admin(db: Session, user_id) -> None:
 def require_project_membership(db: Session, project_id: uuid.UUID, user_id) -> None:
     require_active_account(db, user_id)
     if is_admin(db, user_id):
-        exists = db.execute(text("select 1 from projects where id = :id"), {"id": project_id}).scalar()
+        exists = db.execute(text("select 1 from studios where id = :id"), {"id": project_id}).scalar()
     else:
         exists = db.execute(text("""
-            select 1 from projects p
+            select 1 from studios p
             join assignments a on a.project_id = p.id
             where p.id = :id and a.user_id = :u and a.status = 'active' and a.revoked_at is null
         """), {"id": project_id, "u": user_id}).scalar()

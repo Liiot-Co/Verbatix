@@ -76,7 +76,7 @@ def export_codebook(
         text("""
             select p.external_code, r.round_number
             from rounds r
-            join projects p on p.id = r.project_id
+            join studios p on p.id = r.project_id
             where r.id = :id
         """),
         {"id": round_id},

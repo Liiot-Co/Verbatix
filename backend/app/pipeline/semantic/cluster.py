@@ -187,7 +187,7 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
                    cat.name as product_category, sp.single_code_per_response
               from subprojects sp
               join rounds r on r.id = sp.round_id
-              join projects p on p.id = r.project_id
+              join studios p on p.id = r.project_id
               left join categories cat on cat.id = r.category_id
              where sp.id = :sp
         """),

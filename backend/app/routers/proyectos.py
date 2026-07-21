@@ -27,7 +27,7 @@ def create_proyecto(
     require_admin(db, user["id"])
     pid = uuid.uuid4()
     db.execute(
-        text("insert into proyectos (id, name, created_by) values (:id, :name, :u)"),
+        text("insert into projects (id, name, created_by) values (:id, :name, :u)"),
         {"id": pid, "name": payload.name, "u": user["id"]},
     )
     db.commit()
@@ -43,8 +43,8 @@ def list_proyectos(
     rows = db.execute(
         text("""
             select p.id, p.name, p.created_at, count(pr.id) as projects_count
-            from proyectos p
-            left join projects pr on pr.proyecto_id = p.id
+            from projects p
+            left join studios pr on pr.proyecto_id = p.id
             group by p.id
             order by p.created_at desc
         """),
@@ -64,7 +64,7 @@ def get_proyecto(
 ):
     require_admin(db, user["id"])
     proyecto = db.execute(
-        text("select id, name, created_at from proyectos where id = :id"),
+        text("select id, name, created_at from projects where id = :id"),
         {"id": proyecto_id},
     ).mappings().first()
     if not proyecto:
@@ -83,8 +83,8 @@ def list_proyecto_projects(
     rows = db.execute(
         text("""
             select p.id, p.external_code, p.name, p.created_at
-            from projects p
-            join proyectos pr on pr.id = p.proyecto_id
+            from studios p
+            join projects pr on pr.id = p.proyecto_id
             where p.proyecto_id = :id
             order by p.created_at desc
         """),
@@ -105,7 +105,7 @@ def update_proyecto(
 ):
     require_admin(db, user["id"])
     updated = db.execute(
-        text("update proyectos set name = :name where id = :id returning id"),
+        text("update projects set name = :name where id = :id returning id"),
         {"name": payload.name, "id": proyecto_id},
     ).scalar()
     if not updated:
@@ -122,7 +122,7 @@ def delete_proyecto(
 ):
     require_admin(db, user["id"])
     deleted = db.execute(
-        text("delete from proyectos where id = :id returning id"),
+        text("delete from projects where id = :id returning id"),
         {"id": proyecto_id},
     ).scalar()
     if not deleted:

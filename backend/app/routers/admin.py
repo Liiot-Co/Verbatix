@@ -146,7 +146,7 @@ def replace_roles(user_id: uuid.UUID, payload: RolesIn, db: Session = Depends(ge
 def _replace_assignments(db: Session, target_id, project_ids: list[uuid.UUID], actor_id) -> list[uuid.UUID]:
     """Sync active assignments to `project_ids`. Returns projects newly granted."""
     unique_ids = list(dict.fromkeys(project_ids))
-    existing_count = db.execute(text("select count(*) from projects where id = any(:ids)"), {"ids": unique_ids}).scalar() if unique_ids else 0
+    existing_count = db.execute(text("select count(*) from studios where id = any(:ids)"), {"ids": unique_ids}).scalar() if unique_ids else 0
     if existing_count != len(unique_ids):
         raise HTTPException(400, "Uno o más proyectos no existen")
     already_active = set(db.execute(text("""
@@ -243,7 +243,7 @@ def all_assignments(db: Session = Depends(get_db), user: CurrentUser = Depends(c
         select a.id, a.project_id, p.name project_name, a.user_id, u.email, u.name,
                u.account_status, a.assigned_at,
                coalesce(array_agg(distinct ur.role_code) filter (where ur.role_code is not null), '{}') roles
-        from assignments a join projects p on p.id = a.project_id join users u on u.id = a.user_id
+        from assignments a join studios p on p.id = a.project_id join users u on u.id = a.user_id
         left join user_roles ur on ur.user_id = u.id
         where a.status = 'active' and a.revoked_at is null
         group by a.id, p.name, u.email, u.name, u.account_status order by p.name, u.name, u.email

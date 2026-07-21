@@ -3173,7 +3173,7 @@ def get_round_export_data(db: Session, round_id: uuid.UUID) -> dict:
         text("""
             select r.*, p.name as study_name, p.external_code as project_external_code
             from rounds r
-            join projects p on p.id = r.project_id
+            join studios p on p.id = r.project_id
             where r.id = :id
         """),
         {"id": round_id},

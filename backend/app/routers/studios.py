@@ -79,7 +79,7 @@ def _catalog_source(
                    sp.round_id, r.project_id, p.proyecto_id
               from subprojects sp
               join rounds r on r.id = sp.round_id
-              join projects p on p.id = r.project_id
+              join studios p on p.id = r.project_id
               join codebooks cb on cb.id = sp.codebook_id
              where sp.id = :source
                and cb.status in ('approved', 'exported')
@@ -87,7 +87,7 @@ def _catalog_source(
         {"source": source_subproject_id},
     ).mappings().first()
     target = db.execute(
-        text("select proyecto_id from projects where id = :id"),
+        text("select proyecto_id from studios where id = :id"),
         {"id": target_project_id},
     ).mappings().first()
     if not source:
@@ -437,8 +437,8 @@ def list_codebook_sources(
                         where a.codebook_id = cb.id and c.is_active) as aliases,
                        (select count(*) from nets n
                          where n.codebook_id = cb.id) as nets
-                  from projects target
-                  join projects p
+                  from studios target
+                  join studios p
                     on p.id = target.id
                     or (
                       target.proyecto_id is not null
@@ -501,7 +501,7 @@ def get_round(
                    p.external_code as project_external_code,
                    cat.name as category_name
             from rounds r
-            join projects p on p.id = r.project_id
+            join studios p on p.id = r.project_id
             left join categories cat on cat.id = r.category_id
             where r.id = :id
         """),
