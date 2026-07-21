@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.access import require_capability, require_project, visible_project_ids
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
+from app.repositories import round_setup_incomplete
 
 router = APIRouter(prefix="/api/v1", tags=["projects"])
 
@@ -176,6 +177,12 @@ def get_project(
                 "verbatims_total": r["verbatims_total"],
                 "auto_coded": r["auto_coded"],
             })
+
+    # round-sequence-and-homologation (Task 7): calculado con el mismo
+    # criterio centralizado que bloquea el motor (round_setup_incomplete),
+    # para que el frontend pinte el chip sin llamadas extra por ronda.
+    for rid, round_data in rounds_by_id.items():
+        round_data["setup_incomplete"] = round_setup_incomplete(db, uuid.UUID(rid))
 
     return {
         "id": str(project["id"]),

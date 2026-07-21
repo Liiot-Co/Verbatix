@@ -121,15 +121,30 @@ export default function ProjectDetail() {
               const totalVerbatims = round.subprojects.reduce((n, subproject) => n + subproject.verbatims_total, 0);
               const totalCoded = round.subprojects.reduce((n, subproject) => n + subproject.auto_coded, 0);
               const processed = !["created", "files_uploaded", "processing"].includes(round.status);
-              const target = can(user, "audit.view") && !can(user, "resolution.view")
+              const setupIncomplete = !!round.setup_incomplete;
+              const target = setupIncomplete
+                ? `/wizard?projectId=${project.id}&roundId=${round.id}`
+                : can(user, "audit.view") && !can(user, "resolution.view")
                 ? `/rounds/${round.id}/audit`
                 : round.status === "audit_approved" ? `/rounds/${round.id}/report` : roundPhasePath(round.id, round.status);
               const content = <>
                   <div className="project-row-icon project-row-icon-1"><span className="text-xs font-bold">R</span></div>
-                  <div className="flex-1 min-w-0"><div className="text-sm font-semibold text-p-text truncate group-hover:text-p-accent transition-colors">R{round.round_number} · {round.name}</div><div className="text-[11px] font-subtitle text-p-text-faint mt-0.5 truncate">{!processed && !canManageRounds ? "Esperando procesamiento" : `Marcas y razones · ${totalCoded}/${totalVerbatims} codificados`}</div></div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-p-text truncate group-hover:text-p-accent transition-colors">
+                      R{round.round_number} · {round.name}
+                    </div>
+                    <div className="text-[11px] font-subtitle text-p-text-faint mt-0.5 truncate">{!processed && !canManageRounds ? "Esperando procesamiento" : `Marcas y razones · ${totalCoded}/${totalVerbatims} codificados`}</div>
+                  </div>
+                  {setupIncomplete && (
+                    <div className="flex-1 flex justify-center px-2">
+                      <span className="badge-warning shrink-0 whitespace-nowrap">
+                        Configuración incompleta
+                      </span>
+                    </div>
+                  )}
                   {processed || canManageRounds ? <ArrowRight className="w-4 h-4 text-p-text-faint group-hover:translate-x-0.5 transition-transform shrink-0" /> : null}
                 </>;
-              return processed || canManageRounds ? (
+              return processed || canManageRounds || setupIncomplete ? (
                 <Link
                   key={round.id}
                   to={target}

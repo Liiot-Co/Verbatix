@@ -1477,6 +1477,80 @@ def round_processing_blockers(db: Session, round_id: uuid.UUID) -> list[str]:
     return blockers
 
 
+def next_round_number(db: Session, project_id: uuid.UUID) -> int:
+    """Siguiente `round_number` esperado de un proyecto (Estudio): `max+1` si ya
+    tiene rondas, o `1` si todavía no tiene ninguna (round-sequence-and-homologation,
+    Task 1) — reutilizable por el wizard (para bloquear el input) y por la
+    validación de secuencia en `POST /projects/{id}/rounds` (Task 2)."""
+    current_max = db.execute(
+        text("select max(round_number) from rounds where project_id = :project"),
+        {"project": project_id},
+    ).scalar()
+    return (current_max or 0) + 1
+
+
+def round_setup_incomplete(db: Session, round_id: uuid.UUID) -> bool:
+    """Determina si una ronda tiene configuración incompleta en cualquiera de
+    los puntos de falla del wizard (round-sequence-and-homologation, Task 5):
+    sin subproyectos creados, con subproyectos pero homologación de catálogo
+    de cliente sin aprobar, o archivo(s) subidos sin cerrar el import. Se
+    centraliza acá para que todo call-site de `scheduler.submit` (Task 6) y
+    `GET /projects/{id}` (Task 7) usen el mismo criterio.
+    """
+    subproject_count = db.execute(
+        text("select count(*) from subprojects where round_id = :round"),
+        {"round": round_id},
+    ).scalar() or 0
+    if subproject_count == 0:
+        return True
+
+    pending_client_catalogs = db.execute(
+        text("""
+            select count(*) from subprojects sp
+            join codebooks cb on cb.id = sp.codebook_id
+            where sp.round_id = :round
+              and cb.origin = 'imported_client_catalog'
+              and cb.status not in ('approved', 'exported')
+        """),
+        {"round": round_id},
+    ).scalar() or 0
+    if pending_client_catalogs:
+        return True
+
+    round_row = db.execute(
+        text("select status from rounds where id = :round"),
+        {"round": round_id},
+    ).mappings().first()
+    round_status = round_row["status"] if round_row else None
+    if round_status in ("created", "files_uploaded"):
+        unclosed_files = db.execute(
+            text("""
+                select count(*) from imported_files
+                 where round_id = :round
+                   and file_type in ('verbatims_xlsx', 'combined_xlsx', 'dau')
+                   and (
+                     status <> 'validated'
+                     or coalesce(dataset_snapshot ->> 'status', '') <> 'ready'
+                   )
+            """),
+            {"round": round_id},
+        ).scalar() or 0
+        if unclosed_files:
+            return True
+        no_files = db.execute(
+            text("""
+                select count(*) from imported_files
+                 where round_id = :round
+                   and file_type in ('verbatims_xlsx', 'combined_xlsx', 'dau')
+            """),
+            {"round": round_id},
+        ).scalar() or 0
+        if no_files == 0:
+            return True
+
+    return False
+
+
 def round_export_blockers(db: Session, round_id: uuid.UUID) -> list[str]:
     """Puerta de integridad del entregable, independiente de permisos/rol.
 

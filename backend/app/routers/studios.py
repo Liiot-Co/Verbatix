@@ -35,8 +35,10 @@ from app.repositories import (
     get_pending_summary,
     insert_codebook_from_excel,
     insert_verbatims,
+    next_round_number,
     persist_dataset_snapshot,
     round_processing_blockers,
+    round_setup_incomplete,
     sync_unmatched_question_flags,
     propagate_group_codes_to_pending,
     seed_system_codes,
@@ -252,6 +254,19 @@ def _create_subprojects(
     return subprojects, reasons_source_round_id
 
 
+@router.get("/projects/{project_id}/next-round-number")
+def get_next_round_number(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Siguiente `round_number` esperado del proyecto (round-sequence-and-
+    homologation, Task 1): el wizard lo consume para bloquear el input cuando
+    ya existen rondas previas."""
+    require_project(db, project_id, user["id"])
+    return {"next_round_number": next_round_number(db, project_id)}
+
+
 @router.post("/projects/{project_id}/rounds", status_code=201)
 def create_round(
     project_id: uuid.UUID,
@@ -263,6 +278,26 @@ def create_round(
     vía `POST /rounds/{id}/subprojects` (REQ-07)."""
     require_project(db, project_id, user["id"])
     require_capability(db, user["id"], "rounds.manage")
+
+    # round-sequence-and-homologation (Task 2): si el proyecto ya tiene
+    # rondas, la nueva debe ser exactamente max+1 — sin huecos ni saltos.
+    # Si todavía no tiene ninguna, se acepta cualquier número (incluida una
+    # "ronda 5" inicial), sin restricción.
+    has_existing_rounds = db.execute(
+        text("select 1 from rounds where project_id = :project limit 1"),
+        {"project": project_id},
+    ).scalar()
+    if has_existing_rounds:
+        expected = next_round_number(db, project_id)
+        if payload.round_number != expected:
+            raise HTTPException(
+                400,
+                {
+                    "code": "round_number_out_of_sequence",
+                    "message": f"El número de ronda debe ser {expected}, siguiente a la última existente",
+                    "expected_round_number": expected,
+                },
+            )
 
     round_id = uuid.uuid4()
     db.execute(
@@ -315,6 +350,33 @@ def create_round_subprojects(
     project_id = round_row["project_id"]
 
     selected_types = _validate_catalog_origins(payload.catalog_origins)
+
+    # round-sequence-and-homologation (Task 3, ajustado): las rondas que no
+    # son la primera del proyecto pueden heredar el libro de una ronda/estudio
+    # anterior o homologar un libro externo — el libro no se crea desde cero
+    # nunca en una ronda no-primera (no hay nada que "empezar" en esa ronda).
+    # "Primera ronda del proyecto" usa el mismo criterio que la secuencia
+    # (round_number == 1) — la única forma de tener round_number > 1 es
+    # habiendo empezado en 1 y avanzado consecutivamente.
+    if round_row["round_number"] != 1:
+        invalid_origins = [
+            coding_type
+            for coding_type in selected_types
+            if payload.catalog_origins[coding_type].origin == "scratch"
+        ]
+        if invalid_origins:
+            raise HTTPException(
+                400,
+                {
+                    "code": "non_first_round_requires_homologation",
+                    "message": (
+                        "Las rondas posteriores a la primera solo permiten heredar u "
+                        "homologar el libro de códigos, no crearlo desde cero: "
+                        + ", ".join(sorted(invalid_origins))
+                    ),
+                },
+            )
+
     existing_types = set(db.execute(
         text("select coding_type from subprojects where round_id = :id"),
         {"id": round_id},
@@ -1157,6 +1219,11 @@ def import_file(
         processing_status = "blocked_on_classification"
     elif pending_flags:
         processing_status = "blocked_on_review"
+    elif round_setup_incomplete(db, round_id):
+        # round-sequence-and-homologation (Task 6): la ronda quedó con
+        # configuración incompleta en algún otro paso (ej. homologación de
+        # catálogo de cliente sin aprobar) — el motor no debe arrancar.
+        processing_status = "blocked_on_setup"
     else:
         processing_status = "queued"
         scheduler.submit(round_id)
@@ -1447,6 +1514,10 @@ def _maybe_queue_after_review(
     if file_id is not None:
         persist_dataset_snapshot(db, file_id, status="ready")
     db.commit()
+    if round_setup_incomplete(db, round_id):
+        # round-sequence-and-homologation (Task 6): mismo chequeo centralizado
+        # antes de disparar el motor — no se salta aunque ya no queden flags.
+        return "blocked_on_setup"
     scheduler.submit(round_id)
     return "queued"
 
@@ -1600,7 +1671,11 @@ def approve_codebook_draft(
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     db.commit()
-    if result.get("ready_to_process") and result.get("round_id"):
+    if (
+        result.get("ready_to_process")
+        and result.get("round_id")
+        and not round_setup_incomplete(db, uuid.UUID(result["round_id"]))
+    ):
         scheduler.submit(uuid.UUID(result["round_id"]))
     return result
 
@@ -1638,6 +1713,8 @@ def process(
     blockers = round_processing_blockers(db, round_id)
     if blockers:
         raise HTTPException(409, "; ".join(blockers))
+    if round_setup_incomplete(db, round_id):
+        raise HTTPException(409, "La configuración de la ronda está incompleta")
     db.execute(
         text("update rounds set status = 'processing', updated_at = now() where id = :id"),
         {"id": round_id},

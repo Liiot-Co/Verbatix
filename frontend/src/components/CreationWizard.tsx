@@ -5,12 +5,14 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
   AlertTriangle,
+  BookOpen,
   Check,
   ChevronDown,
   ChevronLeft,
   FileSpreadsheet,
   Files,
   Info,
+  Settings2,
   UploadCloud,
   Users,
 } from "lucide-react";
@@ -29,8 +31,10 @@ import {
   createRoundSubprojects,
   classifyQuestion,
   getCodebookSources,
+  getNextRoundNumber,
   getProject,
   getRound,
+  getRoundLoads,
   importFile,
   importClientCatalog,
   matchProfile,
@@ -63,12 +67,17 @@ import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShor
 import { nextRoundNumber } from "@/lib/projectTree";
 import { guessExcelColumnMap } from "@/lib/excelColumns";
 
-// REQ-07 (6 pasos, ver docs/verbatix-ux-survey_...): archivo+ronda -> libro de
-// códigos -> campos -> perfil (opcional) -> revisar perfil (opcional) -> resumen.
-// El proyecto ya existe al entrar acá (modal en ProjectDashboard / deep-link
-// ?projectId=). Cuando entra por /rounds/:roundId/add-load la ronda YA existe
-// con sus subprojects — se salta directo a "round" (solo Excel) y "studio".
-type WizardStep = "round" | "studio" | "fields" | "profile" | "profileReview" | "summary";
+// REQ-07 (3 pasos, reducidos de 6 tras la encuesta UX): Configuración (ronda +
+// archivo + libro de códigos) -> Datos (campos a codificar) -> Revisión
+// (perfil de referencia opcional, cruce de duplicados/perfil y resumen).
+// Perfil y "revisar perfil" se fusionaron en un solo paso: subir/cambiar el
+// perfil ahí mismo re-dispara el cruce sin volver a un paso aparte. Cada
+// paso agrupa sub-secciones verticalmente apiladas en vez de pantallas
+// separadas, para bajar la carga cognitiva de navegar entre pasos. El
+// proyecto ya existe al entrar acá (modal en ProjectDashboard / deep-link
+// ?projectId=). Cuando entra por /rounds/:roundId/add-load la ronda YA
+// existe con sus subprojects — el paso "setup" solo pide el archivo.
+type WizardStep = "setup" | "data" | "profile" | "review";
 
 type BatchFileStatus = "pending" | "uploading" | "importing" | "done" | "error";
 
@@ -79,23 +88,11 @@ interface BatchItem {
   roundName?: string;
 }
 
-const NEW_ROUND_STEPS: { key: WizardStep; label: string; icon: string }[] = [
-  { key: "round", label: "Archivo + Ronda", icon: "📎" },
-  { key: "studio", label: "Libro de códigos", icon: "📚" },
-  { key: "fields", label: "Campos", icon: "🧩" },
-  { key: "profile", label: "Perfil", icon: "🪪" },
-  { key: "profileReview", label: "Revisar perfil", icon: "🔍" },
-  { key: "summary", label: "Resumen", icon: "✅" },
-];
-
-// Ronda ya existente (agregar carga): sin paso de libro de códigos, el
-// alcance/origen ya está fijo.
-const ADD_LOAD_STEPS: { key: WizardStep; label: string; icon: string }[] = [
-  { key: "round", label: "Archivo", icon: "📎" },
-  { key: "fields", label: "Campos", icon: "🧩" },
-  { key: "profile", label: "Perfil", icon: "🪪" },
-  { key: "profileReview", label: "Revisar perfil", icon: "🔍" },
-  { key: "summary", label: "Resumen", icon: "✅" },
+const WIZARD_STEPS: { key: WizardStep; label: string; hint: string }[] = [
+  { key: "setup", label: "Configuración", hint: "Ronda, archivo y libro de códigos" },
+  { key: "data", label: "Datos", hint: "Campos a codificar" },
+  { key: "profile", label: "Perfil", hint: "Perfil de referencia (opcional)" },
+  { key: "review", label: "Revisión", hint: "Cruce de duplicados y resumen" },
 ];
 
 const CODING_LABELS: Record<CodingType, string> = {
@@ -181,9 +178,9 @@ function useEnterToSubmit(onSubmit: () => void) {
 }
 
 const stepVariants = {
-  enter: (dir: number) => ({ opacity: 0, x: dir > 0 ? 24 : -24, filter: "blur(4px)" }),
-  center: { opacity: 1, x: 0, filter: "blur(0px)" },
-  exit: (dir: number) => ({ opacity: 0, x: dir > 0 ? -24 : 24, filter: "blur(4px)" }),
+  enter: (dir: number) => ({ opacity: 0, y: dir > 0 ? 16 : -16, filter: "blur(4px)" }),
+  center: { opacity: 1, y: 0, filter: "blur(0px)" },
+  exit: (dir: number) => ({ opacity: 0, y: dir > 0 ? -16 : 16, filter: "blur(4px)" }),
 };
 
 export default function CreationWizard() {
@@ -191,13 +188,16 @@ export default function CreationWizard() {
   const [searchParams] = useSearchParams();
   const { roundId: existingRoundId } = useParams<{ roundId: string }>();
   const isAddLoadMode = Boolean(existingRoundId);
-  const STEPS = isAddLoadMode ? ADD_LOAD_STEPS : NEW_ROUND_STEPS;
+  // round-sequence-and-homologation (Task 11/12): /wizard?projectId=&roundId=
+  // reanuda una ronda YA creada pero con configuración incompleta — distinto
+  // de isAddLoadMode (que asume subproyectos ya listos para sumar una carga).
+  const resumeRoundId = !isAddLoadMode ? searchParams.get("roundId") : null;
   const setActiveProjectId = useVerbatixStore((s) => s.setActiveProjectId);
   const showToast = useVerbatixStore((s) => s.showToast);
 
   const wizardPrefsRef = useRef<WizardPrefs>(loadWizardPrefs());
 
-  const [step, setStep] = useState<WizardStep>("round");
+  const [step, setStep] = useState<WizardStep>("setup");
   const prevStepIndexRef = useRef(0);
   const [direction, setDirection] = useState(1);
 
@@ -215,6 +215,11 @@ export default function CreationWizard() {
   );
   const activeCodingTypes = isAddLoadMode
     ? ((existingRound?.subprojects ?? []).map((s) => s.coding_type) as CodingType[])
+    : round && round.subprojects.length > 0
+    // round-sequence-and-homologation (Task 12): reanudando una ronda que ya
+    // tiene subproyectos creados, el alcance real es el ya persistido — no
+    // el que el wizard calcularía desde codingScope (que arranca en "both").
+    ? (round.subprojects.map((s) => s.coding_type) as CodingType[])
     : codingTypesForScope(codingScope);
   const [catalogOrigins, setCatalogOrigins] = useState<Record<CodingType, CatalogOriginSelection>>({
     brands: {
@@ -234,8 +239,8 @@ export default function CreationWizard() {
   const [catalogSheets, setCatalogSheets] = useState<Partial<Record<CodingType, string>>>({});
   const [catalogPreviews, setCatalogPreviews] = useState<Partial<Record<CodingType, CatalogPreview>>>({});
   const [catalogConfirmed, setCatalogConfirmed] = useState<Partial<Record<CodingType, boolean>>>({});
-  // Acordeón del paso Libro de códigos: arranca cerrado para que la pantalla
-  // no se vea larga; la persona abre el tipo que quiera configurar.
+  // Acordeón del libro de códigos: arranca cerrado para que la pantalla no se
+  // vea larga; la persona abre el tipo que quiera configurar.
   const [expandedCodingType, setExpandedCodingType] = useState<CodingType | null>(null);
   const [subprojectsCreated, setSubprojectsCreated] = useState(false);
 
@@ -280,6 +285,24 @@ export default function CreationWizard() {
   const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
 
+  // round-sequence-and-homologation (Task 8/9): true si el proyecto ya tiene
+  // rondas previas — bloquea el número de ronda y fuerza homologar el libro
+  // (el backend rechaza scratch/inherited_round en rondas no-primeras).
+  const [hasExistingRounds, setHasExistingRounds] = useState(false);
+
+  // Paso "Perfil" — oculto por defecto: solo aparece en el stepper y en el
+  // flujo cuando la persona elige configurar el perfil de referencia
+  // explícitamente desde "Datos". Sin esa elección, "Datos" avanza directo
+  // a "Revisión" como si el paso no existiera.
+  const [showProfileStep, setShowProfileStep] = useState(false);
+
+  // Pasos realmente visibles en el stepper y en la navegación secuencial —
+  // "profile" solo entra en la lista una vez que la persona elige
+  // configurarlo, para no mostrar un paso vacío/irrelevante por defecto.
+  const visibleSteps = showProfileStep
+    ? WIZARD_STEPS
+    : WIZARD_STEPS.filter((s) => s.key !== "profile");
+
   const roundRef = useRef<HTMLInputElement>(null);
 
   const effectiveRoundId = existingRoundId ?? round?.id ?? null;
@@ -296,6 +319,63 @@ export default function CreationWizard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existingRoundId]);
 
+  // round-sequence-and-homologation (Task 12): modo reanudación — la ronda ya
+  // existe (algún paso del wizard se abandonó a medio camino) pero no está
+  // lista para procesar. Carga su estado persistido en vez de arrancar de
+  // cero, y nunca vuelve a crear la ronda ni duplica subproyectos: `round` ya
+  // queda seteado acá, así que `ensureRound()` lo reusa tal cual.
+  useEffect(() => {
+    if (!resumeRoundId) return;
+    getRound(resumeRoundId)
+      .then((detail) => {
+        setProject({
+          id: detail.project_id,
+          name: detail.project_name,
+          external_code: detail.project_external_code ?? "",
+        });
+        setActiveProjectId(detail.project_id);
+        setRound(detail);
+        setRName(detail.name);
+        setRRoundNumber(detail.round_number);
+        setRThreshold(detail.min_mentions_threshold);
+        setRAudit(detail.audit_percentage);
+        // Mismo criterio que Task 8/9: round_number == 1 => primera ronda
+        // del proyecto, cualquier otro valor => solo homologar.
+        setHasExistingRounds(detail.round_number !== 1);
+
+        const hasSubprojects = detail.subprojects.length > 0;
+        setSubprojectsCreated(hasSubprojects);
+        if (hasSubprojects) {
+          setCatalogOrigins((current) => {
+            const next = { ...current };
+            for (const sp of detail.subprojects) {
+              if (sp.catalog_origin) {
+                next[sp.coding_type] = {
+                  origin: sp.catalog_origin,
+                  source_subproject_id: sp.source_subproject_id ?? null,
+                };
+              }
+            }
+            return next;
+          });
+          const pendingCatalogType = detail.subprojects.find(
+            (sp) => sp.catalog_origin === "imported_client_catalog"
+          )?.coding_type;
+          if (pendingCatalogType) setExpandedCodingType(pendingCatalogType);
+        }
+
+        // Si ya hay archivo(s) subidos pero la ronda sigue sin cerrar el
+        // import (created/files_uploaded), el paso de entrada es "Datos".
+        if (hasSubprojects && ["created", "files_uploaded"].includes(detail.status)) {
+          getRoundLoads(resumeRoundId).then((loads) => {
+            if (loads.length > 0) goToStep("data");
+          });
+        }
+      })
+      .catch(() => showToast("No se pudo cargar la ronda a reanudar.", "error"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeRoundId]);
+
   // Deep-link: /wizard?projectId=... crea una ronda en el Estudio existente.
   useEffect(() => {
     if (isAddLoadMode) return;
@@ -305,15 +385,49 @@ export default function CreationWizard() {
       setProject(detail);
       setActiveProjectId(detail.id);
 
-      const nextNum = nextRoundNumber(detail.rounds ?? []);
+      const existingRounds = detail.rounds ?? [];
+      // Valor inmediato para no bloquear el render mientras llega la
+      // respuesta del backend — round-sequence-and-homologation (Task 1/8):
+      // el backend es la fuente de verdad, se sobreescribe apenas resuelve.
+      const nextNum = nextRoundNumber(existingRounds);
       setRRoundNumber(nextNum);
       setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
+      setHasExistingRounds(existingRounds.length > 0);
+
+      getNextRoundNumber(projectId).then((expected) => {
+        setRRoundNumber(expected);
+        setRName((current) =>
+          current === `Ronda ${nextNum} - ${new Date().getFullYear()}`
+            ? `Ronda ${expected} - ${new Date().getFullYear()}`
+            : current
+        );
+      }).catch(() => {
+        // Si falla, se mantiene el valor calculado en el cliente.
+      });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // round-sequence-and-homologation (Task 9, ajustado): si el proyecto ya
+  // tiene rondas, la ronda nueva NO es la primera del proyecto — el backend
+  // permite heredar u homologar, pero nunca crear desde cero. Si el origen
+  // preseleccionado (desde localStorage) era "scratch", cambia al primero
+  // disponible sin forzar uno en particular.
   useEffect(() => {
-    if (isAddLoadMode || step !== "studio" || !project) return;
+    if (!hasExistingRounds) return;
+    setCatalogOrigins((current) => {
+      const next = { ...current };
+      (Object.keys(next) as CodingType[]).forEach((codingType) => {
+        if (next[codingType].origin === "scratch") {
+          next[codingType] = { origin: "inherited_round", source_subproject_id: null };
+        }
+      });
+      return next;
+    });
+  }, [hasExistingRounds]);
+
+  useEffect(() => {
+    if (isAddLoadMode || step !== "setup" || !project) return;
     Promise.all([
       getCodebookSources(project.id, "brands"),
       getCodebookSources(project.id, "reasons"),
@@ -329,15 +443,16 @@ export default function CreationWizard() {
   }, [activeCodingTypes, expandedCodingType]);
 
   const goToStep = (next: WizardStep) => {
-    const nextIndex = STEPS.findIndex((s) => s.key === next);
+    const nextIndex = visibleSteps.findIndex((s) => s.key === next);
     setDirection(nextIndex >= prevStepIndexRef.current ? 1 : -1);
     prevStepIndexRef.current = nextIndex;
     setStep(next);
   };
 
   // La ronda se crea sola (sin subprojects) al soltar el primer archivo —
-  // Tarea 1/2: el paso 2 del wizard (Libro de códigos) crea los subprojects
-  // vía POST /rounds/{id}/subprojects, después de elegir el origen.
+  // Tarea 1/2: la sección "Libro de códigos" (dentro de Configuración) crea
+  // los subprojects vía POST /rounds/{id}/subprojects, después de elegir el
+  // origen.
   const ensureRound = async (): Promise<Round | null> => {
     if (round) return round;
     if (!project || !rName.trim()) return null;
@@ -350,13 +465,20 @@ export default function CreationWizard() {
       });
       setRound(created);
       return created;
-    } catch {
-      showToast("Error al crear la ronda", "error");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Error al crear la ronda", "error");
       return null;
     }
   };
 
-  const handleContinueFromStudio = async () => {
+  // Cierra el paso "Configuración": en modo agregar-carga solo avanza; en
+  // modo ronda nueva valida el origen del libro y crea los subproyectos
+  // (una sola vez) antes de avanzar a "Datos".
+  const handleContinueToData = async () => {
+    if (isAddLoadMode) {
+      goToStep("data");
+      return;
+    }
     const missingSource = activeCodingTypes.find(
       (codingType) =>
         catalogOrigins[codingType].origin === "inherited_round"
@@ -369,7 +491,7 @@ export default function CreationWizard() {
     }
     if (!round) return;
     if (subprojectsCreated) {
-      goToStep("fields");
+      goToStep("data");
       return;
     }
     setSubmitting(true);
@@ -399,9 +521,12 @@ export default function CreationWizard() {
       });
 
       playSuccess();
-      goToStep("fields");
-    } catch {
-      showToast("No se pudo crear el libro de códigos de la ronda", "error");
+      goToStep("data");
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : "No se pudo crear el libro de códigos de la ronda",
+        "error"
+      );
     } finally {
       setSubmitting(false);
     }
@@ -637,7 +762,7 @@ export default function CreationWizard() {
 
   // Importa la carga de verbatims. Ya NO ejecuta el cruce de perfil ni la
   // detección de duplicados (Task 3/4) — eso corre aparte, explícitamente,
-  // desde el paso "Revisar perfil" vía matchProfile().
+  // desde el paso "Revisión" vía matchProfile().
   const handleImport = async (): Promise<boolean> => {
     if (!effectiveRoundId || !uploaded || !verbatimsSheet || !(isDau || (columnMap.verbatim && columnMap.respondent_id))) {
       return false;
@@ -719,9 +844,12 @@ export default function CreationWizard() {
     }
   };
 
-  // Task 8: al terminar de revisar campos, ramifica el flujo. Ambas ramas
-  // importan primero si todavía no se hizo.
-  const handleContinueWithoutProfile = async () => {
+  // Cierra el paso "Datos": importa si hace falta, corre el lote de rondas
+  // adicionales si las hay, y aterriza en "Perfil" (si se eligió
+  // configurarlo) o directo en "Revisión" — el cruce de duplicados/perfil
+  // se dispara ahí mismo, ya no hace falta ramificar "sin perfil" / "comparar
+  // perfil" en dos botones.
+  const handleContinueToReview = async () => {
     if (!importedFileId) {
       const ok = await handleImport();
       if (!ok) return;
@@ -730,19 +858,12 @@ export default function CreationWizard() {
       const projectId = project?.id ?? existingRound?.project_id;
       if (projectId) await runBatch(projectId);
     }
-    goToStep("summary");
-  };
-
-  const handleGoToCompareProfile = async () => {
-    if (!importedFileId) {
-      const ok = await handleImport();
-      if (!ok) return;
-    }
-    goToStep("profile");
+    goToStep(showProfileStep ? "profile" : "review");
   };
 
   // Task 3: dispara el cruce explícito (duplicados + perfil) sobre la carga
-  // ya importada al entrar al paso "Revisar perfil".
+  // ya importada — se dispara solo al entrar a "Revisión" (ver useEffect) y
+  // de nuevo cada vez que se sube/cambia el perfil desde ese mismo paso.
   const handleMatchProfile = useCallback(async () => {
     if (!effectiveRoundId || !importedFileId) return;
     setMatchingProfile(true);
@@ -765,11 +886,14 @@ export default function CreationWizard() {
     }
   }, [effectiveRoundId, importedFileId, showToast]);
 
+  // Al entrar a "Revisión" con una carga ya importada, corre el cruce una
+  // vez automáticamente (con o sin perfil — sin perfil solo trae duplicados).
   useEffect(() => {
-    if (step !== "profileReview") return;
+    if (step !== "review" || !importedFileId) return;
     void handleMatchProfile();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  }, [step, importedFileId]);
+
 
   const pendingFlags = useMemo(
     () =>
@@ -817,7 +941,7 @@ export default function CreationWizard() {
 
   const batchDone = batchItems.length > 0 && !batchRunning && batchItems.every((it) => it.status === "done" || it.status === "error");
 
-  const stepIndex = STEPS.findIndex((s) => s.key === step);
+  const stepIndex = visibleSteps.findIndex((s) => s.key === step);
 
   const activeStudyName = isAddLoadMode ? existingRound?.project_name : project?.name;
   const crumbs: Crumb[] = [{ label: "Proyectos", to: "/" }];
@@ -829,15 +953,12 @@ export default function CreationWizard() {
   }
   crumbs.push({ label: isAddLoadMode ? (existingRound?.name ?? "Ronda") : "Nueva ronda" });
 
-  const roundPanelKeyDown = useEnterToSubmit(() => void handleContinueFromStudio());
-  const studioPanelKeyDown = useEnterToSubmit(() => void handleContinueFromStudio());
+  const setupPanelKeyDown = useEnterToSubmit(() => void handleContinueToData());
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (step === "studio" || step === "fields" || step === "profile" || step === "profileReview") {
-        return goToStep("round");
-      }
+      if (step === "data" || step === "profile" || step === "review") return goToStep("setup");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -863,14 +984,15 @@ export default function CreationWizard() {
   // Focus refs when step changes
   useEffect(() => {
     setTimeout(() => {
-      if (step === "round") roundRef.current?.focus();
+      if (step === "setup") roundRef.current?.focus();
     }, 100);
   }, [step]);
 
-  // El paso "fields" (revisión de campos) necesita más ancho que el resto
-  // del wizard para que la tabla no quede apretada — el contenedor exterior
-  // ya no fija max-width; cada paso lo declara por su cuenta.
-  const stepContentWidth = step === "fields" || step === "profileReview" ? "max-w-4xl" : "max-w-2xl";
+  // Los pasos "Datos" y "Revisión" necesitan más ancho que "Configuración"
+  // para que la tabla de campos y los paneles de revisión no queden
+  // apretados — el contenedor exterior ya no fija max-width; cada paso lo
+  // declara por su cuenta.
+  const stepContentWidth = step === "data" || step === "review" ? "max-w-4xl" : "max-w-2xl";
 
   const roundName = isAddLoadMode ? existingRound?.name : round?.name;
 
@@ -881,12 +1003,12 @@ export default function CreationWizard() {
         aria-hidden
         className="pointer-events-none fixed inset-0 -z-10"
         animate={{
-          background: `radial-gradient(60vw 60vh circle at ${20 + stepIndex * 15}% -10%, oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.05), transparent 60%), radial-gradient(50vw 50vh circle at ${80 - stepIndex * 12}% 100%, oklch(var(--p-accent-mid-l) var(--p-accent-mid-c) var(--p-accent-mid-h) / 0.05), transparent 55%)`,
+          background: `radial-gradient(60vw 60vh circle at ${20 + stepIndex * 20}% -10%, oklch(var(--p-accent-l) var(--p-accent-c) var(--p-accent-h) / 0.05), transparent 60%), radial-gradient(50vw 50vh circle at ${80 - stepIndex * 15}% 100%, oklch(var(--p-accent-mid-l) var(--p-accent-mid-c) var(--p-accent-mid-h) / 0.05), transparent 55%)`,
         }}
         transition={{ duration: 0.7, ease: "easeInOut" }}
       />
 
-      <div className="max-w-2xl mx-auto space-y-6">
+      <div className={`${stepContentWidth} mx-auto space-y-6`}>
         <Breadcrumb items={crumbs} />
 
         <div className="space-y-1">
@@ -901,1049 +1023,1056 @@ export default function CreationWizard() {
           )}
         </div>
 
-        {/* Stepper */}
+        {/* Stepper horizontal — 3 pasos en fila, cada burbuja conecta con la
+            siguiente por una barra de progreso; siempre visible arriba del
+            contenido en vez de un riel lateral. */}
         <nav className="flex items-center" aria-label="Progreso del asistente">
-          {STEPS.map((s, i) => {
+          {visibleSteps.map((s, i) => {
             const done = i < stepIndex;
             const active = i === stepIndex;
             const clickable = done;
+            const isLast = i === visibleSteps.length - 1;
             return (
-              <motion.div
-                key={s.key}
-                layout
-                className="flex items-center flex-1 last:flex-none"
-              >
+              <div key={s.key} className="flex items-center flex-1 last:flex-none">
                 <motion.button
                   type="button"
                   disabled={!clickable}
                   onClick={() => clickable && goToStep(s.key)}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
+                  whileHover={{ scale: clickable ? 1.02 : 1 }}
+                  whileTap={{ scale: clickable ? 0.98 : 1 }}
                   className={[
-                    "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 shrink-0",
-                    active ? "bg-p-accent text-white shadow-sm" : done ? "bg-p-accent-soft text-p-accent hover:bg-p-accent-soft/70 cursor-pointer" : "text-p-text-faint",
+                    "flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 shrink-0",
+                    active
+                      ? "bg-p-accent text-white shadow-sm"
+                      : done
+                        ? "bg-p-accent-soft text-p-accent hover:bg-p-accent-soft/70 cursor-pointer"
+                        : "text-p-text-faint",
                   ].join(" ")}
                 >
-                  <motion.span
-                    layoutId={`step-indicator-${i}`}
+                  <span
                     className={[
-                      "w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0",
+                      "w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0",
                       active ? "bg-white/25" : done ? "bg-p-accent text-white" : "border border-p-border-mid",
                     ].join(" ")}
-                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
                   >
-                    {done ? <Check className="w-2.5 h-2.5" /> : i + 1}
-                  </motion.span>
-                  <span>{s.label}</span>
+                    {done ? <Check className="w-3 h-3" /> : i + 1}
+                  </span>
+                  <span className="hidden sm:inline">{s.label}</span>
                 </motion.button>
-                {i < STEPS.length - 1 && (
-                  <motion.div className="flex-1 h-px mx-1.5 bg-p-border overflow-hidden rounded-full">
+                {!isLast && (
+                  <div className="flex-1 h-px mx-1.5 bg-p-border overflow-hidden rounded-full">
                     <motion.div
-                      layout
-                      className="h-full bg-gradient-to-r from-p-accent to-p-accent-mid"
+                      className="h-full bg-p-accent"
                       initial={{ width: done ? "100%" : "0%" }}
                       animate={{ width: done ? "100%" : "0%" }}
-                      transition={{ duration: 0.5, ease: [0.19, 1, 0.22, 1] as const }}
+                      transition={{ duration: 0.4, ease: [0.19, 1, 0.22, 1] as const }}
                     />
-                  </motion.div>
+                  </div>
                 )}
-              </motion.div>
+              </div>
             );
           })}
         </nav>
-      </div>
 
-      <AnimatePresence mode="wait" custom={direction}>
-        <motion.div
-          key={step}
-          custom={direction}
-          variants={stepVariants}
-          initial="enter"
-          animate="center"
-          exit="exit"
-          transition={{ duration: 0.25, ease: [0.19, 1, 0.22, 1] as const }}
-          className={`${stepContentWidth} mx-auto`}
-        >
-          {/* Paso 1: Archivo + Ronda */}
-          {step === "round" && (isAddLoadMode || project) && (
-            <div className="space-y-3">
-              {!isAddLoadMode && project && (
-                <p className="text-xs text-p-text-faint">
-                  Estudio <span className="font-semibold text-p-text-muted">{project.name}</span>
-                </p>
-              )}
-
-              {!isAddLoadMode && (
-                <div className="card p-4 space-y-2.5" onKeyDown={roundPanelKeyDown}>
-                  <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre de la ronda</div>
-                  <motion.input
-                    ref={roundRef}
-                    autoFocus
-                    disabled={!!round}
-                    className="input w-full text-sm"
-                    value={rName}
-                    onChange={(e) => setRName(e.target.value)}
-                    whileFocus={{ scale: 1.002 }}
-                  />
-                  <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Número de ronda</div>
-                  <motion.input
-                    type="number"
-                    min={1}
-                    disabled={!!round}
-                    className="input w-full text-sm"
-                    value={rRoundNumber}
-                    onChange={(e) => setRRoundNumber(Number(e.target.value))}
-                    whileFocus={{ scale: 1.002 }}
-                  />
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</div>
-                      <motion.input
-                        type="number"
-                        min={1}
-                        disabled={!!round}
-                        className="input w-full text-sm mt-1"
-                        value={rThreshold}
-                        onChange={(e) => setRThreshold(Number(e.target.value))}
-                        whileFocus={{ scale: 1.002 }}
-                      />
-                    </div>
-                    <div>
-                      <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">% de auditoría</div>
-                      <motion.input
-                        type="number"
-                        min={0}
-                        max={100}
-                        disabled={!!round}
-                        className="input w-full text-sm mt-1"
-                        value={rAudit}
-                        onChange={(e) => setRAudit(Number(e.target.value))}
-                        whileFocus={{ scale: 1.002 }}
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs text-p-text-faint">
-                    Se fijan al soltar el archivo — no se pueden cambiar después de importar.
-                  </p>
-                </div>
-              )}
-
-              {!uploaded ? (
-                <div className="space-y-1.5">
-                  <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                    Archivo de respuestas (verbatims)
-                  </div>
-                  <div
-                    {...getRootProps()}
-                    className={["dropzone", isDragActive ? "dropzone-active" : "hover:border-p-accent/40"].join(" ")}
-                  >
-                    <input {...getInputProps()} />
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.98 }}
-                      animate={isDragActive ? { opacity: 1, scale: 1.05, rotate: [0, -2, 2, -2, 0] } : { opacity: 1, scale: 1 }}
-                      transition={{ duration: 0.5 }}
-                      className="dropzone-icon"
-                    >
-                      <UploadCloud />
-                    </motion.div>
-                    <span className="text-sm font-medium text-p-text">
-                      Arrastra el archivo con las respuestas, o haz clic para elegirlo
-                    </span>
-                    <span className="text-xs text-p-text-faint">.xlsx, .xls o .dau</span>
-                  </div>
-                </div>
-              ) : (
-                <motion.div
-                  initial={{ opacity: 0, y: 8, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  transition={{ duration: 0.25, ease: [0.19, 1, 0.22, 1] as const }}
-                  className="file-preview space-y-3"
-                >
-                  <div className="flex items-center gap-2 text-sm font-semibold text-p-text">
-                    <FileSpreadsheet className="w-4 h-4 text-p-accent" />
-                    {uploaded.original_filename}
-                  </div>
-
-                  {uploaded.duplicate_of && (
-                    <div className="flex items-start gap-2 text-xs text-p-warning bg-p-warning/10 border border-p-warning/30 rounded-lg p-2.5">
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                      <span>
-                        Este archivo ya se subió a esta ronda como{" "}
-                        <span className="font-semibold">
-                          {uploaded.duplicate_of.source_label ?? uploaded.duplicate_of.original_filename}
-                        </span>
-                        . Si continúas, todos sus encuestados aparecerán como posibles duplicados en el paso "Revisar perfil".
-                      </span>
-                    </div>
-                  )}
-
-                  {isAddLoadMode && (
-                    <div>
-                      <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                        Etiqueta de la carga
-                      </label>
-                      <input
-                        className="input w-full text-sm mt-1"
-                        value={sourceLabel}
-                        onChange={(e) => setSourceLabel(e.target.value)}
-                        placeholder="Dimension Parte 1"
-                      />
-                      <p className="text-[11px] text-p-text-faint mt-1">
-                        Distingue esta carga de las anteriores cuando un Serial se repite.
+        <div>
+          <AnimatePresence mode="wait" custom={direction}>
+            <motion.div
+              key={step}
+              custom={direction}
+              variants={stepVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.25, ease: [0.19, 1, 0.22, 1] as const }}
+            >
+                {/* Paso 1: Configuración — ronda + archivo + libro de códigos,
+                    apilados verticalmente en una sola pantalla. */}
+                {step === "setup" && (isAddLoadMode || project) && (
+                  <div className="space-y-3">
+                    {!isAddLoadMode && project && (
+                      <p className="text-xs text-p-text-faint">
+                        Estudio <span className="font-semibold text-p-text-muted">{project.name}</span>
                       </p>
-                    </div>
-                  )}
+                    )}
 
-                  {batchItems.length > 0 && (
-                    <div className="flex items-start gap-2 text-xs text-p-text-muted bg-p-bg-subtle rounded-lg p-2.5">
-                      <Files className="w-3.5 h-3.5 shrink-0 mt-0.5 text-p-accent" />
-                      <span>
-                        +{batchItems.length} archivo{batchItems.length > 1 ? "s" : ""} más se importará
-                        {batchItems.length > 1 ? "n" : ""} como ronda{batchItems.length > 1 ? "s" : ""} nueva
-                        {batchItems.length > 1 ? "s" : ""} al confirmar, reusando el mapeo de columnas de abajo:{" "}
-                        {batchItems.map((it) => it.file.name).join(", ")}
-                      </span>
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de respuestas (verbatims)</label>
-                    <select
-                      className="input w-full text-sm mt-1"
-                      value={verbatimsSheet}
-                      onChange={(e) => {
-                        setVerbatimsSheet(e.target.value);
-                        if (uploaded && uploaded.file_type !== "dau") {
-                          const sheet = uploaded.detected_sheets.find((s) => s.name === e.target.value);
-                          setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
-                        } else {
-                          setColumnMap({});
-                        }
-                      }}
-                    >
-                      {uploaded.detected_sheets.map((s) => (
-                        <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {isDau && activeSheet && (
-                    <div className="text-xs text-p-text-muted bg-p-bg-subtle rounded-lg p-2.5">
-                      Se importarán las respuestas abiertas detectadas en cada registro (
-                      {activeSheet.columns.length} campos, excluyendo id/fechas/metadata de la plataforma).
-                    </div>
-                  )}
-
-                  {!isDau && activeSheet && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                      <div>
-                        <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                          Columna Respondent ID
-                        </label>
-                        <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
-                          Se cruza con el perfil de referencia
-                        </p>
-                        <select
-                          className="input w-full text-sm"
-                          value={columnMap.respondent_id ?? ""}
-                          onChange={(e) => setColumnMap((m) => ({ ...m, respondent_id: e.target.value }))}
-                        >
-                          <option value="">Elegir columna...</option>
-                          {activeSheet.columns.map((c) => (
-                            <option key={c} value={c}>{c}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                          Columna de verbatim
-                        </label>
-                        <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
-                          Texto abierto a clasificar
-                        </p>
-                        <select
-                          className="input w-full text-sm"
-                          value={columnMap.verbatim ?? ""}
-                          onChange={(e) => setColumnMap((m) => ({ ...m, verbatim: e.target.value }))}
-                        >
-                          <option value="">Elegir columna...</option>
-                          {activeSheet.columns.map((c) => (
-                            <option key={c} value={c}>{c}</option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex gap-1.5 pt-1">
-                    <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      className="btn-primary text-sm py-2 flex-1 justify-center"
-                      onClick={() => goToStep(isAddLoadMode ? "fields" : "studio")}
-                    >
-                      Continuar <span className="opacity-60 font-normal">(Enter)</span>
-                    </motion.button>
-                    <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      className="btn-ghost text-sm py-2 px-3"
-                      onClick={() => {
-                        setUploaded(null);
-                        setColumnMap({});
-                        setBatchItems([]);
-                      }}
-                    >
-                      Cambiar archivo
-                    </motion.button>
-                  </div>
-                </motion.div>
-              )}
-            </div>
-          )}
-
-          {/* Paso 2: Libro de códigos */}
-          {step === "studio" && !isAddLoadMode && project && (
-            <div className="card p-4 space-y-2.5" onKeyDown={studioPanelKeyDown}>
-              <motion.button
-                onClick={() => goToStep("round")}
-                whileHover={{ x: -2 }}
-                whileTap={{ scale: 0.98 }}
-                className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
-              >
-                <ChevronLeft className="w-3.5 h-3.5" /> {uploaded?.original_filename ?? project.name}
-              </motion.button>
-
-              <motion.div className="space-y-3">
-                <div>
-                  <h2 className="text-sm font-semibold text-p-text">¿Qué vas a codificar?</h2>
-                  <p className="text-xs text-p-text-muted mt-0.5">
-                    Elige Marcas, Razones o ambas. Luego defines el origen del libro solo para lo seleccionado.
-                  </p>
-                </div>
-                <div role="radiogroup" aria-label="Alcance de la ronda" className="grid grid-cols-3 gap-1.5">
-                  {SCOPE_OPTIONS.map((option) => {
-                    const active = codingScope === option.value;
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        disabled={subprojectsCreated}
-                        onClick={() => {
-                          setCodingScope(option.value);
-                          playTick();
-                        }}
-                        className={[
-                          "rounded-lg border px-2 py-2.5 text-center transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
-                          active
-                            ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
-                            : "border-p-border hover:bg-p-bg-subtle",
-                        ].join(" ")}
-                      >
-                        <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
-                          {option.label}
-                        </span>
-                        <span className="block text-[11px] text-p-text-muted mt-0.5 leading-snug">
-                          {option.hint}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="pt-1">
-                  <h2 className="text-sm font-semibold text-p-text">Origen del libro de códigos</h2>
-                  <p className="text-xs text-p-text-muted mt-0.5">
-                    Obligatorio para cada tipo elegido. Los números de código existentes nunca se reordenan.
-                  </p>
-                </div>
-                {activeCodingTypes.map((codingType) => {
-                  const selection = catalogOrigins[codingType];
-                  const expanded = expandedCodingType === codingType;
-                  const selectedOption = ORIGIN_OPTIONS.find((option) => option.value === selection.origin);
-                  const source = codebookSources[codingType].find(
-                    (candidate) => candidate.source_subproject_id === selection.source_subproject_id
-                  );
-                  const needsSource = selection.origin === "inherited_round" && !selection.source_subproject_id;
-                  return (
-                    <div key={codingType} className="rounded-xl border border-p-border overflow-hidden">
-                      <button
-                        type="button"
-                        aria-expanded={expanded}
-                        onClick={() => {
-                          setExpandedCodingType(expanded ? null : codingType);
-                          playTick();
-                        }}
-                        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-p-bg-subtle transition-colors"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-sm font-semibold text-p-text">{CODING_LABELS[codingType]}</span>
-                          <span
-                            className={[
-                              "text-[11px] font-medium px-2 py-0.5 rounded-full truncate",
-                              needsSource
-                                ? "bg-p-warning/15 text-p-text-muted"
-                                : "bg-p-accent-soft text-p-accent",
-                            ].join(" ")}
-                          >
-                            {needsSource
-                              ? "Heredar · falta elegir el libro"
-                              : selection.origin === "inherited_round" && source
-                                ? `Heredar · ${source.project_name} R${source.round_number}`
-                                : selectedOption?.label}
-                          </span>
+                    {!isAddLoadMode && (
+                      <div className="card p-4 space-y-2.5" onKeyDown={setupPanelKeyDown}>
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-p-text uppercase tracking-wide pb-1 border-b border-p-border">
+                          <Settings2 className="w-3.5 h-3.5 text-p-accent" /> Ronda
                         </div>
-                        <ChevronDown
-                          className={[
-                            "w-4 h-4 shrink-0 text-p-text-muted transition-transform duration-200",
-                            expanded ? "rotate-180" : "",
-                          ].join(" ")}
+                        <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Nombre de la ronda</div>
+                        <motion.input
+                          ref={roundRef}
+                          autoFocus
+                          disabled={!!round}
+                          className="input w-full text-sm"
+                          value={rName}
+                          onChange={(e) => setRName(e.target.value)}
+                          whileFocus={{ scale: 1.002 }}
                         />
-                      </button>
-                      <AnimatePresence initial={false}>
-                        {expanded && (
-                          <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.2, ease: [0.19, 1, 0.22, 1] as const }}
-                          >
-                            <div role="radiogroup" className="px-3 pb-3 pt-1 space-y-1.5">
-                              {ORIGIN_OPTIONS.map((option) => {
-                                const active = selection.origin === option.value;
-                                return (
-                                  <button
-                                    key={option.value}
-                                    type="button"
-                                    role="radio"
-                                    aria-checked={active}
-                                    disabled={subprojectsCreated}
-                                    onClick={() => {
-                                      setCatalogOrigins((current) => ({
-                                        ...current,
-                                        [codingType]: { origin: option.value, source_subproject_id: null },
-                                      }));
-                                      playTick();
-                                    }}
-                                    className={[
-                                      "w-full flex items-start gap-2.5 text-left rounded-lg border p-2.5 transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
-                                      active
-                                        ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
-                                        : "border-p-border hover:bg-p-bg-subtle",
-                                    ].join(" ")}
-                                  >
-                                    <span
-                                      className={[
-                                        "mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full border flex items-center justify-center",
-                                        active ? "border-p-accent" : "border-p-border-mid",
-                                      ].join(" ")}
-                                    >
-                                      {active && <span className="w-2 h-2 rounded-full bg-p-accent" />}
-                                    </span>
-                                    <span className="min-w-0">
-                                      <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
-                                        {option.label}
-                                      </span>
-                                      <span className="block text-xs text-p-text-muted mt-0.5">
-                                        {option.description}
-                                      </span>
-                                    </span>
-                                  </button>
-                                );
-                              })}
-
-                              {selection.origin === "inherited_round" && (
-                                <div className="pt-1.5">
-                                  <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                                    Libro oficial a heredar
-                                  </label>
-                                  {codebookSources[codingType].length === 0 ? (
-                                    <p className="mt-1.5 text-xs text-p-text-muted rounded-lg bg-p-bg-subtle p-2.5">
-                                      Aún no hay libros oficiales de {CODING_LABELS[codingType]} disponibles.
-                                      Un libro queda oficial cuando su ronda cierra la auditoría, o cuando se homologa
-                                      el libro de códigos del cliente.
-                                    </p>
-                                  ) : (
-                                    <select
-                                      className="input w-full text-sm mt-1"
-                                      aria-label={`Libro oficial a heredar para ${CODING_LABELS[codingType]}`}
-                                      value={selection.source_subproject_id ?? ""}
-                                      disabled={subprojectsCreated}
-                                      onChange={(event) => setCatalogOrigins((current) => ({
-                                        ...current,
-                                        [codingType]: {
-                                          origin: "inherited_round",
-                                          source_subproject_id: event.target.value || null,
-                                        },
-                                      }))}
-                                    >
-                                      <option value="">Elegir libro...</option>
-                                      {codebookSources[codingType].map((candidate) => (
-                                        <option
-                                          key={candidate.source_subproject_id}
-                                          value={candidate.source_subproject_id}
-                                        >
-                                          {candidate.project_name} · R{candidate.round_number} ({candidate.round_name})
-                                        </option>
-                                      ))}
-                                    </select>
-                                  )}
-                                  {source && (
-                                    <p className="mt-2 text-xs text-p-text-muted">
-                                      Vas a heredar {source.codes} códigos, {source.aliases} alias y {source.nets} netos.
-                                    </p>
-                                  )}
-                                </div>
-                              )}
-                              {selection.origin === "imported_client_catalog" && (
-                                <p className="text-xs text-p-text-muted pt-1">
-                                  En este paso puedes subir el archivo del cliente y revisar códigos, alias y netos antes de confirmarlo.
-                                </p>
-                              )}
-                            </div>
-                          </motion.div>
+                        <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Número de ronda</div>
+                        <motion.input
+                          type="number"
+                          min={1}
+                          disabled={!!round || hasExistingRounds}
+                          className="input w-full text-sm"
+                          value={rRoundNumber}
+                          onChange={(e) => setRRoundNumber(Number(e.target.value))}
+                          whileFocus={{ scale: 1.002 }}
+                        />
+                        {hasExistingRounds && (
+                          <p className="text-xs text-p-text-faint">
+                            El proyecto ya tiene rondas — el número sigue la secuencia y no se puede editar.
+                          </p>
                         )}
-                      </AnimatePresence>
-                    </div>
-                  );
-                })}
 
-                {importedCatalogTypes.length > 0 && round && (
-                  <div className="space-y-3 pt-1">
-                    <div>
-                      <h2 className="text-sm font-semibold text-p-text">Homologación · Libro de códigos del cliente</h2>
-                      <p className="text-xs text-p-text-muted">
-                        Sube el libro del cliente, revisa el resumen y confírmalo antes de continuar.
-                      </p>
-                    </div>
-                    {importedCatalogTypes.map((codingType) => {
-                      const catalogFile = catalogUploads[codingType];
-                      const preview = catalogPreviews[codingType];
-                      const confirmed = catalogConfirmed[codingType];
-                      return (
-                        <div key={codingType} className="rounded-xl border border-p-border p-3 space-y-2.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm font-semibold text-p-text">
-                              {CODING_LABELS[codingType]}
-                            </span>
-                            {confirmed && (
-                              <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-p-success/10 text-p-success">
-                                <Check className="w-3 h-3" /> Homologado
-                              </span>
-                            )}
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Mínimo de menciones</div>
+                            <motion.input
+                              type="number"
+                              min={1}
+                              disabled={!!round}
+                              className="input w-full text-sm mt-1"
+                              value={rThreshold}
+                              onChange={(e) => setRThreshold(Number(e.target.value))}
+                              whileFocus={{ scale: 1.002 }}
+                            />
                           </div>
-                          {!catalogFile ? (
-                            <label
-                              className={[
-                                "flex items-center justify-center gap-2 rounded-lg border border-dashed border-p-border-mid",
-                                "px-3 py-4 text-sm text-p-text-muted cursor-pointer",
-                                "hover:border-p-accent/50 hover:bg-p-accent-soft/50 hover:text-p-text",
-                                "transition-all duration-200",
-                              ].join(" ")}
-                            >
-                              <UploadCloud className="w-4 h-4 text-p-text-faint" />
-                              <span>
-                                Subir el libro de códigos{" "}
-                                <span className="text-p-text-faint">(.xlsx, .xls)</span>
+                          <div>
+                            <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">% de auditoría</div>
+                            <motion.input
+                              type="number"
+                              min={0}
+                              max={100}
+                              disabled={!!round}
+                              className="input w-full text-sm mt-1"
+                              value={rAudit}
+                              onChange={(e) => setRAudit(Number(e.target.value))}
+                              whileFocus={{ scale: 1.002 }}
+                            />
+                          </div>
+                        </div>
+                        <p className="text-xs text-p-text-faint">
+                          Se fijan al soltar el archivo — no se pueden cambiar después de importar.
+                        </p>
+                      </div>
+                    )}
+
+                    {!uploaded ? (
+                      <div className="space-y-1.5">
+                        <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                          Archivo de respuestas (verbatims)
+                        </div>
+                        <div
+                          {...getRootProps()}
+                          className={["dropzone", isDragActive ? "dropzone-active" : "hover:border-p-accent/40"].join(" ")}
+                        >
+                          <input {...getInputProps()} />
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.98 }}
+                            animate={isDragActive ? { opacity: 1, scale: 1.05, rotate: [0, -2, 2, -2, 0] } : { opacity: 1, scale: 1 }}
+                            transition={{ duration: 0.5 }}
+                            className="dropzone-icon"
+                          >
+                            <UploadCloud />
+                          </motion.div>
+                          <span className="text-sm font-medium text-p-text">
+                            Arrastra el archivo con las respuestas, o haz clic para elegirlo
+                          </span>
+                          <span className="text-xs text-p-text-faint">.xlsx, .xls o .dau</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <motion.div
+                        initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        transition={{ duration: 0.25, ease: [0.19, 1, 0.22, 1] as const }}
+                        className="file-preview space-y-3"
+                      >
+                        <div className="flex items-center gap-2 text-sm font-semibold text-p-text">
+                          <FileSpreadsheet className="w-4 h-4 text-p-accent" />
+                          {uploaded.original_filename}
+                        </div>
+
+                        {uploaded.duplicate_of && (
+                          <div className="flex items-start gap-2 text-xs text-p-warning bg-p-warning/10 border border-p-warning/30 rounded-lg p-2.5">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                            <span>
+                              Este archivo ya se subió a esta ronda como{" "}
+                              <span className="font-semibold">
+                                {uploaded.duplicate_of.source_label ?? uploaded.duplicate_of.original_filename}
                               </span>
-                              <input
-                                type="file"
-                                accept=".xlsx,.xls"
-                                aria-label={`Libro de códigos de ${CODING_LABELS[codingType]}`}
-                                className="sr-only"
-                                onChange={(event) => {
-                                  const file = event.target.files?.[0];
-                                  if (file) void handleCatalogUpload(codingType, file);
-                                }}
-                              />
+                              . Si continúas, todos sus encuestados aparecerán como posibles duplicados en el paso "Revisión".
+                            </span>
+                          </div>
+                        )}
+
+                        {isAddLoadMode && (
+                          <div>
+                            <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                              Etiqueta de la carga
                             </label>
-                          ) : (
-                            <>
-                              <div className="flex items-center gap-2 text-sm font-medium text-p-text">
-                                <FileSpreadsheet className="w-4 h-4 shrink-0 text-p-accent" />
-                                <span className="truncate">{catalogFile.original_filename}</span>
-                              </div>
+                            <input
+                              className="input w-full text-sm mt-1"
+                              value={sourceLabel}
+                              onChange={(e) => setSourceLabel(e.target.value)}
+                              placeholder="Dimension Parte 1"
+                            />
+                            <p className="text-[11px] text-p-text-faint mt-1">
+                              Distingue esta carga de las anteriores cuando un Serial se repite.
+                            </p>
+                          </div>
+                        )}
+
+                        {batchItems.length > 0 && (
+                          <div className="flex items-start gap-2 text-xs text-p-text-muted bg-p-bg-subtle rounded-lg p-2.5">
+                            <Files className="w-3.5 h-3.5 shrink-0 mt-0.5 text-p-accent" />
+                            <span>
+                              +{batchItems.length} archivo{batchItems.length > 1 ? "s" : ""} más se importará
+                              {batchItems.length > 1 ? "n" : ""} como ronda{batchItems.length > 1 ? "s" : ""} nueva
+                              {batchItems.length > 1 ? "s" : ""} al confirmar, reusando el mapeo de columnas de abajo:{" "}
+                              {batchItems.map((it) => it.file.name).join(", ")}
+                            </span>
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Hoja de respuestas (verbatims)</label>
+                          <select
+                            className="input w-full text-sm mt-1"
+                            value={verbatimsSheet}
+                            onChange={(e) => {
+                              setVerbatimsSheet(e.target.value);
+                              if (uploaded && uploaded.file_type !== "dau") {
+                                const sheet = uploaded.detected_sheets.find((s) => s.name === e.target.value);
+                                setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
+                              } else {
+                                setColumnMap({});
+                              }
+                            }}
+                          >
+                            {uploaded.detected_sheets.map((s) => (
+                              <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {isDau && activeSheet && (
+                          <div className="text-xs text-p-text-muted bg-p-bg-subtle rounded-lg p-2.5">
+                            Se importarán las respuestas abiertas detectadas en cada registro (
+                            {activeSheet.columns.length} campos, excluyendo id/fechas/metadata de la plataforma).
+                          </div>
+                        )}
+
+                        {!isDau && activeSheet && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                            <div>
+                              <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                Columna Respondent ID
+                              </label>
+                              <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
+                                Se cruza con el perfil de referencia
+                              </p>
                               <select
                                 className="input w-full text-sm"
-                                aria-label={`Hoja del libro de códigos de ${CODING_LABELS[codingType]}`}
-                                value={catalogSheets[codingType] ?? ""}
-                                disabled={confirmed}
-                                onChange={(event) => void loadCatalogPreview(
-                                  codingType, catalogFile, event.target.value
-                                )}
+                                value={columnMap.respondent_id ?? ""}
+                                onChange={(e) => setColumnMap((m) => ({ ...m, respondent_id: e.target.value }))}
                               >
-                                {catalogFile.detected_sheets.map((sheet) => (
-                                  <option key={sheet.name} value={sheet.name}>
-                                    {sheet.name} ({sheet.rows} filas)
-                                  </option>
+                                <option value="">Elegir columna...</option>
+                                {activeSheet.columns.map((c) => (
+                                  <option key={c} value={c}>{c}</option>
                                 ))}
                               </select>
-                              {preview && (
-                                <div className="rounded-lg bg-p-bg-subtle p-2.5 text-xs text-p-text-muted">
-                                  Vas a homologar {preview.codes} códigos, {preview.aliases} alias y {preview.nets} netos.
-                                  {preview.system_codes_overflow && (
-                                    <span className="block mt-1">
-                                      El cliente ocupa 95–99: los códigos de sistema nacerán como 995–999.
+                            </div>
+                            <div>
+                              <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                Columna de verbatim
+                              </label>
+                              <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
+                                Texto abierto a clasificar
+                              </p>
+                              <select
+                                className="input w-full text-sm"
+                                value={columnMap.verbatim ?? ""}
+                                onChange={(e) => setColumnMap((m) => ({ ...m, verbatim: e.target.value }))}
+                              >
+                                <option value="">Elegir columna...</option>
+                                {activeSheet.columns.map((c) => (
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        )}
+
+                        {isAddLoadMode && (
+                          <div className="flex gap-1.5 pt-1">
+                            <motion.button
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                              className="btn-primary text-sm py-2 flex-1 justify-center"
+                              onClick={() => void handleContinueToData()}
+                            >
+                              Continuar <span className="opacity-60 font-normal">(Enter)</span>
+                            </motion.button>
+                            <motion.button
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                              className="btn-ghost text-sm py-2 px-3"
+                              onClick={() => {
+                                setUploaded(null);
+                                setColumnMap({});
+                                setBatchItems([]);
+                              }}
+                            >
+                              Cambiar archivo
+                            </motion.button>
+                          </div>
+                        )}
+                        {!isAddLoadMode && (
+                          <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            className="btn-ghost text-xs py-1.5 px-3 self-start"
+                            onClick={() => {
+                              setUploaded(null);
+                              setColumnMap({});
+                              setBatchItems([]);
+                            }}
+                          >
+                            Cambiar archivo
+                          </motion.button>
+                        )}
+                      </motion.div>
+                    )}
+
+                    {/* Libro de códigos — aparece debajo del archivo, en la
+                        misma pantalla: no hace falta un paso aparte para
+                        elegir el origen del catálogo. */}
+                    {!isAddLoadMode && uploaded && project && (
+                      <div className="card p-4 space-y-2.5" onKeyDown={setupPanelKeyDown}>
+                        <div className="flex items-center gap-1.5 pb-1 border-b border-p-border">
+                          <BookOpen className="w-3.5 h-3.5 text-p-accent shrink-0" />
+                          <h2 className="text-xs font-semibold text-p-text uppercase tracking-wide">Libro de códigos</h2>
+                        </div>
+                        <p className="text-xs text-p-text-muted">
+                          Elige Marcas, Razones o ambas, y el origen del libro solo para lo seleccionado.
+                        </p>
+                        <div role="radiogroup" aria-label="Alcance de la ronda" className="grid grid-cols-3 gap-1.5">
+                          {SCOPE_OPTIONS.map((option) => {
+                            const active = codingScope === option.value;
+                            return (
+                              <button
+                                key={option.value}
+                                type="button"
+                                role="radio"
+                                aria-checked={active}
+                                disabled={subprojectsCreated}
+                                onClick={() => {
+                                  setCodingScope(option.value);
+                                  playTick();
+                                }}
+                                className={[
+                                  "rounded-lg border px-2 py-2.5 text-center transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
+                                  active
+                                    ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
+                                    : "border-p-border hover:bg-p-bg-subtle",
+                                ].join(" ")}
+                              >
+                                <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
+                                  {option.label}
+                                </span>
+                                <span className="block text-[11px] text-p-text-muted mt-0.5 leading-snug">
+                                  {option.hint}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {activeCodingTypes.map((codingType) => {
+                          const selection = catalogOrigins[codingType];
+                          const expanded = expandedCodingType === codingType;
+                          const selectedOption = ORIGIN_OPTIONS.find((option) => option.value === selection.origin);
+                          const source = codebookSources[codingType].find(
+                            (candidate) => candidate.source_subproject_id === selection.source_subproject_id
+                          );
+                          const needsSource = selection.origin === "inherited_round" && !selection.source_subproject_id;
+                          // round-sequence-and-homologation (Task 9, ajustado):
+                          // en una ronda no-primera del proyecto se puede
+                          // heredar u homologar, pero nunca crear desde cero
+                          // — se oculta esa opción del radiogroup en vez de
+                          // fijar un único origen.
+                          const originOptions = hasExistingRounds
+                            ? ORIGIN_OPTIONS.filter((option) => option.value !== "scratch")
+                            : ORIGIN_OPTIONS;
+
+                          return (
+                            <div key={codingType} className="rounded-xl border border-p-border overflow-hidden">
+                              <button
+                                type="button"
+                                aria-expanded={expanded}
+                                onClick={() => {
+                                  setExpandedCodingType(expanded ? null : codingType);
+                                  playTick();
+                                }}
+                                className="w-full flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-p-bg-subtle transition-colors"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-sm font-semibold text-p-text">{CODING_LABELS[codingType]}</span>
+                                  <span
+                                    className={[
+                                      "text-[11px] font-medium px-2 py-0.5 rounded-full truncate",
+                                      needsSource
+                                        ? "bg-p-warning/15 text-p-text-muted"
+                                        : "bg-p-accent-soft text-p-accent",
+                                    ].join(" ")}
+                                  >
+                                    {needsSource
+                                      ? "Heredar · falta elegir el libro"
+                                      : selection.origin === "inherited_round" && source
+                                        ? `Heredar · ${source.project_name} R${source.round_number}`
+                                        : selectedOption?.label}
+                                  </span>
+                                </div>
+                                <ChevronDown
+                                  className={[
+                                    "w-4 h-4 shrink-0 text-p-text-muted transition-transform duration-200",
+                                    expanded ? "rotate-180" : "",
+                                  ].join(" ")}
+                                />
+                              </button>
+                              <AnimatePresence initial={false}>
+                                {expanded && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: "auto", opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.2, ease: [0.19, 1, 0.22, 1] as const }}
+                                  >
+                                    <div role="radiogroup" className="px-3 pb-3 pt-1 space-y-1.5">
+                                      {originOptions.map((option) => {
+                                        const active = selection.origin === option.value;
+                                        return (
+                                          <button
+                                            key={option.value}
+                                            type="button"
+                                            role="radio"
+                                            aria-checked={active}
+                                            disabled={subprojectsCreated}
+                                            onClick={() => {
+                                              setCatalogOrigins((current) => ({
+                                                ...current,
+                                                [codingType]: { origin: option.value, source_subproject_id: null },
+                                              }));
+                                              playTick();
+                                            }}
+                                            className={[
+                                              "w-full flex items-start gap-2.5 text-left rounded-lg border p-2.5 transition-all duration-150 disabled:opacity-60 disabled:cursor-not-allowed",
+                                              active
+                                                ? "border-p-accent/50 bg-p-accent-soft shadow-sm"
+                                                : "border-p-border hover:bg-p-bg-subtle",
+                                            ].join(" ")}
+                                          >
+                                            <span
+                                              className={[
+                                                "mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full border flex items-center justify-center",
+                                                active ? "border-p-accent" : "border-p-border-mid",
+                                              ].join(" ")}
+                                            >
+                                              {active && <span className="w-2 h-2 rounded-full bg-p-accent" />}
+                                            </span>
+                                            <span className="min-w-0">
+                                              <span className={["block text-sm font-medium", active ? "text-p-accent" : "text-p-text"].join(" ")}>
+                                                {option.label}
+                                              </span>
+                                              <span className="block text-xs text-p-text-muted mt-0.5">
+                                                {option.description}
+                                              </span>
+                                            </span>
+                                          </button>
+                                        );
+                                      })}
+
+                                      {selection.origin === "inherited_round" && (
+                                        <div className="pt-1.5">
+                                          <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                            Libro oficial a heredar
+                                          </label>
+                                          {codebookSources[codingType].length === 0 ? (
+                                            <p className="mt-1.5 text-xs text-p-text-muted rounded-lg bg-p-bg-subtle p-2.5">
+                                              Aún no hay libros oficiales de {CODING_LABELS[codingType]} disponibles.
+                                              Un libro queda oficial cuando su ronda cierra la auditoría, o cuando se homologa
+                                              el libro de códigos del cliente.
+                                            </p>
+                                          ) : (
+                                            <select
+                                              className="input w-full text-sm mt-1"
+                                              aria-label={`Libro oficial a heredar para ${CODING_LABELS[codingType]}`}
+                                              value={selection.source_subproject_id ?? ""}
+                                              disabled={subprojectsCreated}
+                                              onChange={(event) => setCatalogOrigins((current) => ({
+                                                ...current,
+                                                [codingType]: {
+                                                  origin: "inherited_round",
+                                                  source_subproject_id: event.target.value || null,
+                                                },
+                                              }))}
+                                            >
+                                              <option value="">Elegir libro...</option>
+                                              {codebookSources[codingType].map((candidate) => (
+                                                <option
+                                                  key={candidate.source_subproject_id}
+                                                  value={candidate.source_subproject_id}
+                                                >
+                                                  {candidate.project_name} · R{candidate.round_number} ({candidate.round_name})
+                                                </option>
+                                              ))}
+                                            </select>
+                                          )}
+                                          {source && (
+                                            <p className="mt-2 text-xs text-p-text-muted">
+                                              Vas a heredar {source.codes} códigos, {source.aliases} alias y {source.nets} netos.
+                                            </p>
+                                          )}
+                                        </div>
+                                      )}
+                                      {selection.origin === "imported_client_catalog" && (
+                                        <p className="text-xs text-p-text-muted pt-1">
+                                          Sube el archivo del cliente abajo y revisa códigos, alias y netos antes de confirmarlo.
+                                        </p>
+                                      )}
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+                          );
+                        })}
+
+                        {importedCatalogTypes.length > 0 && round && (
+                          <div className="space-y-3 pt-1">
+                            <div>
+                              <h3 className="text-sm font-semibold text-p-text">Homologación · Libro de códigos del cliente</h3>
+                              <p className="text-xs text-p-text-muted">
+                                Sube el libro del cliente, revisa el resumen y confírmalo antes de continuar.
+                              </p>
+                            </div>
+                            {importedCatalogTypes.map((codingType) => {
+                              const catalogFile = catalogUploads[codingType];
+                              const preview = catalogPreviews[codingType];
+                              const confirmed = catalogConfirmed[codingType];
+                              return (
+                                <div key={codingType} className="rounded-xl border border-p-border p-3 space-y-2.5">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-sm font-semibold text-p-text">
+                                      {CODING_LABELS[codingType]}
                                     </span>
+                                    {confirmed && (
+                                      <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-p-success/10 text-p-success">
+                                        <Check className="w-3 h-3" /> Homologado
+                                      </span>
+                                    )}
+                                  </div>
+                                  {!catalogFile ? (
+                                    <label
+                                      className={[
+                                        "flex items-center justify-center gap-2 rounded-lg border border-dashed border-p-border-mid",
+                                        "px-3 py-4 text-sm text-p-text-muted cursor-pointer",
+                                        "hover:border-p-accent/50 hover:bg-p-accent-soft/50 hover:text-p-text",
+                                        "transition-all duration-200",
+                                      ].join(" ")}
+                                    >
+                                      <UploadCloud className="w-4 h-4 text-p-text-faint" />
+                                      <span>
+                                        Subir el libro de códigos{" "}
+                                        <span className="text-p-text-faint">(.xlsx, .xls)</span>
+                                      </span>
+                                      <input
+                                        type="file"
+                                        accept=".xlsx,.xls"
+                                        aria-label={`Libro de códigos de ${CODING_LABELS[codingType]}`}
+                                        className="sr-only"
+                                        onChange={(event) => {
+                                          const file = event.target.files?.[0];
+                                          if (file) void handleCatalogUpload(codingType, file);
+                                        }}
+                                      />
+                                    </label>
+                                  ) : (
+                                    <>
+                                      <div className="flex items-center gap-2 text-sm font-medium text-p-text">
+                                        <FileSpreadsheet className="w-4 h-4 shrink-0 text-p-accent" />
+                                        <span className="truncate">{catalogFile.original_filename}</span>
+                                      </div>
+                                      <select
+                                        className="input w-full text-sm"
+                                        aria-label={`Hoja del libro de códigos de ${CODING_LABELS[codingType]}`}
+                                        value={catalogSheets[codingType] ?? ""}
+                                        disabled={confirmed}
+                                        onChange={(event) => void loadCatalogPreview(
+                                          codingType, catalogFile, event.target.value
+                                        )}
+                                      >
+                                        {catalogFile.detected_sheets.map((sheet) => (
+                                          <option key={sheet.name} value={sheet.name}>
+                                            {sheet.name} ({sheet.rows} filas)
+                                          </option>
+                                        ))}
+                                      </select>
+                                      {preview && (
+                                        <div className="rounded-lg bg-p-bg-subtle p-2.5 text-xs text-p-text-muted">
+                                          Vas a homologar {preview.codes} códigos, {preview.aliases} alias y {preview.nets} netos.
+                                          {preview.system_codes_overflow && (
+                                            <span className="block mt-1">
+                                              El cliente ocupa 95–99: los códigos de sistema nacerán como 995–999.
+                                            </span>
+                                          )}
+                                        </div>
+                                      )}
+                                      {!confirmed && (
+                                        <button
+                                          type="button"
+                                          className="btn-primary text-sm py-2 w-full justify-center"
+                                          disabled={!preview || submitting}
+                                          onClick={() => void handleConfirmCatalog(codingType)}
+                                        >
+                                          Confirmar libro de códigos
+                                        </button>
+                                      )}
+                                    </>
                                   )}
                                 </div>
-                              )}
-                              {!confirmed && (
-                                <button
-                                  type="button"
-                                  className="btn-primary text-sm py-2 w-full justify-center"
-                                  disabled={!preview || submitting}
-                                  onClick={() => void handleConfirmCatalog(codingType)}
-                                >
-                                  Confirmar libro de códigos
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                              );
+                            })}
+                          </div>
+                        )}
 
-                {!catalogsReady && importedCatalogTypes.length > 0 && (
-                  <div className="rounded-lg border border-p-warning/40 bg-p-warning/10 p-3 text-xs text-p-text-muted">
-                    Confirma los libros de códigos del cliente para continuar.
-                  </div>
-                )}
+                        {!catalogsReady && importedCatalogTypes.length > 0 && (
+                          <div className="rounded-lg border border-p-warning/40 bg-p-warning/10 p-3 text-xs text-p-text-muted">
+                            Confirma los libros de códigos del cliente para continuar.
+                          </div>
+                        )}
 
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  className="btn-primary text-sm py-2 w-full justify-center mt-1"
-                  disabled={submitting || (!catalogsReady && importedCatalogTypes.length > 0)}
-                  onClick={() => void handleContinueFromStudio()}
-                >
-                  Continuar a campos <span className="opacity-60 font-normal">(Enter)</span>
-                </motion.button>
-              </motion.div>
-            </div>
-          )}
-
-          {/* Paso 3: Campos */}
-          {step === "fields" && (
-            <div className="space-y-3">
-              <motion.button
-                onClick={() => goToStep(isAddLoadMode ? "round" : "studio")}
-                whileHover={{ x: -2 }}
-                whileTap={{ scale: 0.98 }}
-                className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
-              >
-                <ChevronLeft className="w-3.5 h-3.5" /> {uploaded?.original_filename ?? "Atrás"}
-              </motion.button>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                  {isDau ? "Campos a clasificar" : "Muestra de valores"}
-                </label>
-                {activeCodingTypes.length > 0 && (
-                  <RoundCodingControls
-                    codingTypes={activeCodingTypes}
-                    value={roundControls}
-                    onChange={setRoundControls}
-                    detectedMaxMentions={detectedMaxMentions}
-                  />
-                )}
-                <FieldSelectionTable
-                  fields={fieldPreviews}
-                  value={fieldSelections}
-                  onChange={setFieldSelections}
-                  showCodingType={activeCodingTypes.length > 1}
-                  readOnly={!isDau}
-                />
-              </div>
-
-              {pendingQuestions.length > 0 && (
-                <div className="space-y-3 rounded-lg border border-p-warning/40 bg-p-warning/10 p-3">
-                  <div className="text-sm font-semibold text-p-text">Clasifica las variables nuevas</div>
-                  <p className="text-xs text-p-text-muted">
-                    Estas columnas no coinciden con ninguna variable ya clasificada del estudio. Indica si cada una es
-                    {" "}{activeCodingTypes.map((t) => CODING_LABELS[t]).join(" o ")} antes de reintentar la importación.
-                  </p>
-                  {pendingQuestions.map((questionKey) => (
-                    <div key={questionKey} className="grid grid-cols-[1fr_150px] gap-2 items-center">
-                      <code className="truncate text-xs text-p-text">{questionKey}</code>
-                      {activeCodingTypes.length === 1 ? (
-                        <span className="text-sm font-medium text-p-text text-right">
-                          {CODING_LABELS[activeCodingTypes[0]!]}
-                        </span>
-                      ) : (
-                        <select
-                          className="input text-sm"
-                          aria-label={`Tipo de ${questionKey}`}
-                          value={questionTypes[questionKey] ?? activeCodingTypes[0] ?? "brands"}
-                          onChange={(event) => setQuestionTypes((current) => ({
-                            ...current,
-                            [questionKey]: event.target.value as CodingType,
-                          }))}
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          className="btn-primary text-sm py-2 w-full justify-center mt-1"
+                          disabled={submitting || (!catalogsReady && importedCatalogTypes.length > 0)}
+                          onClick={() => void handleContinueToData()}
                         >
-                          <option value="brands">Marcas</option>
-                          <option value="reasons">Razones</option>
-                        </select>
-                      )}
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    className="btn-primary text-sm py-2 w-full justify-center"
-                    disabled={submitting}
-                    onClick={() => void handleClassifyQuestions()}
-                  >
-                    Clasificar y continuar
-                  </button>
-                </div>
-              )}
-
-              {pendingQuestions.length === 0 && !batchRunning && !batchDone && (
-                <div className="flex gap-1.5 pt-1">
-                  <button
-                    type="button"
-                    disabled={!canImport || submitting}
-                    className="btn-primary text-sm py-2 flex-1 justify-center"
-                    onClick={() => void handleContinueWithoutProfile()}
-                  >
-                    {submitting ? "Importando..." : "Continuar sin perfil"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!canImport || submitting}
-                    className="btn-secondary text-sm py-2 flex-1 justify-center"
-                    onClick={() => void handleGoToCompareProfile()}
-                  >
-                    Comparar perfil
-                  </button>
-                </div>
-              )}
-
-              {batchItems.length > 0 && (batchRunning || batchDone) && (
-                <div className="space-y-2 pt-1">
-                  <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                    Rondas adicionales
+                          Continuar a datos <span className="opacity-60 font-normal">(Enter)</span>
+                        </motion.button>
+                      </div>
+                    )}
                   </div>
-                  {batchItems.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center gap-2 text-xs bg-p-bg-subtle rounded-lg p-2"
+                )}
+
+                {/* Paso 2: Datos — campos a codificar. */}
+                {step === "data" && (
+                  <div className="space-y-3">
+                    <motion.button
+                      onClick={() => goToStep("setup")}
+                      whileHover={{ x: -2 }}
+                      whileTap={{ scale: 0.98 }}
+                      className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
                     >
-                      {item.status === "done" ? (
-                        <Check className="w-3.5 h-3.5 shrink-0 text-p-success" />
-                      ) : item.status === "error" ? (
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0 text-p-error" />
-                      ) : (
-                        <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-p-text-faint" />
+                      <ChevronLeft className="w-3.5 h-3.5" /> {uploaded?.original_filename ?? "Atrás"}
+                    </motion.button>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                        {isDau ? "Campos a clasificar" : "Muestra de valores"}
+                      </label>
+                      {activeCodingTypes.length > 0 && (
+                        <RoundCodingControls
+                          codingTypes={activeCodingTypes}
+                          value={roundControls}
+                          onChange={setRoundControls}
+                          detectedMaxMentions={detectedMaxMentions}
+                        />
                       )}
-                      <span className="flex-1 truncate text-p-text">
-                        {item.roundName ?? item.file.name}
-                      </span>
-                      <span className="text-p-text-faint shrink-0">
-                        {item.error ?? (item.status === "pending" ? "En espera" : item.status === "uploading" ? "Subiendo..." : item.status === "importing" ? "Importando..." : "Listo")}
-                      </span>
+                      <FieldSelectionTable
+                        fields={fieldPreviews}
+                        value={fieldSelections}
+                        onChange={setFieldSelections}
+                        showCodingType={activeCodingTypes.length > 1}
+                        readOnly={!isDau}
+                      />
                     </div>
-                  ))}
-                  {batchDone && (
+
+                    {pendingQuestions.length > 0 && (
+                      <div className="space-y-3 rounded-lg border border-p-warning/40 bg-p-warning/10 p-3">
+                        <div className="text-sm font-semibold text-p-text">Clasifica las variables nuevas</div>
+                        <p className="text-xs text-p-text-muted">
+                          Estas columnas no coinciden con ninguna variable ya clasificada del estudio. Indica si cada una es
+                          {" "}{activeCodingTypes.map((t) => CODING_LABELS[t]).join(" o ")} antes de reintentar la importación.
+                        </p>
+                        {pendingQuestions.map((questionKey) => (
+                          <div key={questionKey} className="grid grid-cols-[1fr_150px] gap-2 items-center">
+                            <code className="truncate text-xs text-p-text">{questionKey}</code>
+                            {activeCodingTypes.length === 1 ? (
+                              <span className="text-sm font-medium text-p-text text-right">
+                                {CODING_LABELS[activeCodingTypes[0]!]}
+                              </span>
+                            ) : (
+                              <select
+                                className="input text-sm"
+                                aria-label={`Tipo de ${questionKey}`}
+                                value={questionTypes[questionKey] ?? activeCodingTypes[0] ?? "brands"}
+                                onChange={(event) => setQuestionTypes((current) => ({
+                                  ...current,
+                                  [questionKey]: event.target.value as CodingType,
+                                }))}
+                              >
+                                <option value="brands">Marcas</option>
+                                <option value="reasons">Razones</option>
+                              </select>
+                            )}
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          className="btn-primary text-sm py-2 w-full justify-center"
+                          disabled={submitting}
+                          onClick={() => void handleClassifyQuestions()}
+                        >
+                          Clasificar y continuar
+                        </button>
+                      </div>
+                    )}
+
+                    {pendingQuestions.length === 0 && !batchRunning && !batchDone && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setShowProfileStep((v) => !v)}
+                          className={[
+                            "flex items-center gap-1.5 text-xs rounded-lg border px-2.5 py-2 w-full transition-colors",
+                            showProfileStep
+                              ? "border-p-accent/40 bg-p-accent-soft text-p-accent"
+                              : "border-p-border text-p-text-muted hover:bg-p-bg-subtle",
+                          ].join(" ")}
+                        >
+                          <Users className="w-3.5 h-3.5 shrink-0" />
+                          {showProfileStep
+                            ? "Perfil de referencia: se configura antes de Revisión"
+                            : "Configurar perfil de referencia (opcional)"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canImport || submitting}
+                          className="btn-primary text-sm py-2 w-full justify-center"
+                          onClick={() => void handleContinueToReview()}
+                        >
+                          {submitting ? "Importando..." : "Continuar"}
+                        </button>
+                      </>
+                    )}
+
+                    {batchItems.length > 0 && (batchRunning || batchDone) && (
+                      <div className="space-y-2 pt-1">
+                        <div className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                          Rondas adicionales
+                        </div>
+                        {batchItems.map((item, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center gap-2 text-xs bg-p-bg-subtle rounded-lg p-2"
+                          >
+                            {item.status === "done" ? (
+                              <Check className="w-3.5 h-3.5 shrink-0 text-p-success" />
+                            ) : item.status === "error" ? (
+                              <AlertCircle className="w-3.5 h-3.5 shrink-0 text-p-error" />
+                            ) : (
+                              <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-p-text-faint" />
+                            )}
+                            <span className="flex-1 truncate text-p-text">
+                              {item.roundName ?? item.file.name}
+                            </span>
+                            <span className="text-p-text-faint shrink-0">
+                              {item.error ?? (item.status === "pending" ? "En espera" : item.status === "uploading" ? "Subiendo..." : item.status === "importing" ? "Importando..." : "Listo")}
+                            </span>
+                          </div>
+                        ))}
+                        {batchDone && (
+                          <button
+                            type="button"
+                            className="btn-primary text-sm py-2 w-full justify-center mt-1"
+                            onClick={() => goToStep(showProfileStep ? "profile" : "review")}
+                          >
+                            Continuar
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Paso 3 (opcional): Perfil de referencia — solo aparece si la
+                    persona lo eligió explícitamente desde "Datos". Subirlo acá
+                    ya re-dispara el cruce; "Continuar" avanza a "Revisión"
+                    donde se ve el resultado (duplicados/candidatos). */}
+                {step === "profile" && (
+                  <div className="space-y-3">
+                    <motion.button
+                      onClick={() => goToStep("data")}
+                      whileHover={{ x: -2 }}
+                      whileTap={{ scale: 0.98 }}
+                      className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" /> Datos
+                    </motion.button>
+
+                    <div className="card p-4 space-y-2.5">
+                      <div className="flex items-center gap-1.5 pb-1 border-b border-p-border">
+                        <Users className="w-3.5 h-3.5 text-p-accent shrink-0" />
+                        <h2 className="text-xs font-semibold text-p-text uppercase tracking-wide">
+                          Perfil de referencia (opcional)
+                        </h2>
+                      </div>
+                      {roundProfile ? (
+                        <p className="text-xs text-p-text">
+                          Activo: <span className="font-medium">{roundProfile.original_filename}</span>
+                          {" · "}
+                          {roundProfile.expected_respondents} esperados
+                        </p>
+                      ) : (
+                        <p className="text-xs text-p-text-muted">
+                          Excel pactado con el cliente (columna Respondent ID). Si lo subes, se cruza al instante contra
+                          los verbatims ya importados.
+                        </p>
+                      )}
+                      <label className={[
+                        "btn-secondary text-xs py-1.5 px-2.5 inline-flex cursor-pointer",
+                        profileUploading ? "opacity-50 pointer-events-none" : "",
+                      ].join(" ")}>
+                        <input
+                          type="file"
+                          accept=".xlsx,.xls"
+                          className="sr-only"
+                          disabled={profileUploading}
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            e.target.value = "";
+                            if (!f) return;
+                            await handleProfileUpload(f);
+                          }}
+                        />
+                        {profileUploading
+                          ? "Subiendo…"
+                          : roundProfile
+                            ? "Cambiar perfil"
+                            : "Subir perfil .xlsx"}
+                      </label>
+                    </div>
+
                     <button
                       type="button"
-                      className="btn-primary text-sm py-2 w-full justify-center mt-1"
-                      onClick={() => goToStep("summary")}
+                      className="btn-primary text-sm py-2 w-full justify-center"
+                      onClick={() => goToStep("review")}
                     >
                       Continuar
                     </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Paso 4: Perfil (opcional) */}
-          {step === "profile" && (
-            <div className="space-y-3">
-              <motion.button
-                onClick={() => goToStep("fields")}
-                whileHover={{ x: -2 }}
-                whileTap={{ scale: 0.98 }}
-                className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
-              >
-                <ChevronLeft className="w-3.5 h-3.5" /> Campos
-              </motion.button>
-
-              <div className="card p-4 space-y-2.5">
-                <div className="text-sm font-semibold text-p-text">Perfil de referencia (opcional)</div>
-                <p className="text-xs text-p-text-muted">
-                  Excel pactado con el cliente (columna <span className="font-medium">Respondent ID</span>).
-                  En el siguiente paso se compara quién llegó vs quién se esperaba.
-                </p>
-                {roundProfile ? (
-                  <p className="text-xs text-p-text">
-                    Activo: <span className="font-medium">{roundProfile.original_filename}</span>
-                    {" · "}
-                    {roundProfile.expected_respondents} Respondent ID esperados
-                  </p>
-                ) : (
-                  <p className="text-xs text-p-text-faint">Sin perfil cargado todavía.</p>
+                  </div>
                 )}
-                <label className={[
-                  "btn-secondary text-xs py-1.5 px-2.5 inline-flex cursor-pointer",
-                  profileUploading ? "opacity-50 pointer-events-none" : "",
-                ].join(" ")}>
-                  <input
-                    type="file"
-                    accept=".xlsx,.xls"
-                    className="sr-only"
-                    disabled={profileUploading}
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      e.target.value = "";
-                      if (f) void handleProfileUpload(f);
-                    }}
-                  />
-                  {profileUploading
-                    ? "Subiendo…"
-                    : roundProfile
-                      ? "Cambiar perfil .xlsx"
-                      : "Subir perfil .xlsx"}
-                </label>
-              </div>
 
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  className="btn-primary text-sm py-2 flex-1 justify-center"
-                  onClick={() => goToStep("profileReview")}
-                >
-                  Continuar a revisión
-                </button>
-                <button
-                  type="button"
-                  className="btn-ghost text-sm py-2 px-3"
-                  onClick={() => goToStep("summary")}
-                >
-                  Saltar al resumen
-                </button>
-              </div>
-            </div>
-          )}
+                {/* Paso 4: Revisión — cruce de duplicados/perfil + resumen,
+                    apilados verticalmente en una sola pantalla. */}
+                {step === "review" && (
+                  <div className="space-y-4">
+                    <motion.button
+                      onClick={() => goToStep(showProfileStep ? "profile" : "data")}
+                      whileHover={{ x: -2 }}
+                      whileTap={{ scale: 0.98 }}
+                      className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" /> {showProfileStep ? "Perfil" : "Datos"}
+                    </motion.button>
 
-          {/* Paso 5: Revisar perfil (opcional) */}
-          {step === "profileReview" && (
-            <div className="space-y-4">
-              <motion.button
-                onClick={() => goToStep("profile")}
-                whileHover={{ x: -2 }}
-                whileTap={{ scale: 0.98 }}
-                className="flex items-center gap-1 text-xs text-p-text-muted hover:text-p-text mb-1 transition-colors"
-              >
-                <ChevronLeft className="w-3.5 h-3.5" /> Perfil
-              </motion.button>
-
-              <div className="card p-4 space-y-1">
-                <div className="flex items-center gap-2 text-sm font-semibold text-p-text">
-                  <Check className="w-4 h-4 text-p-success" />
-                  {importedCount} verbatims importados
-                </div>
-                <p className="text-xs text-p-text-muted">
-                  El motor ya está codificando en segundo plano; esta revisión decide qué hacer con
-                  posibles duplicados / candidatos a exclusión por perfil.
-                </p>
-              </div>
-
-              {matchingProfile ? (
-                <div className="card p-4 text-sm text-p-text-muted">Cruzando con el perfil…</div>
-              ) : (
-                <>
-                  {(profileSummary?.has_profile || profileCandidates.length > 0) && effectiveRoundId && importedFileId ? (
-                    <ProfileReviewPanel
-                      roundId={effectiveRoundId}
-                      fileId={importedFileId}
-                      summary={profileSummary}
-                      candidates={profileCandidates}
-                      onCandidatesChange={setProfileCandidates}
-                      showToast={showToast}
-                      onAllResolved={() => {
-                        playSuccess();
-                        showToast("Revisión de perfil resuelta.", "success");
-                      }}
-                    />
-                  ) : (
-                    <div className="card p-4 text-xs text-p-text-muted">
-                      No hay perfil de referencia en esta carga — no hubo cruce por Respondent ID.
-                    </div>
-                  )}
-
-                  {duplicates.length > 0 && (
-                    <section className="card p-4 space-y-3">
-                      <div className="flex items-center gap-2">
-                        <Users className="w-4 h-4 text-p-warning" />
-                        <h2 className="text-sm font-bold uppercase tracking-wide text-p-text">
-                          Posibles duplicados reales
-                        </h2>
-                        <span className={
-                          duplicates.some((d) => d.status === "pending") ? "badge-warning" : "badge-success"
-                        }>
-                          {duplicates.filter((d) => d.status === "pending").length > 0
-                            ? `${duplicates.filter((d) => d.status === "pending").length} pendientes`
-                            : "Resueltos"}
-                        </span>
+                    <div className="card p-4 space-y-1">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-p-text">
+                        <Check className="w-4 h-4 text-p-success" />
+                        {importedCount} verbatims importados
                       </div>
                       <p className="text-xs text-p-text-muted">
-                        El mismo ID real (persona) ya existe en otra carga de esta ronda. Decide por cada uno; el ID
-                        real nunca se modifica.
+                        El motor ya está codificando en segundo plano.
+                        {(matchingProfile || profileSummary?.has_profile || profileCandidates.length > 0)
+                          && " Esta revisión decide qué hacer con posibles duplicados / candidatos a exclusión por perfil."}
                       </p>
-                      <div className="space-y-2">
-                        {duplicates.map((flag) => (
-                          <div key={flag.flag_id} className="rounded-lg border border-p-border bg-p-bg-subtle p-3 space-y-2">
-                            <div className="flex items-center justify-between gap-2 flex-wrap">
-                              <div className="text-xs text-p-text">
-                                <span className="font-semibold">Serial {flag.serial ?? "—"}</span>
-                                <span className="text-p-text-muted"> · ID real </span>
-                                <code className="text-[11px]">{flag.realid ?? "—"}</code>
-                                {flag.matches.map((m, i) => (
-                                  <span key={i} className="text-p-text-muted">
-                                    {" "}· ya existe como Serial {m.serial ?? "—"} — Carga: {m.source_label}
-                                  </span>
-                                ))}
-                              </div>
-                              {flag.status !== "pending" ? (
-                                <span className={flag.status === "approved_remove" ? "badge-pending" : "badge-success"}>
-                                  {flag.status === "approved_keep"
-                                    ? "Se mantienen ambos"
-                                    : flag.status === "approved_remove"
-                                      ? "Carga nueva descartada"
-                                      : "Editado"}
-                                </span>
-                              ) : (
-                                <div className="flex items-center gap-1.5">
-                                  <button
-                                    type="button"
-                                    className="btn-primary text-xs py-1.5 px-2.5"
-                                    disabled={resolvingFlagId === flag.flag_id}
-                                    onClick={() => void handleResolve(flag, "keep")}
-                                  >
-                                    Mantener ambos
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn-ghost text-xs py-1.5 px-2.5"
-                                    disabled={resolvingFlagId === flag.flag_id}
-                                    onClick={() => void handleResolve(flag, "edit")}
-                                  >
-                                    Guardar con nota
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn-ghost text-xs py-1.5 px-2.5 text-p-error"
-                                    disabled={resolvingFlagId === flag.flag_id}
-                                    onClick={() => void handleResolve(flag, "remove")}
-                                  >
-                                    Quitar de esta carga
-                                  </button>
+                    </div>
+
+                    {matchingProfile && (
+                      <div className="card p-4 text-sm text-p-text-muted">Cruzando con el perfil…</div>
+                    )}
+
+                    {!matchingProfile && (profileSummary?.has_profile || profileCandidates.length > 0) && effectiveRoundId && importedFileId && (
+                      <ProfileReviewPanel
+                        roundId={effectiveRoundId}
+                        fileId={importedFileId}
+                        summary={profileSummary}
+                        candidates={profileCandidates}
+                        onCandidatesChange={setProfileCandidates}
+                        showToast={showToast}
+                        onAllResolved={() => {
+                          playSuccess();
+                          showToast("Revisión de perfil resuelta.", "success");
+                        }}
+                      />
+                    )}
+
+                    {!matchingProfile && duplicates.length > 0 && (
+                      <section className="card p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <Users className="w-4 h-4 text-p-warning" />
+                          <h2 className="text-sm font-bold uppercase tracking-wide text-p-text">
+                            Posibles duplicados reales
+                          </h2>
+                          <span className={
+                            duplicates.some((d) => d.status === "pending") ? "badge-warning" : "badge-success"
+                          }>
+                            {duplicates.filter((d) => d.status === "pending").length > 0
+                              ? `${duplicates.filter((d) => d.status === "pending").length} pendientes`
+                              : "Resueltos"}
+                          </span>
+                        </div>
+                        <p className="text-xs text-p-text-muted">
+                          El mismo ID real (persona) ya existe en otra carga de esta ronda. Decide por cada uno; el ID
+                          real nunca se modifica.
+                        </p>
+                        <div className="space-y-2">
+                          {duplicates.map((flag) => (
+                            <div key={flag.flag_id} className="rounded-lg border border-p-border bg-p-bg-subtle p-3 space-y-2">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <div className="text-xs text-p-text">
+                                  <span className="font-semibold">Serial {flag.serial ?? "—"}</span>
+                                  <span className="text-p-text-muted"> · ID real </span>
+                                  <code className="text-[11px]">{flag.realid ?? "—"}</code>
+                                  {flag.matches.map((m, i) => (
+                                    <span key={i} className="text-p-text-muted">
+                                      {" "}· ya existe como Serial {m.serial ?? "—"} — Carga: {m.source_label}
+                                    </span>
+                                  ))}
                                 </div>
+                                {flag.status !== "pending" ? (
+                                  <span className={flag.status === "approved_remove" ? "badge-pending" : "badge-success"}>
+                                    {flag.status === "approved_keep"
+                                      ? "Se mantienen ambos"
+                                      : flag.status === "approved_remove"
+                                        ? "Carga nueva descartada"
+                                        : "Editado"}
+                                  </span>
+                                ) : (
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      className="btn-primary text-xs py-1.5 px-2.5"
+                                      disabled={resolvingFlagId === flag.flag_id}
+                                      onClick={() => void handleResolve(flag, "keep")}
+                                    >
+                                      Mantener ambos
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-ghost text-xs py-1.5 px-2.5"
+                                      disabled={resolvingFlagId === flag.flag_id}
+                                      onClick={() => void handleResolve(flag, "edit")}
+                                    >
+                                      Guardar con nota
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-ghost text-xs py-1.5 px-2.5 text-p-error"
+                                      disabled={resolvingFlagId === flag.flag_id}
+                                      onClick={() => void handleResolve(flag, "remove")}
+                                    >
+                                      Quitar de esta carga
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                              {flag.status === "pending" && (
+                                <input
+                                  className="input w-full text-xs"
+                                  placeholder="Nota opcional (se guarda con la decisión 'Guardar con nota')"
+                                  value={editNotes[flag.flag_id] ?? ""}
+                                  onChange={(e) =>
+                                    setEditNotes((current) => ({ ...current, [flag.flag_id]: e.target.value }))
+                                  }
+                                />
                               )}
                             </div>
-                            {flag.status === "pending" && (
-                              <input
-                                className="input w-full text-xs"
-                                placeholder="Nota opcional (se guarda con la decisión 'Guardar con nota')"
-                                value={editNotes[flag.flag_id] ?? ""}
-                                onChange={(e) =>
-                                  setEditNotes((current) => ({ ...current, [flag.flag_id]: e.target.value }))
-                                }
-                              />
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  )}
+                          ))}
+                        </div>
+                      </section>
+                    )}
 
-                  {serialCollisions.length > 0 && (
-                    <section className="card p-4 space-y-3">
-                      <div className="flex items-center gap-2">
-                        <Info className="w-4 h-4 text-p-accent" />
-                        <h2 className="text-sm font-bold uppercase tracking-wide text-p-text">
-                          Seriales repetidos entre cargas
-                        </h2>
-                        <span className="badge-pending">Informativo</span>
-                      </div>
-                      <p className="text-xs text-p-text-muted">
-                        El mismo Serial aparece en dos cargas con distinto ID real: son personas distintas. No requiere
-                        acción — la etiqueta de carga los distingue.
-                      </p>
-                      <div className="space-y-1.5">
-                        {serialCollisions.map((c, i) => (
-                          <div key={i} className="text-xs text-p-text bg-p-bg-subtle rounded-lg p-2">
-                            Serial <span className="font-semibold">{c.serial ?? "—"}</span> también existe en{" "}
-                            {c.previous_source_label} (otra persona).
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  )}
+                    {!matchingProfile && serialCollisions.length > 0 && (
+                      <section className="card p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <Info className="w-4 h-4 text-p-accent" />
+                          <h2 className="text-sm font-bold uppercase tracking-wide text-p-text">
+                            Seriales repetidos entre cargas
+                          </h2>
+                          <span className="badge-pending">Informativo</span>
+                        </div>
+                        <p className="text-xs text-p-text-muted">
+                          El mismo Serial aparece en dos cargas con distinto ID real: son personas distintas. No requiere
+                          acción — la etiqueta de carga los distingue.
+                        </p>
+                        <div className="space-y-1.5">
+                          {serialCollisions.map((c, i) => (
+                            <div key={i} className="text-xs text-p-text bg-p-bg-subtle rounded-lg p-2">
+                              Serial <span className="font-semibold">{c.serial ?? "—"}</span> también existe en{" "}
+                              {c.previous_source_label} (otra persona).
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
 
-                  {pendingFlags > 0 && (
-                    <div className="flex items-center gap-2 text-xs text-p-text-muted">
-                      <AlertCircle className="w-3.5 h-3.5 text-p-warning" />
-                      Quedan {pendingFlags} pendientes de revisión — puedes continuar igual, se resuelven cuando quieras.
+                    {!matchingProfile && pendingFlags > 0 && (
+                      <div className="flex items-center gap-2 text-xs text-p-text-muted">
+                        <AlertCircle className="w-3.5 h-3.5 text-p-warning" />
+                        Quedan {pendingFlags} pendientes de revisión — puedes continuar igual, se resuelven cuando quieras.
+                      </div>
+                    )}
+
+                    {/* Resumen final — siempre visible, arriba de la barra de
+                        cruce si la hubo. */}
+                    <div className="card p-4 space-y-2">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-p-text">
+                        <Check className="w-4 h-4 text-p-success" />
+                        {roundName ?? "Ronda"} lista
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs text-p-text-muted">
+                        <div>Verbatims importados: <span className="font-semibold text-p-text">{importedCount}</span></div>
+                        <div>Mínimo de menciones: <span className="font-semibold text-p-text">{rThreshold}</span></div>
+                        <div>% de auditoría: <span className="font-semibold text-p-text">{rAudit}</span></div>
+                        <div>Tipos codificados: <span className="font-semibold text-p-text">{activeCodingTypes.map((t) => CODING_LABELS[t]).join(", ")}</span></div>
+                      </div>
+                      {profileSummary?.has_profile && (
+                        <p className="text-xs text-p-text-muted">
+                          Perfil: {profileSummary.expected} esperados · {profileSummary.arrived} llegaron · {profileSummary.extra} de más.
+                        </p>
+                      )}
                     </div>
-                  )}
 
-                  <button
-                    type="button"
-                    className="btn-primary text-sm py-2 w-full justify-center"
-                    onClick={() => goToStep("summary")}
-                  >
-                    Ir al resumen
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Paso 6: Resumen */}
-          {step === "summary" && (
-            <div className="space-y-4">
-              <div className="card p-4 space-y-2">
-                <div className="flex items-center gap-2 text-sm font-semibold text-p-text">
-                  <Check className="w-4 h-4 text-p-success" />
-                  {roundName ?? "Ronda"} lista
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-p-text-muted">
-                  <div>Verbatims importados: <span className="font-semibold text-p-text">{importedCount}</span></div>
-                  <div>Mínimo de menciones: <span className="font-semibold text-p-text">{rThreshold}</span></div>
-                  <div>% de auditoría: <span className="font-semibold text-p-text">{rAudit}</span></div>
-                  <div>Tipos codificados: <span className="font-semibold text-p-text">{activeCodingTypes.map((t) => CODING_LABELS[t]).join(", ")}</span></div>
-                </div>
-                {profileSummary?.has_profile && (
-                  <p className="text-xs text-p-text-muted">
-                    Perfil: {profileSummary.expected} esperados · {profileSummary.arrived} llegaron · {profileSummary.extra} de más.
-                  </p>
+                    <button
+                      type="button"
+                      className="btn-primary text-sm py-2 w-full justify-center"
+                      onClick={goToRoundOutcome}
+                    >
+                      Ir al procesamiento
+                    </button>
+                  </div>
                 )}
-                {pendingFlags > 0 && (
-                  <p className="text-xs text-p-warning">
-                    Quedan {pendingFlags} pendientes de revisión de perfil/duplicados — puedes resolverlos después
-                    desde la ronda.
-                  </p>
-                )}
-              </div>
-
-              <button
-                type="button"
-                className="btn-primary text-sm py-2 w-full justify-center"
-                onClick={goToRoundOutcome}
-              >
-                Ir al procesamiento
-              </button>
-            </div>
-          )}
-        </motion.div>
-      </AnimatePresence>
+              </motion.div>
+            </AnimatePresence>
+          </div>
+      </div>
     </div>
   );
 }
