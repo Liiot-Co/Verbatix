@@ -419,9 +419,10 @@ class _NewBrandSession:
     """Fake que sirve el subproyecto/origen, los candidatos pendientes y la
     numeración, y captura los inserts de discover_new_brands."""
 
-    def __init__(self, origin, candidates):
+    def __init__(self, origin, candidates, existing_codes=None):
         self.origin = origin
         self.candidates = candidates
+        self.existing_codes = existing_codes or []
         self.inserted_codes = []
         self.inserted_aliases = []
         self.suggested = []
@@ -437,6 +438,8 @@ class _NewBrandSession:
             })
         if "status = 'pending_review'" in sql and "frequency_count" in sql:
             return _NBResult(rows=self.candidates)
+        if "select id, label from codes" in sql:
+            return _NBResult(rows=self.existing_codes)
         if "max(code_number)" in sql:
             return _NBResult(scalar=1)
         if "select code_number from codes" in sql:
@@ -510,3 +513,28 @@ def test_discover_new_brands_is_noop_for_scratch_round():
 
     assert discover_new_brands(db, uuid.uuid4(), min_mentions=3) == 0
     assert db.inserted_codes == []
+
+
+def test_discover_new_brands_reuses_existing_code_with_same_label(monkeypatch):
+    # Bug real: "Bonle" ya tiene código en el libro (todavía 'pending' de
+    # aprobar, por eso invisible para load_catalog_aliases/fuzzy) pero
+    # discover_new_brands minaba un código NUEVO para el mismo cluster en vez de
+    # reusar el existente -> misma marca con dos códigos distintos.
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "auto_approve_scratch_codebook", True)
+    candidates = [
+        {"id": uuid.uuid4(), "normalized_text": "bonle", "sample_text": "Bonle", "frequency_count": 6},
+    ]
+    db = _NewBrandSession(
+        origin="inherited",
+        candidates=candidates,
+        existing_codes=[{"id": "code-bonle-existing", "label": "Bonlé"}],
+    )
+
+    grouped = discover_new_brands(db, uuid.uuid4(), min_mentions=3)
+
+    assert grouped == 1
+    assert db.inserted_codes == []  # no se crea un código nuevo
+    assert db.inserted_aliases[0][0]["code"] == "code-bonle-existing"
+    assert db.suggested[0]["code"] == "code-bonle-existing"
+    assert db.inserted_verbatim_codes[0]["code"] == "code-bonle-existing"

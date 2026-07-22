@@ -115,7 +115,7 @@ def load_catalog_aliases(db: Session, subproject_id: uuid.UUID) -> list[CodeAlia
                             and cur.is_active and cur.approval_status = 'approved'
                             and coalesce(cur.is_system, false) = false
                             and cur.label is not null and trim(cur.label) <> ''
-              join rounds r2 on r2.project_id = r.project_id and r2.id <> r.id
+              join rounds r2 on r2.study_id = r.study_id and r2.id <> r.id
               join subprojects sp2 on sp2.round_id = r2.id and sp2.coding_type = 'brands'
               join codebooks cb2 on cb2.id = sp2.codebook_id
                                 and cb2.status in ('approved', 'exported')
@@ -207,6 +207,30 @@ def _clean_seed_label(representative: str, members: list) -> str:
             raw_label = m["sample_text"]
             break
     return raw_label.strip().capitalize() if raw_label else raw_label
+
+
+def _find_code_by_label(db: Session, codebook_id, label_key: str) -> str | None:
+    """Busca un código YA existente en el libro (cualquier approval_status, activo)
+    cuyo label normalizado calce con `label_key`. Sin esto, `discover_new_brands`
+    podía minar un código DUPLICADO para una marca que ya tenía código: si ese
+    código seguía 'pending' de aprobar, `load_catalog_aliases` no lo trae (solo
+    aprobados) y el candidato caía a `pending_review` como si la marca fuera
+    nueva. Recorrido en Python porque `label_key` ya pasó por `normalize()`
+    (sin tildes/puntuación), que SQL no replica sin duplicar esa lógica."""
+    if not label_key:
+        return None
+    rows = db.execute(
+        text("""
+            select id, label from codes
+            where codebook_id = :cb and is_active
+              and coalesce(is_system, false) = false
+        """),
+        {"cb": codebook_id},
+    ).mappings().all()
+    for row in rows:
+        if normalize(row["label"]) == label_key:
+            return str(row["id"])
+    return None
 
 
 def _brand_code_numbers(start: int, occupied: set[int] | None = None):
@@ -579,34 +603,42 @@ def discover_new_brands(
             for m in members
         ):
             continue
-        code_id = str(uuid.uuid4())
         member_ids = [m["id"] for m in members]
-        definition = (
-            f"Marca nueva detectada por frecuencia: {total} menciones no reconocidas "
-            f"por el catálogo heredado."
-            + ("" if auto else " Pendiente de confirmación.")
-        )
-        db.execute(
-            text("""
-                insert into codes (
-                  id, codebook_id, code_number, label, definition, examples,
-                  origin, approval_status
-                )
-                values (
-                  :id, :cb, :n, :label, :definition, cast(:examples as jsonb),
-                  'engine_auto', :approval
-                )
-            """),
-            {
-                "id": code_id, "cb": codebook_id, "n": next(numbers),
-                "label": _clean_seed_label(representative, members),
-                "definition": definition,
-                "examples": json.dumps(
-                    [m["sample_text"] or m["normalized_text"] for m in members[:5]]
-                ),
-                "approval": code_approval,
-            },
-        )
+        label = _clean_seed_label(representative, members)
+        # Antes de minar código nuevo: ¿ya existe uno con este label en el libro
+        # (aprobado o todavía 'pending' de una corrida anterior)? Sin este check,
+        # una marca cuyo código real seguía sin aprobar terminaba con DOS códigos
+        # para la misma marca (uno viejo pending, uno nuevo aquí) — ver
+        # `_find_code_by_label`.
+        code_id = _find_code_by_label(db, codebook_id, normalize(label))
+        if code_id is None:
+            code_id = str(uuid.uuid4())
+            definition = (
+                f"Marca nueva detectada por frecuencia: {total} menciones no reconocidas "
+                f"por el catálogo heredado."
+                + ("" if auto else " Pendiente de confirmación.")
+            )
+            db.execute(
+                text("""
+                    insert into codes (
+                      id, codebook_id, code_number, label, definition, examples,
+                      origin, approval_status
+                    )
+                    values (
+                      :id, :cb, :n, :label, :definition, cast(:examples as jsonb),
+                      'engine_auto', :approval
+                    )
+                """),
+                {
+                    "id": code_id, "cb": codebook_id, "n": next(numbers),
+                    "label": label,
+                    "definition": definition,
+                    "examples": json.dumps(
+                        [m["sample_text"] or m["normalized_text"] for m in members[:5]]
+                    ),
+                    "approval": code_approval,
+                },
+            )
         db.execute(
             text("""
                 insert into code_aliases (id, codebook_id, code_id, alias_normalized,
