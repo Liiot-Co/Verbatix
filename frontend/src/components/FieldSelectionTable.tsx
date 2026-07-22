@@ -45,7 +45,7 @@ export default function FieldSelectionTable({
     lastClickedRef.current = index;
   };
 
-  const showTypeColumn = !readOnly && showCodingType;
+  const showTypeColumn = showCodingType;
 
   return (
     <div className="rounded-xl border border-p-border overflow-hidden">
@@ -97,14 +97,22 @@ export default function FieldSelectionTable({
                   </td>
                   {showTypeColumn && (
                     <td className="px-3 py-2.5">
-                      {selection && selection.included && (
-                        <SegmentedControl
-                          name={`coding-type-${preview.field}`}
-                          options={CODING_OPTIONS}
-                          value={selection.coding_type}
-                          onChange={(coding_type) => update(preview.field, { coding_type })}
-                          ariaLabel={`Tipo de clasificación para ${preview.field}`}
-                        />
+                      {readOnly ? (
+                        preview.suggested_coding_type && (
+                          <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-p-accent/10 text-p-accent">
+                            {preview.suggested_coding_type === "brands" ? "Marcas" : "Razones"}
+                          </span>
+                        )
+                      ) : (
+                        selection && selection.included && (
+                          <SegmentedControl
+                            name={`coding-type-${preview.field}`}
+                            options={CODING_OPTIONS}
+                            value={selection.coding_type}
+                            onChange={(coding_type) => update(preview.field, { coding_type })}
+                            ariaLabel={`Tipo de clasificación para ${preview.field}`}
+                          />
+                        )
                       )}
                     </td>
                   )}
