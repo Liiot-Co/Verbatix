@@ -1794,11 +1794,21 @@ def process(
         raise HTTPException(409, "; ".join(blockers))
     if round_setup_incomplete(db, round_id):
         raise HTTPException(409, "La configuración de la ronda está incompleta")
-    db.execute(
-        text("update rounds set status = 'processing', updated_at = now() where id = :id"),
+    # `where status <> 'processing'` hace el guard atómico a nivel de fila: dos
+    # POST /process concurrentes para la misma ronda (doble click, poll +
+    # click, reintento de red) ya no pueden colar ambos a scheduler.submit —
+    # solo el que gana el UPDATE sigue, el otro ve rowcount 0 y corta acá.
+    # Sin esto, dos corridas paralelas del mismo round_id lanzaban cada una su
+    # propio set de threads por subproyecto y chocaban en el mismo UPDATE
+    # mention_groups ... where id = any(:ids), produciendo deadlocks de
+    # Postgres (visto en prod: 'deadlock detected' sobre mention_groups).
+    result = db.execute(
+        text("update rounds set status = 'processing', updated_at = now() where id = :id and status <> 'processing'"),
         {"id": round_id},
     )
     db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(409, "La ronda ya se está procesando")
     scheduler.submit(round_id)
     return {"status": "queued", "round_id": str(round_id)}
 
