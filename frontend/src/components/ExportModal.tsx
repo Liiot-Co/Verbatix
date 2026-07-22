@@ -17,7 +17,7 @@ const OPTIONS: { value: string; label: string; hint: string }[] = [
 
 /** Modal de selección de formatos para el ZIP de exportación (REQ-13). */
 export function ExportModal({ exporting, onCancel, onConfirm }: ExportModalProps) {
-  const [selected, setSelected] = useState<string[]>(["excel", "sql", "onenextcase"]);
+  const [selected, setSelected] = useState<string[]>(OPTIONS.map((o) => o.value));
 
   const toggle = (value: string) =>
     setSelected((current) =>
