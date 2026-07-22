@@ -27,6 +27,7 @@ import RoundCodingControls, {
   type RoundCodingControlsValue,
 } from "./RoundCodingControls";
 import {
+  ApiError,
   createRound,
   createRoundSubprojects,
   classifyQuestion,
@@ -35,6 +36,7 @@ import {
   getProject,
   getRound,
   getRoundLoads,
+  getUploadedFile,
   importFile,
   importClientCatalog,
   matchProfile,
@@ -62,6 +64,7 @@ import type {
   RoundStatus,
   RoundProfileSummary,
   SerialCollision,
+  SheetImportSpec,
   UploadedFile,
 } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -263,6 +266,13 @@ export default function CreationWizard() {
   const [sourceLabel, setSourceLabel] = useState("");
   const [verbatimsSheet, setVerbatimsSheet] = useState("");
   const [columnMap, setColumnMap] = useState<Partial<ColumnMap>>({});
+  // combined = una hoja con columnas separadas por tipo (comportamiento
+  // original); split = una hoja distinta por Marcas y por Razones. Mismo
+  // patrón que profileMode más abajo — solo aplica con "Ambas" tipos activos.
+  const [dataSheetMode, setDataSheetMode] = useState<"combined" | "split">("combined");
+  const [splitSheets, setSplitSheets] = useState<
+    Partial<Record<CodingType, { sheet: string; respondentId: string; verbatimColumn: string }>>
+  >({});
   const [fieldPreviews, setFieldPreviews] = useState<FieldPreview[]>([]);
   const [fieldSelections, setFieldSelections] = useState<FieldSelection[]>([]);
   const [roundControls, setRoundControls] = useState<RoundCodingControlsValue>({
@@ -330,6 +340,37 @@ export default function CreationWizard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existingRoundId]);
 
+  // Inicializa el wizard para una ronda NUEVA en un Estudio existente,
+  // calculando el número de ronda siguiente al último ya creado. Usada por el
+  // deep-link ?projectId= y, cuando reanudar una ronda falla (borrada o
+  // inaccesible — bug reportado 2026-07-22: un roundId viejo apuntaba a una
+  // ronda que ya no existe), como fallback en vez de dejar el wizard a medio
+  // renderizar con datos de una ronda muerta.
+  const initFreshRoundInProject = (projectId: string) => {
+    getProject(projectId).then((detail) => {
+      if (detail.kind !== "studio") return;
+      setProject(detail);
+      setActiveProjectId(detail.id);
+
+      const existingRounds = detail.rounds ?? [];
+      const nextNum = nextRoundNumber(existingRounds);
+      setRRoundNumber(nextNum);
+      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
+      setHasExistingRounds(existingRounds.length > 0);
+
+      getNextRoundNumber(projectId).then((expected) => {
+        setRRoundNumber(expected);
+        setRName((current) =>
+          current === `Ronda ${nextNum} - ${new Date().getFullYear()}`
+            ? `Ronda ${expected} - ${new Date().getFullYear()}`
+            : current
+        );
+      }).catch(() => {
+        // Si falla, se mantiene el valor calculado en el cliente.
+      });
+    });
+  };
+
   // round-sequence-and-homologation (Task 12): modo reanudación — la ronda ya
   // existe (algún paso del wizard se abandonó a medio camino) pero no está
   // lista para procesar. Carga su estado persistido en vez de arrancar de
@@ -337,8 +378,16 @@ export default function CreationWizard() {
   // queda seteado acá, así que `ensureRound()` lo reusa tal cual.
   useEffect(() => {
     if (!resumeRoundId) return;
+    // React StrictMode (dev) invoca este efecto dos veces — sin cancelar la
+    // primera cadena de promesas, ambas terminaban llamando goToStep("data")
+    // (y reseteando uploaded/verbatimsSheet) en carrera, dejando la animación
+    // de step atascada en "Configuración" pese a que el estado ya decía
+    // "data" (bug observado 2026-07-22 solo reproducible así). Patrón
+    // estándar de cleanup para efectos async.
+    let cancelled = false;
     getRound(resumeRoundId)
       .then((detail) => {
+        if (cancelled) return;
         setProject({
           id: detail.study_id,
           name: detail.study_name,
@@ -377,13 +426,79 @@ export default function CreationWizard() {
 
         // Si ya hay archivo(s) subidos pero la ronda sigue sin cerrar el
         // import (created/files_uploaded), el paso de entrada es "Datos".
+        // Bug reportado 2026-07-22: saltaba a "Datos" pero nunca hidrataba
+        // `uploaded` (el archivo solo vive en memoria tras soltarlo — onDrop
+        // lo setea, esta reanudación no) — la hoja/columnas quedaban vacías y
+        // no había nada para seleccionar. Se recupera el archivo de la carga
+        // MÁS RECIENTE vía getUploadedFile (existe justo para esto — ver su
+        // docstring) y se adivina hoja/columnas igual que onDrop.
         if (hasSubprojects && ["created", "files_uploaded"].includes(detail.status)) {
           getRoundLoads(resumeRoundId).then((loads) => {
-            if (loads.length > 0) goToStep("data");
+            if (cancelled || loads.length === 0) return;
+            const latest = loads[loads.length - 1]!;
+            getUploadedFile(resumeRoundId, latest.file_id).then((file) => {
+              if (cancelled) return;
+              setUploaded(file);
+              setSourceLabel(latest.source_label || file.suggested_source_label || file.original_filename);
+              const verbatimGuess = file.detected_sheets.find((s) => s.guessed_as === "verbatims");
+              const sheetName = verbatimGuess?.name ?? file.detected_sheets[0]?.name ?? "";
+              setVerbatimsSheet(sheetName);
+              const types = detail.subprojects.map((sp) => sp.coding_type) as CodingType[];
+              if (file.file_type !== "dau") {
+                const sheet = file.detected_sheets.find((s) => s.name === sheetName);
+                const guess = guessExcelColumnMap(sheet?.columns ?? []);
+                setColumnMap(guess);
+                // Mismo criterio que onDrop: con marcas+razones activas, cada
+                // tipo necesita su propia hoja — evita mezclar ambas columnas
+                // en una sola hoja compartida (bug reportado 2026-07-22).
+                if (types.length > 1) {
+                  setDataSheetMode("split");
+                  const initial: Partial<Record<CodingType, { sheet: string; respondentId: string; verbatimColumn: string }>> = {};
+                  for (const ct of types) {
+                    initial[ct] = {
+                      sheet: sheetName,
+                      respondentId: guess.respondent_id ?? "",
+                      verbatimColumn: guess[ct] ?? guess.verbatim ?? "",
+                    };
+                  }
+                  setSplitSheets(initial);
+                } else {
+                  setDataSheetMode("combined");
+                  setSplitSheets({});
+                }
+              } else {
+                setColumnMap({});
+                setDataSheetMode("combined");
+                setSplitSheets({});
+              }
+              goToStep("data");
+            }).catch(() => {
+              // No se pudo recuperar el archivo — se queda en "Configuración"
+              // para volver a soltarlo, en vez de aterrizar en "Datos" vacío.
+            });
           });
         }
       })
-      .catch(() => showToast("No se pudo cargar la ronda a reanudar.", "error"));
+      .catch(() => {
+        if (cancelled) return;
+        // La ronda a reanudar ya no existe (borrada) o no cargó — reanudar es
+        // imposible; en vez de dejar el wizard sin proyecto/ronda cargados,
+        // cae al flujo de "ronda nueva" con el número correcto (siguiente al
+        // último real del proyecto) y limpia el roundId muerto de la URL.
+        const projectId = searchParams.get("projectId");
+        if (projectId) {
+          showToast("Esa ronda ya no existe — se abre una ronda nueva.", "info");
+          const params = new URLSearchParams(searchParams.toString());
+          params.delete("roundId");
+          navigate(`/wizard/setup?${params.toString()}`, { replace: true });
+          initFreshRoundInProject(projectId);
+        } else {
+          showToast("No se pudo cargar la ronda a reanudar.", "error");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeRoundId]);
 
@@ -393,31 +508,7 @@ export default function CreationWizard() {
     const projectId = searchParams.get("projectId");
     const roundId = searchParams.get("roundId");
     if (!projectId || roundId) return;
-    getProject(projectId).then((detail) => {
-      if (detail.kind !== "studio") return;
-      setProject(detail);
-      setActiveProjectId(detail.id);
-
-      const existingRounds = detail.rounds ?? [];
-      // Valor inmediato para no bloquear el render mientras llega la
-      // respuesta del backend — round-sequence-and-homologation (Task 1/8):
-      // el backend es la fuente de verdad, se sobreescribe apenas resuelve.
-      const nextNum = nextRoundNumber(existingRounds);
-      setRRoundNumber(nextNum);
-      setRName(`Ronda ${nextNum} - ${new Date().getFullYear()}`);
-      setHasExistingRounds(existingRounds.length > 0);
-
-      getNextRoundNumber(projectId).then((expected) => {
-        setRRoundNumber(expected);
-        setRName((current) =>
-          current === `Ronda ${nextNum} - ${new Date().getFullYear()}`
-            ? `Ronda ${expected} - ${new Date().getFullYear()}`
-            : current
-        );
-      }).catch(() => {
-        // Si falla, se mantiene el valor calculado en el cliente.
-      });
-    });
+    initFreshRoundInProject(projectId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -512,19 +603,48 @@ export default function CreationWizard() {
   // Tarea 1/2: la sección "Libro de códigos" (dentro de Configuración) crea
   // los subprojects vía POST /rounds/{id}/subprojects, después de elegir el
   // origen.
+  // Único punto de entrada que borra+recrea una ronda al soltar un archivo
+  // nuevo — CUALQUIER caller (onDrop, handleContinueToData) pasa por acá, así
+  // que la guarda de integridad vive en un solo lugar.
+  //
+  // Tener subproyectos NO significa que la ronda ya sea irreemplazable — el
+  // analista puede haber elegido el origen del libro y arrepentirse del
+  // archivo sin haber importado un solo verbatim todavía; forzar "carga
+  // adicional" en ese caso (como hacía antes, gateado por subprojectsCreated)
+  // rompía el "cambiar archivo" normal. Lo único que de verdad impide borrar
+  // es que OTRA ronda ya haya homologado su libro (subprojects.source_subproject_id
+  // -> subprojects_source_subproject_id_fkey). Por eso: se INTENTA borrar
+  // siempre, y solo si el backend rechaza con ese motivo puntual (409
+  // round_referenced_by_homologation) se cae a sumar el archivo como carga
+  // adicional a la misma ronda — nunca se adivina la condición del lado del
+  // cliente (bug reportado 2026-07-22: el toast de "carga adicional" salía en
+  // cualquier cambio de archivo, no solo cuando había una herencia real).
   const handleRecreateRound = async (fileOverride?: File) => {
     if (!project) return null;
     const file = fileOverride || rawFile;
     if (!file) return null;
-    
+
     setSubmitting(true);
     try {
       if (round) {
-        await deleteRound(round.id);
+        try {
+          await deleteRound(round.id);
+        } catch (err) {
+          if (err instanceof ApiError && err.code === "round_referenced_by_homologation") {
+            const result = await uploadFile(round.id, file);
+            setUploaded(result);
+            setSourceLabel(result.suggested_source_label ?? file.name);
+            setIsSetupDirty(false);
+            setIsDataDirty(true);
+            showToast("Otra ronda ya heredó el libro de códigos de esta ronda — el archivo se suma como carga adicional.", "info");
+            return round;
+          }
+          throw err;
+        }
       }
       setRound(null);
       setSubprojectsCreated(false);
-      
+
       const created = await createRound(project.id, {
         name: rName.trim(),
         round_number: rRoundNumber,
@@ -532,7 +652,7 @@ export default function CreationWizard() {
         audit_percentage: rAudit,
       });
       setRound(created);
-      
+
       const result = await uploadFile(created.id, file);
       setUploaded(result);
       setSourceLabel(file.name);
@@ -700,11 +820,13 @@ export default function CreationWizard() {
       if (isAddLoadMode) {
         if (!existingRoundId) return;
         targetRoundId = existingRoundId;
+      } else if (round) {
+        // handleRecreateRound decide: borra+recrea si la ronda sigue mutable,
+        // o suma el archivo como carga adicional si ya tiene subproyectos
+        // comprometidos (ver su docstring — guarda de integridad centralizada).
+        await handleRecreateRound(file);
+        return;
       } else {
-        if (round) {
-          await handleRecreateRound(file);
-          return;
-        }
         const r = await ensureRound();
         if (!r) return;
         targetRoundId = r.id;
@@ -715,19 +837,47 @@ export default function CreationWizard() {
       const verbatimGuess = result.detected_sheets.find((s) => s.guessed_as === "verbatims");
       const sheetName = verbatimGuess?.name ?? result.detected_sheets[0]?.name ?? "";
       setVerbatimsSheet(sheetName);
-      if (result.file_type !== "dau") {
+
+      const isExcel = result.file_type !== "dau";
+      const types = codingTypesForScope(codingScope);
+      if (isExcel) {
         const sheet = result.detected_sheets.find((s) => s.name === sheetName);
-        setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
+        const guess = guessExcelColumnMap(sheet?.columns ?? []);
+        setColumnMap(guess);
+
+        // When both types are active, default to split-sheet mode so each type
+        // gets its own "Hoja de respuestas" — combined mode maps both types to
+        // the same sheet, which is wrong when the Excel has one sheet per type.
+        if (types.length > 1) {
+          setDataSheetMode("split");
+          // Pre-fill both types with the auto-detected sheet + columns so the
+          // user only needs to correct whichever needs a different sheet.
+          const initial: Partial<Record<CodingType, { sheet: string; respondentId: string; verbatimColumn: string }>> = {};
+          for (const ct of types) {
+            initial[ct] = {
+              sheet: sheetName,
+              respondentId: guess.respondent_id ?? "",
+              verbatimColumn: guess[ct] ?? guess.verbatim ?? "",
+            };
+          }
+          setSplitSheets(initial);
+        } else {
+          setDataSheetMode("combined");
+          setSplitSheets({});
+        }
       } else {
         setColumnMap({});
+        setDataSheetMode("combined");
+        setSplitSheets({});
       }
+
       if (!isAddLoadMode) {
         setBatchItems(rest.map((f) => ({ file: f, status: "pending" as const })));
       }
       playTick();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [round, project, rName, rRoundNumber, rThreshold, rAudit, isAddLoadMode, existingRoundId]
+    [round, project, rName, rRoundNumber, rThreshold, rAudit, isAddLoadMode, existingRoundId, codingScope]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -746,6 +896,11 @@ export default function CreationWizard() {
   // infraestructura conocida (id, fechas, URLs, metadata).
   const isDau = uploaded?.file_type === "dau";
 
+  // Split solo tiene sentido con más de un tipo activo y en Excel (un .dau no
+  // tiene concepto de "hoja por tipo" — el motor ya separa por Question ID).
+  // Declarado antes del useEffect que lo usa como condición de branch.
+  const isSplitSheetMode = dataSheetMode === "split" && activeCodingTypes.length > 1 && !isDau;
+
   // Selección de campos: para .dau se dispara apenas se sube el archivo; para
   // Excel espera a que haya una hoja elegida. Depende de ids/scope estables —
   // NO de arrays recreados por render, o el preview se re-dispara en bucle.
@@ -757,7 +912,7 @@ export default function CreationWizard() {
       setFieldSelections([]);
       return;
     }
-    if (!isDau && !verbatimsSheet) return;
+
     const types = activeCodingTypes;
     const fileId = uploaded.file_id;
     const expectedFromRound = (isAddLoadMode ? existingRound?.expected_max_mentions : round?.expected_max_mentions) ?? null;
@@ -765,15 +920,11 @@ export default function CreationWizard() {
       subprojects.map((s) => [s.coding_type, !!s.single_code_per_response])
     ) as Partial<Record<CodingType, boolean>>;
 
-    let cancelled = false;
-    void previewFields(roundId, fileId, isDau ? undefined : verbatimsSheet).then(({ fields }) => {
-      if (cancelled) return;
+    const applyFields = (fields: FieldPreview[]) => {
       setFieldPreviews(fields);
       setFieldSelections(initialFieldSelections(fields));
       const singleCodeByType: Partial<Record<CodingType, boolean>> = {};
       for (const ct of types) {
-        // Valor ya guardado en el subproyecto, si no → No (multi); sugerencia
-        // DAU también es multi (false). El analista puede cambiar a Sí.
         singleCodeByType[ct] = singleFromSp[ct] ?? false;
       }
       setRoundControls({
@@ -781,12 +932,64 @@ export default function CreationWizard() {
         expectedMaxMentions: expectedFromRound,
         mentionsDecision: null,
       });
-    });
-    return () => {
-      cancelled = true;
     };
+
+    let cancelled = false;
+
+    // Split mode: each coding type has its own sheet + verbatim column.
+    // Call previewFields per unique sheet, then pick the matching column row.
+    if (isSplitSheetMode) {
+      const sheetsWithColumn = types
+        .map((ct) => ({ ct, sel: splitSheets[ct] }))
+        .filter((x): x is { ct: CodingType; sel: { sheet: string; respondentId: string; verbatimColumn: string } } =>
+          !!(x.sel?.sheet && x.sel?.verbatimColumn)
+        );
+
+      if (sheetsWithColumn.length === 0) return;
+
+      void Promise.all(
+        sheetsWithColumn.map(({ ct, sel }) =>
+          previewFields(roundId, fileId, sel.sheet).then(({ fields }) => ({ ct, sel, fields }))
+        )
+      ).then((results) => {
+        if (cancelled) return;
+        const merged: FieldPreview[] = results.map(({ ct, sel, fields }) => {
+          const match = fields.find((f) => f.field === sel.verbatimColumn);
+          return {
+            field: sel.verbatimColumn,
+            suggested_coding_type: ct,
+            reason: match?.reason ?? null,
+            sample_values: match?.sample_values ?? [],
+          };
+        });
+        applyFields(merged);
+      });
+      return () => { cancelled = true; };
+    }
+
+    // Combined mode: single sheet required.
+    if (!isDau && !verbatimsSheet) return;
+
+    void previewFields(roundId, fileId, isDau ? undefined : verbatimsSheet).then(({ fields }) => {
+      if (cancelled) return;
+      applyFields(fields);
+    });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveRoundId, uploaded?.file_id, verbatimsSheet, isDau, subprojectsCreated, isAddLoadMode]);
+  }, [
+    effectiveRoundId,
+    uploaded?.file_id,
+    verbatimsSheet,
+    isDau,
+    subprojectsCreated,
+    isAddLoadMode,
+    isSplitSheetMode,
+    // Stable key for split selections — only re-runs when sheet or column changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    JSON.stringify(
+      activeCodingTypes.map((ct) => `${ct}:${splitSheets[ct]?.sheet}:${splitSheets[ct]?.verbatimColumn}`)
+    ),
+  ]);
 
   const importedCatalogTypes = activeCodingTypes.filter(
     (codingType) => catalogOrigins[codingType].origin === "imported_client_catalog"
@@ -796,14 +999,20 @@ export default function CreationWizard() {
   const mentionDecisionsReady = !hasPendingRoundMentionDecision(
     roundControls, detectedMaxMentions, activeCodingTypes
   );
+  const splitSheetsReady = isSplitSheetMode && activeCodingTypes.every((ct) => {
+    const sel = splitSheets[ct];
+    return !!(sel?.sheet && sel?.respondentId && sel?.verbatimColumn);
+  });
   const canImport = !!(
     effectiveRoundId
     && uploaded
-    && verbatimsSheet
-    && (isDau || (
-      columnMap.respondent_id &&
-      activeCodingTypes.every(ct => columnMap[ct])
-    ))
+    && (isSplitSheetMode
+      ? splitSheetsReady
+      : verbatimsSheet && (isDau || (
+        columnMap.respondent_id &&
+        activeCodingTypes.every(ct => columnMap[ct])
+      ))
+    )
     && catalogsReady
     && mentionDecisionsReady
   );
@@ -922,17 +1131,39 @@ export default function CreationWizard() {
   // deferProcessing: true cuando eligió "continuar con perfil" para no
   // arrancar el motor antes del cruce.
   const handleImport = async (opts?: { deferProcessing?: boolean }): Promise<boolean> => {
-    if (!effectiveRoundId || !uploaded || !verbatimsSheet || !(isDau || (columnMap.respondent_id && activeCodingTypes.every(ct => columnMap[ct])))) {
+    if (!effectiveRoundId || !uploaded) return false;
+
+    // Split: la hoja del primer tipo activo es la "principal" (verbatims_sheet)
+    // y el resto viaja como extra_sheets — el backend las suma en un único
+    // insert_verbatims (una carga atómica), ver studios.py `extra_sheets`.
+    let importSheet = verbatimsSheet;
+    let importColumnMap: ColumnMap = columnMap as ColumnMap;
+    let extraSheets: SheetImportSpec[] | undefined;
+    if (isSplitSheetMode) {
+      const [firstType, ...restTypes] = activeCodingTypes;
+      const firstSel = firstType ? splitSheets[firstType] : undefined;
+      if (!firstType || !firstSel?.sheet || !firstSel.respondentId || !firstSel.verbatimColumn) return false;
+      importSheet = firstSel.sheet;
+      importColumnMap = { respondent_id: firstSel.respondentId, [firstType]: firstSel.verbatimColumn };
+      extraSheets = [];
+      for (const ct of restTypes) {
+        const sel = splitSheets[ct];
+        if (!sel?.sheet || !sel.respondentId || !sel.verbatimColumn) return false;
+        extraSheets.push({ sheet: sel.sheet, column_map: { respondent_id: sel.respondentId, [ct]: sel.verbatimColumn } });
+      }
+    } else if (!verbatimsSheet || !(isDau || (columnMap.respondent_id && activeCodingTypes.every(ct => columnMap[ct])))) {
       return false;
     }
+
     setSubmitting(true);
     try {
       const result = await importFile(
         effectiveRoundId,
         uploaded.file_id,
-        verbatimsSheet,
-        columnMap as ColumnMap,
+        importSheet,
+        importColumnMap,
         {
+          extraSheets,
           sourceLabel: sourceLabel.trim() || undefined,
           deferProcessing: opts?.deferProcessing ?? false,
           // Solo .dau: en Excel "field" es la columna del sheet, que no
@@ -1466,6 +1697,8 @@ export default function CreationWizard() {
                             setUploaded(null);
                             setRawFile(null);
                             setColumnMap({});
+                            setSplitSheets({});
+                            setDataSheetMode("combined");
                             setBatchItems([]);
                           }}
                         >
@@ -1798,84 +2031,188 @@ export default function CreationWizard() {
                     <div className="space-y-1.5">
                       {uploaded && !isDau && (
                         <div className="space-y-3 mb-4 p-3 bg-p-surface rounded-xl border border-p-border">
-                          <div>
-                            <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                              Hoja de respuestas
-                            </label>
-                            <select
-                              className="input w-full text-sm mt-1"
-                              value={verbatimsSheet}
-                              onChange={(e) => {
-                                setIsDataDirty(true);
-                                setVerbatimsSheet(e.target.value);
-                                const sheet = uploaded.detected_sheets.find((s) => s.name === e.target.value);
-                                setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
-                              }}
-                            >
-                              <option value="">Selecciona hoja</option>
-                              {uploaded.detected_sheets.map((s) => (
-                                <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
-                              ))}
-                            </select>
-                          </div>
+                          {isSplitSheetMode ? (
+                            /* Multiple coding types: one "Hoja de respuestas" per type */
+                            <div className="space-y-3">
+                              {activeCodingTypes.map((ct) => {
+                                const sel = splitSheets[ct];
+                                const sheet = sel?.sheet
+                                  ? uploaded.detected_sheets.find((s) => s.name === sel.sheet)
+                                  : undefined;
+                                return (
+                                  <div key={ct} className="space-y-2 pt-2 first:pt-0 border-t border-p-border first:border-t-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-p-accent shrink-0" />
+                                      <p className="text-xs font-semibold text-p-text uppercase tracking-wide">
+                                        Hoja de respuestas
+                                      </p>
+                                      <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-p-accent/10 text-p-accent">
+                                        {CODING_LABELS[ct]}
+                                      </span>
+                                    </div>
 
-                          {activeSheet && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                                    <select
+                                      className="input w-full text-sm"
+                                      value={sel?.sheet ?? ""}
+                                      onChange={(e) => {
+                                        setIsDataDirty(true);
+                                        const chosen = uploaded.detected_sheets.find((s) => s.name === e.target.value);
+                                        const guess = guessExcelColumnMap(chosen?.columns ?? []);
+                                        setSplitSheets((current) => ({
+                                          ...current,
+                                          [ct]: {
+                                            sheet: e.target.value,
+                                            respondentId: guess.respondent_id ?? "",
+                                            verbatimColumn: guess[ct] ?? guess.verbatim ?? "",
+                                          },
+                                        }));
+                                      }}
+                                    >
+                                      <option value="">Selecciona hoja...</option>
+                                      {uploaded.detected_sheets.map((s) => (
+                                        <option key={s.name} value={s.name}>
+                                          {s.name} ({s.rows} filas)
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    {sheet && (
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <div>
+                                          <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                            Columna Respondent ID
+                                          </label>
+                                          <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
+                                            Identificador único
+                                          </p>
+                                          <select
+                                            className="input w-full text-sm"
+                                            value={sel?.respondentId ?? ""}
+                                            onChange={(e) => {
+                                              setIsDataDirty(true);
+                                              setSplitSheets((current) => ({
+                                                ...current,
+                                                [ct]: { ...current[ct]!, respondentId: e.target.value },
+                                              }));
+                                            }}
+                                          >
+                                            <option value="">Elegir columna...</option>
+                                            {sheet.columns.map((c) => (
+                                              <option key={c} value={c}>{c}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                            Columna de {CODING_LABELS[ct].toLowerCase()}
+                                          </label>
+                                          <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">&nbsp;</p>
+                                          <select
+                                            className="input w-full text-sm"
+                                            value={sel?.verbatimColumn ?? ""}
+                                            onChange={(e) => {
+                                              setIsDataDirty(true);
+                                              setSplitSheets((current) => ({
+                                                ...current,
+                                                [ct]: { ...current[ct]!, verbatimColumn: e.target.value },
+                                              }));
+                                            }}
+                                          >
+                                            <option value="">Elegir columna...</option>
+                                            {sheet.columns.map((c) => (
+                                              <option key={c} value={c}>{c}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            /* Single coding type: one shared sheet + columns */
+                            <>
                               <div>
                                 <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                                  Columna Respondent ID
+                                  Hoja de respuestas
                                 </label>
-                                <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
-                                  Identificador único
-                                </p>
                                 <select
-                                  className="input w-full text-sm"
-                                  value={columnMap.respondent_id ?? ""}
-                                  onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, respondent_id: e.target.value })); }}
+                                  className="input w-full text-sm mt-1"
+                                  value={verbatimsSheet}
+                                  onChange={(e) => {
+                                    setIsDataDirty(true);
+                                    setVerbatimsSheet(e.target.value);
+                                    const sheet = uploaded.detected_sheets.find((s) => s.name === e.target.value);
+                                    setColumnMap(guessExcelColumnMap(sheet?.columns ?? []));
+                                  }}
                                 >
-                                  <option value="">Elegir columna...</option>
-                                  {activeSheet.columns.map((c) => (
-                                    <option key={c} value={c}>{c}</option>
+                                  <option value="">Selecciona hoja</option>
+                                  {uploaded.detected_sheets.map((s) => (
+                                    <option key={s.name} value={s.name}>{s.name} ({s.rows} filas)</option>
                                   ))}
                                 </select>
                               </div>
 
-                              {activeCodingTypes.includes("brands") && (
-                                <div>
-                                  <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                                    Columna de marcas
-                                  </label>
-                                  <select
-                                    className="input w-full text-sm mt-1"
-                                    value={columnMap.brands ?? ""}
-                                    onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, brands: e.target.value })); }}
-                                  >
-                                    <option value="">Elegir columna...</option>
-                                    {activeSheet.columns.map((c) => (
-                                      <option key={c} value={c}>{c}</option>
-                                    ))}
-                                  </select>
-                                </div>
-                              )}
+                              {activeSheet && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                                  <div>
+                                    <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                      Columna Respondent ID
+                                    </label>
+                                    <p className="text-[10px] text-p-text-faint mt-0.5 mb-1">
+                                      Identificador único
+                                    </p>
+                                    <select
+                                      className="input w-full text-sm"
+                                      value={columnMap.respondent_id ?? ""}
+                                      onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, respondent_id: e.target.value })); }}
+                                    >
+                                      <option value="">Elegir columna...</option>
+                                      {activeSheet.columns.map((c) => (
+                                        <option key={c} value={c}>{c}</option>
+                                      ))}
+                                    </select>
+                                  </div>
 
-                              {activeCodingTypes.includes("reasons") && (
-                                <div>
-                                  <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                                    Columna de razones
-                                  </label>
-                                  <select
-                                    className="input w-full text-sm mt-1"
-                                    value={columnMap.reasons ?? ""}
-                                    onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, reasons: e.target.value })); }}
-                                  >
-                                    <option value="">Elegir columna...</option>
-                                    {activeSheet.columns.map((c) => (
-                                      <option key={c} value={c}>{c}</option>
-                                    ))}
-                                  </select>
+                                  {activeCodingTypes.includes("brands") && (
+                                    <div>
+                                      <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                        Columna de marcas
+                                      </label>
+                                      <select
+                                        className="input w-full text-sm mt-1"
+                                        value={columnMap.brands ?? ""}
+                                        onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, brands: e.target.value })); }}
+                                      >
+                                        <option value="">Elegir columna...</option>
+                                        {activeSheet.columns.map((c) => (
+                                          <option key={c} value={c}>{c}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  )}
+
+                                  {activeCodingTypes.includes("reasons") && (
+                                    <div>
+                                      <label className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+                                        Columna de razones
+                                      </label>
+                                      <select
+                                        className="input w-full text-sm mt-1"
+                                        value={columnMap.reasons ?? ""}
+                                        onChange={(e) => { setIsDataDirty(true); setColumnMap((m) => ({ ...m, reasons: e.target.value })); }}
+                                      >
+                                        <option value="">Elegir columna...</option>
+                                        {activeSheet.columns.map((c) => (
+                                          <option key={c} value={c}>{c}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  )}
                                 </div>
                               )}
-                            </div>
+                            </>
                           )}
                         </div>
                       )}
