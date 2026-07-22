@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.access import require_admin
+from app.core.access import require_active_account, require_admin, visible_study_ids
 from app.core.auth import CurrentUser, current_user
 from app.core.database import get_db
 
@@ -24,7 +24,7 @@ def create_proyecto(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_admin(db, user["id"])
+    require_active_account(db, user["id"])
     pid = uuid.uuid4()
     db.execute(
         text("insert into projects (id, name, created_by) values (:id, :name, :u)"),
@@ -40,17 +40,23 @@ def list_proyectos(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_admin(db, user["id"])
+    require_active_account(db, user["id"])
+    study_ids = visible_study_ids(db, user["id"])
+    
     rows = db.execute(
         text("""
             select p.id, p.name, p.created_at, count(pr.id) as projects_count
             from projects p
             left join studies pr on pr.project_id = p.id
             where (:q is null or p.name ilike '%' || :q || '%')
+              and (:study_ids is null or p.created_by = :u or exists (
+                  select 1 from studies pr2
+                  where pr2.project_id = p.id and pr2.id = any(:study_ids)
+              ))
             group by p.id
             order by p.created_at desc
         """),
-        {"q": q},
+        {"q": q, "study_ids": study_ids, "u": user["id"]},
     ).mappings().all()
     return [
         {"id": str(r["id"]), "name": r["name"], "projects_count": r["projects_count"], "created_at": r["created_at"]}
@@ -58,49 +64,24 @@ def list_proyectos(
     ]
 
 
-@router.get("/{project_id}")
+@router.get("/{proyecto_id}")
 def get_proyecto(
-    project_id: uuid.UUID,
+    proyecto_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    require_admin(db, user["id"])
+    require_active_account(db, user["id"])
     proyecto = db.execute(
         text("select id, name, created_at from projects where id = :id"),
-        {"id": project_id},
+        {"id": proyecto_id},
     ).mappings().first()
+
     if not proyecto:
         raise HTTPException(404, "Proyecto no encontrado")
-    return {"id": str(proyecto["id"]), "name": proyecto["name"], "created_at": proyecto["created_at"]}
 
-
-@router.get("/{project_id}/projects")
-def list_proyecto_projects(
-    project_id: uuid.UUID,
-    q: str | None = None,
-    analytic_target: str | None = None,
-    assigned_user_id: uuid.UUID | None = None,
-    db: Session = Depends(get_db),
-    user: CurrentUser = Depends(current_user),
-):
-    """Los Estudios (`projects`) que cuelgan de este Proyecto, con objetivo
-    analítico (brands, reasons, both) y resumen de rondas. Filtros: q (nombre),
-    analytic_target, assigned_user_id."""
-    require_admin(db, user["id"])
-    having_clause = ""
-    params: dict = {"id": project_id, "q": q, "assigned_user": assigned_user_id}
-    if analytic_target:
-        if analytic_target == "both":
-            having_clause = "having count(distinct sp.coding_type) = 2"
-            params["at"] = ""
-        elif analytic_target in ("brands", "reasons"):
-            having_clause = "having max(sp.coding_type) = :at and count(distinct sp.coding_type) = 1"
-            params["at"] = analytic_target
-        elif analytic_target == "none":
-            having_clause = "having count(sp.id) = 0"
     rows = db.execute(
-        text(f"""
-            select p.id, p.external_code, p.name, p.created_at,
+        text("""
+            select p.id, p.external_code, p.name, p.created_at, p.project_id,
                    count(distinct r.id) as rounds_count,
                    coalesce(
                      case
@@ -114,28 +95,33 @@ def list_proyecto_projects(
             left join rounds r on r.study_id = p.id
             left join subprojects sp on sp.round_id = r.id
             where p.project_id = :id
-              and (:q is null or (p.name ilike '%' || :q || '%' or p.external_code ilike '%' || :q || '%'))
-              and (:assigned_user is null or exists (
-                    select 1 from assignments a
-                    where a.study_id = p.id and a.user_id = :assigned_user
-                    and a.status = 'active' and a.revoked_at is null))
             group by p.id
-            {having_clause}
             order by p.created_at desc
         """),
-        params,
+        {"id": proyecto_id},
     ).mappings().all()
-    return [
-        {
-            "id": str(r["id"]),
-            "external_code": r["external_code"],
-            "name": r["name"],
-            "created_at": r["created_at"],
-            "rounds_count": r["rounds_count"],
-            "analytic_target": r["analytic_target"],
-        }
-        for r in rows
-    ]
+
+    return {
+        "kind": "proyecto",
+        "id": str(proyecto["id"]),
+        "name": proyecto["name"],
+        "created_at": proyecto["created_at"],
+        "studies": [
+            {
+                "id": str(r["id"]),
+                "external_code": r["external_code"],
+                "name": r["name"],
+                "created_at": r["created_at"],
+                "project_id": str(proyecto_id),
+                "rounds_count": r["rounds_count"],
+                "analytic_target": r["analytic_target"],
+            }
+            for r in rows
+        ],
+    }
+
+
+
 
 
 @router.patch("/{project_id}")

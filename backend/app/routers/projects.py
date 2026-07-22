@@ -163,57 +163,14 @@ def get_project(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(current_user),
 ):
-    """Devuelve estudios si project_id es un Proyecto, o el detalle con rondas
-    si es un Estudio individual."""
-    proyecto = db.execute(
-        text("select id, name, created_at from projects where id = :id"),
-        {"id": project_id},
-    ).mappings().first()
-
-    if proyecto:
-        rows = db.execute(
-            text("""
-                select p.id, p.external_code, p.name, p.created_at, p.project_id,
-                       count(distinct r.id) as rounds_count,
-                       coalesce(
-                         case
-                           when count(distinct sp.coding_type) = 2 then 'both'
-                           when max(sp.coding_type) = 'brands' then 'brands'
-                           when max(sp.coding_type) = 'reasons' then 'reasons'
-                         end,
-                         'none'
-                       ) as analytic_target
-                from studies p
-                left join rounds r on r.study_id = p.id
-                left join subprojects sp on sp.round_id = r.id
-                where p.project_id = :id
-                group by p.id
-                order by p.created_at desc
-            """),
-            {"id": project_id},
-        ).mappings().all()
-        return {
-            "kind": "proyecto",
-            "id": str(proyecto["id"]),
-            "name": proyecto["name"],
-            "created_at": proyecto["created_at"],
-            "studies": [
-                {
-                    "id": str(r["id"]),
-                    "external_code": r["external_code"],
-                    "name": r["name"],
-                    "created_at": r["created_at"],
-                    "project_id": str(project_id),
-                    "rounds_count": r["rounds_count"],
-                    "analytic_target": r["analytic_target"],
-                }
-                for r in rows
-            ],
-        }
-
     require_project(db, project_id, user["id"])
     project = db.execute(
-        text("select id, external_code, name, project_id, created_at from studies where id = :id"),
+        text("""
+            select p.id, p.external_code, p.name, p.project_id, p.created_at, proj.name as project_name
+            from studies p
+            left join projects proj on proj.id = p.project_id
+            where p.id = :id
+        """),
         {"id": project_id},
     ).mappings().first()
 
@@ -265,6 +222,7 @@ def get_project(
         "external_code": project["external_code"],
         "name": project["name"],
         "project_id": str(project["project_id"]) if project["project_id"] else None,
+        "project_name": project["project_name"],
         "created_at": project["created_at"],
         "categories": [{"id": str(c["id"]), "name": c["name"]} for c in categories],
         "rounds": list(rounds_by_id.values()),

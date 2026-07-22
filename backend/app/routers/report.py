@@ -50,7 +50,6 @@ def round_report(
 ):
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "reports.view")
-    _require_final_for_member(db, round_id, user["id"])
     return get_round_report(db, round_id)
 
 
@@ -63,7 +62,6 @@ def export_codebook(
 ):
     require_round(db, round_id, user["id"])
     require_capability(db, user["id"], "reports.export")
-    _require_final_for_member(db, round_id, user["id"])
     selected = _parse_export_formats(formats)
 
     blockers = round_export_blockers(db, round_id)
