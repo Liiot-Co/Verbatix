@@ -56,16 +56,16 @@ export default function ProfileReviewPanel({
       other: [],
     };
     for (const c of candidates) {
-      if (c.coding_type === "brands") map.brands.push(c);
-      else if (c.coding_type === "reasons") map.reasons.push(c);
-      else map.other.push(c);
+      if (c.coding_type === "brands") map.brands!.push(c);
+      else if (c.coding_type === "reasons") map.reasons!.push(c);
+      else map.other!.push(c);
     }
     return order
-      .filter((k) => map[k].length > 0)
+      .filter((k) => map[k]!.length > 0)
       .map((k) => ({
         key: k,
         label: k === "other" ? "Sin tipo" : TYPE_LABEL[k],
-        items: map[k],
+        items: map[k]!,
       }));
   }, [candidates, isSplit]);
 
@@ -220,11 +220,11 @@ export default function ProfileReviewPanel({
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-p-text-muted px-0.5">
                     {group.label}
                     {" · "}
-                    {group.items.filter((i) => i.status === "pending").length} pendientes
+                    {group.items!.filter((i) => i.status === "pending").length} pendientes
                   </div>
                 )}
                 <div className="max-h-64 overflow-y-auto rounded-xl border border-p-border divide-y divide-p-border">
-                  {group.items.map((flag) => {
+                  {group.items!.map((flag) => {
                     const isPending = flag.status === "pending";
                     const rowBusy = busyAction === flag.flag_id;
                     return (

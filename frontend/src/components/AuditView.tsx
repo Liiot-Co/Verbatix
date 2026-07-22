@@ -457,8 +457,9 @@ export default function AuditView() {
 
   const auditBreadcrumbs = [
     { label: "Proyectos", to: "/" },
-    ...(studio ? [{ label: studio.study_name, to: `/projects/${studio.study_id}` }] : []),
-    ...(studio ? [{ label: studio.name, to: `/rounds/${roundId}/report` }] : []),
+    ...(studio && studio.project_name ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
+    ...(studio ? [{ label: studio.study_name, to: `/studies/${studio.study_id}` }] : []),
+    ...(studio ? [{ label: studio.name, to: `/rounds/${roundId}` }] : []),
     { label: "Auditoría" },
   ];
 
@@ -580,10 +581,10 @@ export default function AuditView() {
                 <RefreshCw className="w-4 h-4" /> Comprobar ahora
               </button>
               <Link
-                to={studio ? `/projects/${studio.study_id}` : "/"}
+                to={studio ? `/studies/${studio.study_id}` : "/"}
                 className="btn-ghost text-sm"
               >
-                Volver al proyecto
+                Volver al estudio
               </Link>
             </div>
             <p className="text-[11px] text-p-text-faint mt-4">Esta pantalla se actualiza automáticamente cada 6 segundos.</p>
@@ -601,8 +602,8 @@ export default function AuditView() {
           <AlertTriangle className="w-8 h-8 text-p-warning mx-auto" />
           <h1 className="font-heading text-xl font-semibold text-p-text">Auditoría no disponible</h1>
           <p className="text-sm text-p-text-muted">{blockedReason}</p>
-          <Link to={studio ? `/projects/${studio.study_id}` : "/"} className="btn-primary inline-flex justify-center">
-            Volver al proyecto
+          <Link to={studio ? `/studies/${studio.study_id}` : "/"} className="btn-primary inline-flex justify-center">
+            Volver al estudio
           </Link>
         </div>
       </div>

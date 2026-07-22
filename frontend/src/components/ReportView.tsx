@@ -293,7 +293,8 @@ export default function ReportView() {
       <Breadcrumb
         items={[
           { label: "Proyectos", to: "/" },
-          ...(studio ? [{ label: studio.study_name, to: `/projects/${studio.study_id}` }] : []),
+          ...(studio && studio.project_name ? [{ label: studio.project_name, to: `/projects/${studio.project_id}` }] : []),
+          ...(studio ? [{ label: studio.study_name, to: `/studies/${studio.study_id}` }] : []),
           studyCrumb,
           { label: "Reporte" },
         ]}

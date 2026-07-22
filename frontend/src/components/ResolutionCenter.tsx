@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Sparkles, X, Search } from "lucide-react";
-import { bulkResolve, getResolutionQueue, getResolutionSummary, getRoundCodes } from "@/api/client";
+import { bulkResolve, getResolutionQueue, getResolutionSummary, getRoundCodes, resolveMentionGroup } from "@/api/client";
 import type { ResolutionQueueItem, ResolutionSummary, RoundCode } from "@/api/types";
+import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
 import ResolutionSidebar from "./ResolutionSidebar";
 import { useSidebarResize } from "@/hooks/useSidebarResize";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
@@ -11,17 +12,16 @@ import { STATUS_CHIP } from "@/lib/resolutionStatus";
 const PAGE_SIZE = 50;
 
 /** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
-export default function ResolutionCenter({
-  subprojectId,
-  roundId,
-  codingType,
-  onClose,
-}: {
+interface ResolutionCenterProps {
   subprojectId: string;
-  roundId: string;
   codingType: "brands" | "reasons";
+  roundId: string;
   onClose: () => void;
-}) {
+  inline?: boolean;
+}
+
+/** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
+export default function ResolutionCenter({ subprojectId, codingType, roundId, onClose, inline = false }: ResolutionCenterProps) {
   const showToast = useVerbatixStore((s) => s.showToast);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -34,6 +34,7 @@ export default function ResolutionCenter({
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
   const [bulkAssigning, setBulkAssigning] = useState(false);
   const [focusGroupId, setFocusGroupId] = useState<string | null>(null);
+  const [navQueueIndex, setNavQueueIndex] = useState(0);
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
   useEffect(() => {
@@ -58,14 +59,6 @@ export default function ResolutionCenter({
     getRoundCodes(subprojectId, false).then(setCodes);
   }, [loadQueue, subprojectId]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const toggleSelect = useCallback(
     (groupId: string, index: number, shiftKey: boolean) => {
       setSelected((prev) => {
@@ -89,6 +82,92 @@ export default function ResolutionCenter({
     [lastClickedIndex, queue]
   );
 
+  const handleApproveSuggestion = useCallback(async (groupId: string, codeId: string) => {
+    try {
+      await resolveMentionGroup(groupId, {
+        action: "approve",
+        code_ids: [codeId],
+        add_alias: codingType === "brands"
+      });
+      showToast("Sugerencia aprobada", "success");
+      loadQueue();
+    } catch {
+      showToast("Error al aprobar sugerencia", "error");
+    }
+  }, [codingType, loadQueue, showToast]);
+
+  const approveSelectedSuggestions = useCallback(async () => {
+    const suggs = queue.filter(g => selected.has(g.id) && g.suggested_code);
+    if (suggs.length === 0) return;
+    setBulkAssigning(true);
+    try {
+      await Promise.all(suggs.map(g => 
+        resolveMentionGroup(g.id, {
+          action: "approve",
+          code_ids: [g.suggested_code!.id],
+          add_alias: codingType === "brands"
+        })
+      ));
+      showToast(`${suggs.length} sugerencias aprobadas`, "success");
+      setSelected(new Set());
+      loadQueue();
+    } catch {
+      showToast("Error al aprobar sugerencias", "error");
+    } finally {
+      setBulkAssigning(false);
+    }
+  }, [queue, selected, codingType, loadQueue, showToast]);
+
+  useEffect(() => {
+    registerShortcuts("resolution-center", [
+      {
+        key: "Enter",
+        action: () => {
+          const g = queue[navQueueIndex];
+          if (g && g.suggested_code) {
+            handleApproveSuggestion(g.id, g.suggested_code.id);
+          } else if (g) {
+            setFocusGroupId(g.id);
+          }
+        },
+        description: "Aprobar sugerencia o enfocar",
+        category: "Acciones"
+      },
+      {
+        key: "ArrowDown",
+        action: () => setNavQueueIndex(i => Math.min(queue.length - 1, i + 1)),
+        description: "Mover abajo en la cola",
+        category: "Navegación"
+      },
+      {
+        key: "ArrowUp",
+        action: () => setNavQueueIndex(i => Math.max(0, i - 1)),
+        description: "Mover arriba en la cola",
+        category: "Navegación"
+      },
+      {
+        key: " ",
+        action: () => {
+          const g = queue[navQueueIndex];
+          if (g) toggleSelect(g.id, navQueueIndex, false);
+        },
+        description: "Seleccionar/Deseleccionar",
+        category: "Acciones"
+      }
+    ]);
+  }, [queue, navQueueIndex, handleApproveSuggestion, toggleSelect]);
+
+  useKeyboardShortcuts("resolution-center");
+
+  useEffect(() => {
+    if (inline) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, inline]);
+
   const assignBulk = useCallback(
     async (codeId: string) => {
       if (selected.size === 0) return;
@@ -98,9 +177,6 @@ export default function ResolutionCenter({
           action: "approve",
           code_ids: [codeId],
           new_code: null,
-          // El motor aprende de cada confirmación humana: en marcas, la mención se
-          // vuelve un alias aprobado y rondas futuras la clasifican sola (en razones
-          // el aprendizaje va por el caché semántico, no por alias fuzzy).
           add_alias: codingType === "brands",
         });
         setSelected(new Set());
@@ -125,37 +201,37 @@ export default function ResolutionCenter({
     [selected, subprojectId, codingType, showToast, loadQueue]
   );
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 bg-p-bg flex flex-col">
-      <div className="flex items-center justify-between gap-4 flex-wrap px-6 py-4 border-b border-p-border shrink-0">
-        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">Centro de Resolución</h1>
-        <div className="flex items-center gap-3">
-          {summary && (
-            <span
-              className={summary.can_close ? "badge-success" : "badge-pending"}
-              title={summary.can_close ? "Todo resuelto: el estudio puede cerrarse" : "Aún hay grupos pendientes"}
+  const content = (
+    <div className={inline ? "flex flex-col h-full w-full" : "fixed inset-0 z-50 bg-p-bg flex flex-col"}>
+      {!inline && (
+        <div className="flex items-center justify-between gap-4 flex-wrap px-6 py-4 border-b border-p-border shrink-0">
+          <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">Centro de Resolución</h1>
+          <div className="flex items-center gap-3">
+            {summary && (
+              <span
+                className={summary.can_close ? "badge-success" : "badge-pending"}
+                title={summary.can_close ? "Todo resuelto: el estudio puede cerrarse" : "Aún hay grupos pendientes"}
+              >
+                {summary.can_close ? "Listo para cerrar" : `${summary.pending} pendientes`}
+              </span>
+            )}
+            <button
+              onClick={onClose}
+              className="btn-ghost text-xs py-1.5 px-2"
+              title="Cerrar (Esc)"
+              aria-label="Cerrar"
             >
-              {summary.can_close ? "Listo para cerrar" : `${summary.pending} pendientes`}
-            </span>
-          )}
-          <button
-            onClick={onClose}
-            className="btn-ghost text-xs py-1.5 px-2"
-            title="Cerrar (Esc)"
-            aria-label="Cerrar"
-          >
-            <X className="w-4 h-4" />
-          </button>
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       <div 
-        className="grid grid-cols-1 gap-4 items-start flex-1 min-h-0 px-6 py-4 overflow-y-auto lg:[grid-template-columns:1fr_var(--sidebar-w)]"
+        className={`grid grid-cols-1 gap-4 items-start flex-1 min-h-0 ${inline ? "py-4" : "px-6 py-4"} overflow-y-auto lg:[grid-template-columns:1fr_var(--sidebar-w)]`}
         style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
       >
-        {/* Cola: contexto de lo que sigue (orden por impacto, ya viene ordenado del backend).
-            Click trae al frente; shift-click selecciona un rango para resolver en lote. */}
-        <div className="card overflow-hidden flex flex-col max-h-[calc(100vh-8rem)]">
+        <div className={`card overflow-hidden flex flex-col ${inline ? "max-h-[calc(100vh-16rem)]" : "max-h-[calc(100vh-8rem)]"}`}>
           <div className="px-4 py-2.5 border-b border-p-border text-xs font-semibold text-p-text-muted uppercase tracking-wide flex items-center justify-between">
             <span>Cola ({total})</span>
             <div className="flex items-center gap-2">
@@ -182,6 +258,19 @@ export default function ResolutionCenter({
           {selected.size > 0 && (
             <div className="px-4 py-2 border-b border-p-border bg-p-bg-subtle flex items-center gap-1.5 flex-wrap">
               <span className="text-xs text-p-text-muted shrink-0">Asignar a {selected.size}:</span>
+              {(() => {
+                const suggs = queue.filter(g => selected.has(g.id) && g.suggested_code);
+                return suggs.length > 0 ? (
+                  <button
+                    onClick={approveSelectedSuggestions}
+                    disabled={bulkAssigning}
+                    className="text-xs font-semibold px-2 py-1 rounded-md border border-p-success bg-p-success/10 text-p-success hover:bg-p-success/20 transition-colors mr-2"
+                  >
+                    <Sparkles className="w-3 h-3 inline-block mr-1" />
+                    Aprobar {suggs.length} {suggs.length === 1 ? 'sugerida' : 'sugeridas'}
+                  </button>
+                ) : null;
+              })()}
               {codes.slice(0, 12).map((c) => (
                 <button
                   key={c.id}
@@ -221,11 +310,25 @@ export default function ResolutionCenter({
                   tabIndex={0}
                   className={[
                     "px-4 py-3 border-b border-p-border last:border-0 cursor-pointer transition-colors",
-                    selected.has(g.id) ? "bg-p-accent/15" : i === 0 ? "bg-p-accent/10" : "hover:bg-p-bg-subtle",
+                    selected.has(g.id) ? "bg-p-accent/15" : navQueueIndex === i ? "bg-p-accent/10 ring-1 ring-inset ring-p-accent/30" : "hover:bg-p-bg-subtle",
                   ].join(" ")}
+                  onDoubleClick={() => {
+                    if (g.suggested_code) handleApproveSuggestion(g.id, g.suggested_code.id);
+                  }}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm text-p-text font-medium truncate">{g.normalized_text}</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(g.id)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          toggleSelect(g.id, i, false);
+                        }}
+                        className="rounded border-p-border focus-visible:ring-2 focus-visible:ring-p-accent/40 shrink-0"
+                      />
+                      <span className="text-sm text-p-text font-medium truncate">{g.normalized_text}</span>
+                    </div>
                     <span className="text-xs text-p-text-faint shrink-0">×{g.frequency_count}</span>
                   </div>
                   <div className="flex items-center gap-1.5 mt-1">
@@ -244,7 +347,7 @@ export default function ResolutionCenter({
           </div>
         </div>
 
-        <div className="h-[calc(100vh-8rem)] relative">
+        <div className={`${inline ? "h-[calc(100vh-16rem)]" : "h-[calc(100vh-8rem)]"} relative`}>
           <div
             className="hidden lg:flex absolute -left-4 top-0 w-4 h-full cursor-col-resize items-center justify-center z-10 opacity-0 hover:opacity-100 transition-opacity group"
             onMouseDown={startResizing}
@@ -262,8 +365,8 @@ export default function ResolutionCenter({
           />
         </div>
       </div>
-
-    </div>,
-    document.body
+    </div>
   );
+
+  return inline ? content : createPortal(content, document.body);
 }

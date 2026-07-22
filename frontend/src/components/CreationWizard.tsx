@@ -1139,10 +1139,17 @@ export default function CreationWizard() {
 
   const activeStudyName = isAddLoadMode ? existingRound?.study_name : project?.name;
   const crumbs: Crumb[] = [{ label: "Proyectos", to: "/" }];
+  
+  const activeProjectName = isAddLoadMode ? existingRound?.project_name : project?.project_name;
+  const activeProjectId = isAddLoadMode ? existingRound?.project_id : project?.project_id;
+  if (activeProjectName && activeProjectId) {
+    crumbs.push({ label: activeProjectName, to: `/projects/${activeProjectId}` });
+  }
+
   if (activeStudyName) {
     crumbs.push({
       label: activeStudyName,
-      to: isAddLoadMode ? `/projects/${existingRound?.study_id}` : `/projects/${project?.id}`,
+      to: isAddLoadMode ? `/studies/${existingRound?.study_id}` : `/studies/${project?.id}`,
     });
   }
   crumbs.push({ label: isAddLoadMode ? (existingRound?.name ?? "Ronda") : "Nueva ronda" });
