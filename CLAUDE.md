@@ -1,16 +1,18 @@
 # CLAUDE.md — classification-app
 
 ## Commands
-- Backend: `python backend/run.py` (uvicorn hot-reload on :8001)
-- Tests: `pytest backend/tests/ -v` (uses SQLite/StaticPool)
-- Tests single: `pytest backend/tests/test_normalize.py -v`
-- Frontend: `cd frontend && bun run dev` (Vite on :5173)
-- Build FE: `cd frontend && bun run build`
-- Typecheck: `cd frontend && bunx tsc --noEmit`
-- Lint FE: `cd frontend && bun run lint`
-- Agent tooling (once per clone/machine): `./scripts/setup-agent-tools.sh` (macOS/Linux/WSL) or `.\scripts\setup-agent-tools.ps1` (Windows PowerShell) — installs engram/graphify/headroom and builds the local knowledge graph
 
-Frontend package manager is **bun**, not npm — use `bun`/`bunx`, not `npm`/`npx`, everywhere (local, CI, Docker). Inside a running container: `docker compose exec frontend bun run <script>` (e.g. `bun run build`, `bunx tsc --noEmit`). `frontend/Dockerfile` (prod) already builds with `oven/bun:1`; `frontend/Dockerfile.dev` still installs with `node:20-slim` + `npm install` — treat that as the one place still owing a bun migration, not a second convention to follow.
+**Run everything through the running Docker containers — the host machine has neither `bun` nor a `pytest`-equipped Python on PATH.** `docker compose up -d` starts `verbatix-backend-1`/`verbatix-frontend-1`/`verbatix-db-1`; then:
+- Backend tests: `docker compose exec -T backend python -m pytest tests/ -v` (single file: `... tests/test_normalize.py -v`)
+- Backend shell/scripts: `docker compose exec -T backend python -c "..."`
+- Frontend typecheck: `docker compose exec -T frontend bunx tsc --noEmit`
+- Frontend build/lint: `docker compose exec -T frontend bun run build` / `bun run lint`
+- Rebuild after a dependency change (e.g. `requirements.txt`): `docker compose build backend` (or `frontend`), then `docker compose up -d <service>`
+- `-T` disables the pseudo-TTY — needed for non-interactive/agent use; drop it for an interactive shell.
+
+Frontend package manager is **bun**, not npm — use `bun`/`bunx`, not `npm`/`npx`, everywhere (local, CI, Docker). `frontend/Dockerfile` (prod) already builds with `oven/bun:1`; `frontend/Dockerfile.dev` still installs with `node:20-slim` + `npm install` — treat that as the one place still owing a bun migration, not a second convention to follow.
+
+Outside Docker (rare — e.g. a fresh host setup): `python backend/run.py` (uvicorn hot-reload on :8001), `cd frontend && bun run dev` (Vite on :5173).
 
 ## Code Style
 - Python: snake_case, type hints everywhere, explicit SQL via `text()` in repositories
