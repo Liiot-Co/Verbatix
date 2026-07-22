@@ -4,6 +4,8 @@ import type {
   AuditCodeReview,
   AuditItemList,
   AuditPatchResult,
+  AuditPopulationCodes,
+  AuditPopulationItemList,
   AuditReviewDecision,
   AuditSectionApproveResult,
   AuditReviewResult,
@@ -733,6 +735,24 @@ export async function getAuditSession(subprojectId: string): Promise<AuditSessio
 
 export async function getAuditCodes(subprojectId: string): Promise<AuditCodeReview[]> {
   return request<AuditCodeReview[]>(`/subprojects/${subprojectId}/audit/codes`);
+}
+
+export async function getAuditPopulationCodes(
+  subprojectId: string
+): Promise<AuditPopulationCodes> {
+  return request<AuditPopulationCodes>(`/subprojects/${subprojectId}/audit/population/codes`);
+}
+
+export async function getAuditPopulationItems(
+  subprojectId: string,
+  codeId: string,
+  limit = 100,
+  offset = 0
+): Promise<AuditPopulationItemList> {
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return request<AuditPopulationItemList>(
+    `/subprojects/${subprojectId}/audit/population/codes/${codeId}/items?${qs.toString()}`
+  );
 }
 
 export async function getAuditItems(

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -23,6 +23,8 @@ import {
   deleteAuditComment,
   editAuditComment,
   getAuditCodes,
+  getAuditPopulationCodes,
+  getAuditPopulationItems,
   getAuditReadiness,
   getAuditItems,
   getRound,
@@ -33,6 +35,8 @@ import {
 import type {
   AuditCodeReview,
   AuditItem,
+  AuditPopulationCode,
+  AuditPopulationItem,
   AuditReadiness,
   AuditSessionSummary,
   CodingType,
@@ -67,11 +71,10 @@ function codeColor(codeNumber: number): string {
 
 /**
  * Vista de Auditoría (Fase 5) — master-detail coherente con el Centro de
- * Resolución: lista de códigos muestreados a la izquierda, tabla de verbatims
- * del código seleccionado a la derecha. La revisión es POR SECCIÓN: el analista
- * corrige (reasigna/elimina/comenta) lo que esté mal y aprueba la sección — los
- * items sin corregir quedan correctos. Al completar las secciones, aprueba la
- * auditoría.
+ * Resolución. Dos modos switcheables:
+ *  · «Ver muestra» — la muestra del % de auditoría; ahí se corrige y se aprueba
+ *    (supervisor/admin).
+ *  · «Ver todo» — el 100% codificado, misma UI visual pero de consulta.
  */
 export default function AuditView() {
   const { roundId } = useParams<{ roundId: string }>();
@@ -95,6 +98,14 @@ export default function AuditView() {
   const [waitingForCoding, setWaitingForCoding] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
   const [busy, setBusy] = useState(false);
+
+  // sample = flujo de aprobación; all = 100% de lo codificado (consulta).
+  const [viewMode, setViewMode] = useState<"sample" | "all">("sample");
+  const [populationCodes, setPopulationCodes] = useState<AuditPopulationCode[]>([]);
+  const [populationTotal, setPopulationTotal] = useState(0);
+  const [selectedPopulationCodeId, setSelectedPopulationCodeId] = useState<string | null>(null);
+  const [populationItems, setPopulationItems] = useState<AuditPopulationItem[]>([]);
+  const [populationLoading, setPopulationLoading] = useState(false);
 
   const [focusIndex, setFocusIndex] = useState(0);
   const [reassignItemId, setReassignItemId] = useState<string | null>(null);
@@ -188,8 +199,8 @@ export default function AuditView() {
   }, [roundId, waitingForCoding]);
 
   useEffect(() => {
-    if (!selectedReviewId) {
-      setItems([]);
+    if (!selectedReviewId || viewMode !== "sample") {
+      if (viewMode !== "sample") setItems([]);
       return;
     }
     setItemsLoading(true);
@@ -199,7 +210,45 @@ export default function AuditView() {
         setFocusIndex(0);
       })
       .finally(() => setItemsLoading(false));
-  }, [selectedReviewId]);
+  }, [selectedReviewId, viewMode]);
+
+  // Población completa (vista «Ver todo»): códigos con conteo.
+  useEffect(() => {
+    if (!activeSubprojectId || viewMode !== "all") return;
+    let cancelled = false;
+    setPopulationLoading(true);
+    getAuditPopulationCodes(activeSubprojectId)
+      .then((res) => {
+        if (cancelled) return;
+        setPopulationCodes(res.codes);
+        setPopulationTotal(res.total);
+        setSelectedPopulationCodeId((prev) => {
+          if (prev && res.codes.some((c) => c.id === prev)) return prev;
+          return res.codes[0]?.id ?? null;
+        });
+      })
+      .catch(() => {
+        if (!cancelled) showToast("No se pudo cargar el 100% codificado.", "error");
+      })
+      .finally(() => {
+        if (!cancelled) setPopulationLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [activeSubprojectId, viewMode, showToast]);
+
+  useEffect(() => {
+    if (!activeSubprojectId || !selectedPopulationCodeId || viewMode !== "all") {
+      if (viewMode !== "all") setPopulationItems([]);
+      return;
+    }
+    setItemsLoading(true);
+    getAuditPopulationItems(activeSubprojectId, selectedPopulationCodeId, ITEMS_PAGE, 0)
+      .then((res) => {
+        setPopulationItems(res.items);
+        setFocusIndex(0);
+      })
+      .finally(() => setItemsLoading(false));
+  }, [activeSubprojectId, selectedPopulationCodeId, viewMode]);
 
   const refreshCounters = useCallback(
     (session: AuditSessionSummary) => {
@@ -371,14 +420,18 @@ export default function AuditView() {
     }
   }, [activeSubprojectId, busy, loadReviews, showToast]);
 
-  const focusedItem = items[focusIndex] ?? null;
+  const focusedItem = viewMode === "sample" ? (items[focusIndex] ?? null) : null;
   const approved = summary?.status === "approved";
+  const isSampleMode = viewMode === "sample";
 
   useEffect(() => {
     registerShortcuts("audit-view", [
       {
         key: "ArrowDown",
-        action: () => setFocusIndex((i) => Math.min(items.length - 1, i + 1)),
+        action: () => {
+          const len = isSampleMode ? items.length : populationItems.length;
+          setFocusIndex((i) => Math.min(len - 1, i + 1));
+        },
         description: "Siguiente verbatim",
         category: "Navegación",
       },
@@ -390,14 +443,14 @@ export default function AuditView() {
       },
       {
         key: "a",
-        action: () => canApprove && !approved && handleApproveSection(),
+        action: () => isSampleMode && canApprove && !approved && handleApproveSection(),
         description: "Aprobar sección",
         category: "Acciones",
       },
       {
         key: "r",
         action: () => {
-          if (!focusedItem || approved) return;
+          if (!isSampleMode || !focusedItem || approved) return;
           setReassignItemId((id) => (id === focusedItem.id ? null : focusedItem.id));
         },
         description: `Reasignar ${noun}`,
@@ -406,7 +459,7 @@ export default function AuditView() {
       {
         key: "e",
         action: () => {
-          if (!focusedItem || approved) return;
+          if (!isSampleMode || !focusedItem || approved) return;
           setCommentItemId(focusedItem.id);
           setCommentDraft(focusedItem.comment ?? "");
           setTimeout(() => commentInputRef.current?.focus(), 60);
@@ -416,7 +469,7 @@ export default function AuditView() {
       },
       {
         key: "x",
-        action: () => focusedItem && !approved && setConfirmDeleteId(focusedItem.id),
+        action: () => isSampleMode && focusedItem && !approved && setConfirmDeleteId(focusedItem.id),
         description: "Eliminar asignación",
         category: "Acciones",
       },
@@ -431,13 +484,18 @@ export default function AuditView() {
         category: "Navegación",
       },
     ]);
-  }, [items.length, focusedItem, approved, handleApproveSection, noun]);
+  }, [items.length, populationItems.length, focusedItem, approved, handleApproveSection, noun, isSampleMode, canApprove]);
 
   useKeyboardShortcuts("audit-view");
 
   const selectedReview = useMemo(
     () => reviews.find((r) => r.id === selectedReviewId) ?? null,
     [reviews, selectedReviewId]
+  );
+
+  const selectedPopulationCode = useMemo(
+    () => populationCodes.find((c) => c.id === selectedPopulationCodeId) ?? null,
+    [populationCodes, selectedPopulationCodeId]
   );
 
   if (!roundId) return null;
@@ -635,15 +693,37 @@ export default function AuditView() {
         </div>
       )}
 
-      {/* Header: progreso hacia el % objetivo + aprobar */}
+      {/* Header: progreso + switch Ver todo / Ver muestra + aprobar */}
       <div className="card p-4 space-y-3">
         <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <ClipboardCheck className="w-5 h-5 text-p-accent" />
             <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">Auditoría</h1>
             <span className={approved ? "badge-success" : "badge-warning"}>
               {approved ? "Auditado" : "En auditoría"}
             </span>
+            <div className="tabs-list" role="tablist" aria-label="Modo de auditoría">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "all"}
+                data-state={viewMode === "all" ? "active" : "inactive"}
+                className="tab-trigger"
+                onClick={() => setViewMode("all")}
+              >
+                Ver todo
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "sample"}
+                data-state={viewMode === "sample" ? "active" : "inactive"}
+                className="tab-trigger"
+                onClick={() => setViewMode("sample")}
+              >
+                Ver muestra
+              </button>
+            </div>
             {summary.is_stale && (
               <button
                 onClick={handleResample}
@@ -670,7 +750,7 @@ export default function AuditView() {
                 Ver reporte
               </button>
             )}
-            {!approved && canApprove && (
+            {!approved && canApprove && isSampleMode && (
             <motion.button
               whileHover={{ scale: summary.target_met ? 1.02 : 1 }}
               whileTap={{ scale: summary.target_met ? 0.98 : 1 }}
@@ -685,103 +765,79 @@ export default function AuditView() {
           </div>
         </div>
 
-        <div className="space-y-1.5">
+        {isSampleMode ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs text-p-text-muted">
+              <span>
+                Muestra del {summary.target_percentage}% · {summary.reviewed_items}/{summary.total_items} revisados
+                {summary.items_reassigned > 0 && ` · ${summary.items_reassigned} corregidos`}
+              </span>
+              <span className="font-semibold text-p-text">{progressPct}%</span>
+            </div>
+            <div
+              className="h-2 rounded-full bg-p-bg-subtle overflow-hidden"
+              role="progressbar"
+              aria-valuenow={progressPct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Progreso de auditoría"
+            >
+              <motion.div
+                className={[
+                  "h-full bg-gradient-to-r",
+                  summary.target_met ? "from-p-success to-p-success" : "from-p-accent to-p-accent-mid",
+                ].join(" ")}
+                initial={{ width: 0 }}
+                animate={{ width: `${progressPct}%` }}
+                transition={{ duration: 0.6, ease: [0.19, 1, 0.22, 1] as const }}
+              />
+            </div>
+          </div>
+        ) : (
           <div className="flex items-center justify-between text-xs text-p-text-muted">
             <span>
-              Muestra del {summary.target_percentage}% · {summary.reviewed_items}/{summary.total_items} revisados
-              {summary.items_reassigned > 0 && ` · ${summary.items_reassigned} corregidos`}
+              100% de lo codificado · {populationTotal} verbatims · {populationCodes.length} códigos
             </span>
-            <span className="font-semibold text-p-text">{progressPct}%</span>
+            <span className="text-p-text-faint">Solo consulta — la aprobación se hace en Ver muestra</span>
           </div>
-          <div
-            className="h-2 rounded-full bg-p-bg-subtle overflow-hidden"
-            role="progressbar"
-            aria-valuenow={progressPct}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label="Progreso de auditoría"
-          >
-            <motion.div
-              className={[
-                "h-full bg-gradient-to-r",
-                summary.target_met ? "from-p-success to-p-success" : "from-p-accent to-p-accent-mid",
-              ].join(" ")}
-              initial={{ width: 0 }}
-              animate={{ width: `${progressPct}%` }}
-              transition={{ duration: 0.6, ease: [0.19, 1, 0.22, 1] as const }}
-            />
-          </div>
-        </div>
+        )}
       </div>
 
-      {summary.total_items === 0 ? (
-        // Muestra vacía: % en 0 o nada codificado — se puede aprobar directo.
-        <div className="card p-10 text-center space-y-3">
-          <CheckCircle2 className="w-8 h-8 text-p-success mx-auto" />
-          <h2 className="font-heading text-lg font-semibold text-p-text">Sin muestra para auditar</h2>
-          <p className="text-sm text-p-text-muted max-w-md mx-auto">
-            {summary.target_percentage === 0
-              ? `El % de auditoría de la ronda es 0 — no se sorteó ningún verbatim.`
-              : "No hay verbatims codificados para muestrear."}{" "}
-            {approved ? "La auditoría quedó aprobada." : "Podés aprobar la auditoría directamente."}
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 items-start">
-          {/* Izquierda: códigos con items en la muestra */}
-          <div className="card overflow-hidden flex flex-col max-h-[calc(100vh-16rem)]">
-            <div className="px-4 py-2.5 border-b border-p-border text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-              Códigos en la muestra ({reviews.length})
-            </div>
-            <div className="overflow-y-auto scrollbar-thin flex-1" role="listbox" aria-label="Códigos muestreados">
-              {reviews.map((r) => {
-                const done = r.reviewed_count >= r.items_count;
-                return (
-                  <button
-                    key={r.id}
-                    role="option"
-                    aria-selected={r.id === selectedReviewId}
-                    onClick={() => setSelectedReviewId(r.id)}
-                    className={[
-                      "w-full text-left px-4 py-3 border-b border-p-border last:border-0 transition-colors",
-                      r.id === selectedReviewId ? "bg-p-accent/10" : "hover:bg-p-bg-subtle",
-                    ].join(" ")}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="w-1.5 h-1.5 rounded-full shrink-0"
-                        style={{ background: codeColor(r.code.code_number) }}
-                      />
-                      <span className="text-sm font-semibold text-p-text truncate flex-1">{r.code.label}</span>
-                      {done && <CheckCircle2 className="w-3.5 h-3.5 text-p-success shrink-0" />}
-                    </div>
-                    <div className="flex items-center justify-between mt-1">
-                      <span className="text-[11px] font-mono text-p-text-faint">
-                        {r.reviewed_count}/{r.items_count} revisados
-                      </span>
-                      <span className={REVIEW_CHIP[r.status].className}>{REVIEW_CHIP[r.status].label}</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+      {isSampleMode ? (
+        summary.total_items === 0 ? (
+          <div className="card p-10 text-center space-y-3">
+            <CheckCircle2 className="w-8 h-8 text-p-success mx-auto" />
+            <h2 className="font-heading text-lg font-semibold text-p-text">Sin muestra para auditar</h2>
+            <p className="text-sm text-p-text-muted max-w-md mx-auto">
+              {summary.target_percentage === 0
+                ? `El % de auditoría de la ronda es 0 — no se sorteó ningún verbatim.`
+                : "No hay verbatims codificados para muestrear."}{" "}
+              {approved ? "La auditoría quedó aprobada." : "Podés aprobar la auditoría directamente."}
+            </p>
           </div>
-
-          {/* Derecha: tabla del código seleccionado */}
-          <div className="card overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-p-border flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
-                {selectedReview ? `${selectedReview.code.label} · ${selectedReview.items_count} en la muestra` : "Verbatims"}
-              </span>
-              <span className="flex items-center gap-2.5 font-mono text-[10px] text-p-text-faint">
-                <span className="flex items-center gap-1"><kbd className="kbd-hint">↑↓</kbd>Navegar</span>
-                <span className="flex items-center gap-1"><kbd className="kbd-hint">R</kbd>Reasignar</span>
-                <span className="flex items-center gap-1"><kbd className="kbd-hint">E</kbd>Comentar</span>
-                <span className="flex items-center gap-1"><kbd className="kbd-hint">X</kbd>Eliminar</span>
-                {canApprove && <span className="flex items-center gap-1"><kbd className="kbd-hint">A</kbd>Aprobar sección</span>}
-              </span>
-              {/* La unidad de revisión: se aprueba la sección completa, no cada verbatim. */}
-              {!approved && canApprove && selectedReview && (
+        ) : (
+          <AuditMasterDetail
+            codesLabel={`Códigos en la muestra (${reviews.length})`}
+            codesListAria="Códigos muestreados"
+            codeRows={reviews.map((r) => ({
+              id: r.id,
+              codeNumber: r.code.code_number,
+              label: r.code.label,
+              meta: `${r.reviewed_count}/${r.items_count} revisados`,
+              badge: REVIEW_CHIP[r.status],
+              done: r.reviewed_count >= r.items_count,
+            }))}
+            selectedId={selectedReviewId}
+            onSelect={setSelectedReviewId}
+            detailTitle={
+              selectedReview
+                ? `${selectedReview.code.label} · ${selectedReview.items_count} en la muestra`
+                : "Verbatims"
+            }
+            showActionHints
+            canApprove={canApprove}
+            sectionAction={
+              !approved && canApprove && selectedReview ? (
                 selectedReview.status === "pending" ? (
                   <motion.button
                     whileHover={{ scale: 1.02 }}
@@ -797,77 +853,276 @@ export default function AuditView() {
                     {REVIEW_CHIP[selectedReview.status].label}
                   </span>
                 )
-              )}
-            </div>
-
-            {itemsLoading ? (
-              <div className="p-4 space-y-2">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} className="skeleton h-10 rounded" />
-                ))}
-              </div>
-            ) : items.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-p-text-faint">
-                Este código no tiene verbatims en la muestra.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm" aria-label="Verbatims muestreados">
-                  <thead>
-                    <tr className="text-left text-[11px] uppercase tracking-wide text-p-text-faint border-b border-p-border">
-                      <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Respuesta</th>
-                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Normalizado</th>
-                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Código actual</th>
-                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Qué se hizo</th>
-                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Comentario</th>
-                        <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider text-right">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((item, i) => (
-                      <AuditRow
-                        key={item.id}
-                        item={item}
-                        focused={i === focusIndex}
-                        approved={approved}
-                        codes={codes}
-                        noun={noun}
-                        reassignOpen={reassignItemId === item.id}
-                        reassignCodeId={reassignCodeId}
-                        newCodeLabel={newCodeLabel}
-                        commentOpen={commentItemId === item.id}
-                        commentDraft={commentDraft}
-                        commentInputRef={commentInputRef}
-                        confirmDelete={confirmDeleteId === item.id}
-                        onFocus={() => setFocusIndex(i)}
-                        onToggleReassign={() => {
-                          setReassignItemId((id) => (id === item.id ? null : item.id));
-                          setReassignCodeId("");
-                          setNewCodeLabel("");
-                        }}
-                        onReassignCodeChange={setReassignCodeId}
-                        onNewCodeLabelChange={setNewCodeLabel}
-                        onSubmitReassign={() => submitReassign(item)}
-                        onToggleComment={() => {
-                          setCommentItemId((id) => (id === item.id ? null : item.id));
-                          setCommentDraft("");
-                          setTimeout(() => commentInputRef.current?.focus(), 60);
-                        }}
-                        onCommentChange={setCommentDraft}
-                        onSubmitComment={() => submitComment(item)}
-                        onRequestDelete={() => setConfirmDeleteId(item.id)}
-                        onCancelDelete={() => setConfirmDeleteId(null)}
-                        onConfirmDelete={() => removeItem(item)}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+              ) : null
+            }
+            itemsLoading={itemsLoading}
+            emptyMessage="Este código no tiene verbatims en la muestra."
+            tableAria="Verbatims muestreados"
+          >
+            {items.map((item, i) => (
+              <AuditRow
+                key={item.id}
+                item={item}
+                focused={i === focusIndex}
+                approved={approved}
+                codes={codes}
+                noun={noun}
+                reassignOpen={reassignItemId === item.id}
+                reassignCodeId={reassignCodeId}
+                newCodeLabel={newCodeLabel}
+                commentOpen={commentItemId === item.id}
+                commentDraft={commentDraft}
+                commentInputRef={commentInputRef}
+                confirmDelete={confirmDeleteId === item.id}
+                onFocus={() => setFocusIndex(i)}
+                onToggleReassign={() => {
+                  setReassignItemId((id) => (id === item.id ? null : item.id));
+                  setReassignCodeId("");
+                  setNewCodeLabel("");
+                }}
+                onReassignCodeChange={setReassignCodeId}
+                onNewCodeLabelChange={setNewCodeLabel}
+                onSubmitReassign={() => submitReassign(item)}
+                onToggleComment={() => {
+                  setCommentItemId((id) => (id === item.id ? null : item.id));
+                  setCommentDraft("");
+                  setTimeout(() => commentInputRef.current?.focus(), 60);
+                }}
+                onCommentChange={setCommentDraft}
+                onSubmitComment={() => submitComment(item)}
+                onRequestDelete={() => setConfirmDeleteId(item.id)}
+                onCancelDelete={() => setConfirmDeleteId(null)}
+                onConfirmDelete={() => removeItem(item)}
+              />
+            ))}
+          </AuditMasterDetail>
+        )
+      ) : populationLoading ? (
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+          <div className="skeleton h-72 rounded-2xl" />
+          <div className="skeleton h-72 rounded-2xl" />
         </div>
+      ) : populationTotal === 0 ? (
+        <div className="card p-10 text-center space-y-3">
+          <CheckCircle2 className="w-8 h-8 text-p-success mx-auto" />
+          <h2 className="font-heading text-lg font-semibold text-p-text">Nada codificado aún</h2>
+          <p className="text-sm text-p-text-muted max-w-md mx-auto">
+            No hay verbatims con código activo para mostrar.
+          </p>
+        </div>
+      ) : (
+        <AuditMasterDetail
+          codesLabel={`Códigos (${populationCodes.length})`}
+          codesListAria="Códigos de la población"
+          codeRows={populationCodes.map((c) => ({
+            id: c.id,
+            codeNumber: c.code.code_number,
+            label: c.code.label,
+            meta: `${c.items_count} verbatims`,
+            badge: null,
+            done: false,
+          }))}
+          selectedId={selectedPopulationCodeId}
+          onSelect={setSelectedPopulationCodeId}
+          detailTitle={
+            selectedPopulationCode
+              ? `${selectedPopulationCode.code.label} · ${selectedPopulationCode.items_count} verbatims`
+              : "Verbatims"
+          }
+          showActionHints={false}
+          canApprove={false}
+          sectionAction={null}
+          itemsLoading={itemsLoading}
+          emptyMessage="Este código no tiene verbatims."
+          tableAria="Verbatims codificados"
+        >
+          {populationItems.map((item, i) => (
+            <PopulationRow
+              key={item.id}
+              item={item}
+              focused={i === focusIndex}
+              onFocus={() => setFocusIndex(i)}
+            />
+          ))}
+        </AuditMasterDetail>
       )}
     </div>
+  );
+}
+
+interface CodeRowData {
+  id: string;
+  codeNumber: number;
+  label: string;
+  meta: string;
+  badge: { label: string; className: string } | null;
+  done: boolean;
+}
+
+interface AuditMasterDetailProps {
+  codesLabel: string;
+  codesListAria: string;
+  codeRows: CodeRowData[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  detailTitle: string;
+  showActionHints: boolean;
+  canApprove: boolean;
+  sectionAction: ReactNode;
+  itemsLoading: boolean;
+  emptyMessage: string;
+  tableAria: string;
+  children: ReactNode;
+}
+
+function AuditMasterDetail({
+  codesLabel,
+  codesListAria,
+  codeRows,
+  selectedId,
+  onSelect,
+  detailTitle,
+  showActionHints,
+  canApprove,
+  sectionAction,
+  itemsLoading,
+  emptyMessage,
+  tableAria,
+  children,
+}: AuditMasterDetailProps) {
+  const childCount = Array.isArray(children)
+    ? children.filter(Boolean).length
+    : children
+      ? 1
+      : 0;
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 items-start">
+      <div className="card overflow-hidden flex flex-col max-h-[calc(100vh-16rem)]">
+        <div className="px-4 py-2.5 border-b border-p-border text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+          {codesLabel}
+        </div>
+        <div className="overflow-y-auto scrollbar-thin flex-1" role="listbox" aria-label={codesListAria}>
+          {codeRows.map((r) => (
+            <button
+              key={r.id}
+              role="option"
+              aria-selected={r.id === selectedId}
+              onClick={() => onSelect(r.id)}
+              className={[
+                "w-full text-left px-4 py-3 border-b border-p-border last:border-0 transition-colors",
+                r.id === selectedId ? "bg-p-accent/10" : "hover:bg-p-bg-subtle",
+              ].join(" ")}
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ background: codeColor(r.codeNumber) }}
+                />
+                <span className="text-sm font-semibold text-p-text truncate flex-1">{r.label}</span>
+                {r.done && <CheckCircle2 className="w-3.5 h-3.5 text-p-success shrink-0" />}
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-[11px] font-mono text-p-text-faint">{r.meta}</span>
+                {r.badge && <span className={r.badge.className}>{r.badge.label}</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-p-border flex items-center justify-between gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">
+            {detailTitle}
+          </span>
+          {showActionHints && (
+            <span className="flex items-center gap-2.5 font-mono text-[10px] text-p-text-faint">
+              <span className="flex items-center gap-1"><kbd className="kbd-hint">↑↓</kbd>Navegar</span>
+              <span className="flex items-center gap-1"><kbd className="kbd-hint">R</kbd>Reasignar</span>
+              <span className="flex items-center gap-1"><kbd className="kbd-hint">E</kbd>Comentar</span>
+              <span className="flex items-center gap-1"><kbd className="kbd-hint">X</kbd>Eliminar</span>
+              {canApprove && <span className="flex items-center gap-1"><kbd className="kbd-hint">A</kbd>Aprobar sección</span>}
+            </span>
+          )}
+          {sectionAction}
+        </div>
+
+        {itemsLoading ? (
+          <div className="p-4 space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="skeleton h-10 rounded" />
+            ))}
+          </div>
+        ) : childCount === 0 ? (
+          <div className="px-4 py-10 text-center text-sm text-p-text-faint">{emptyMessage}</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" aria-label={tableAria}>
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-p-text-faint border-b border-p-border">
+                  <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Respuesta</th>
+                  <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Normalizado</th>
+                  <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Código actual</th>
+                  <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Qué se hizo</th>
+                  <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Comentario</th>
+                  <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>{children}</tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PopulationRow({
+  item,
+  focused,
+  onFocus,
+}: {
+  item: AuditPopulationItem;
+  focused: boolean;
+  onFocus: () => void;
+}) {
+  return (
+    <tr
+      onClick={onFocus}
+      aria-selected={focused}
+      className={[
+        "border-b border-p-border last:border-0 align-top cursor-pointer transition-colors",
+        focused ? "bg-p-accent/5" : "hover:bg-p-bg-subtle/60",
+      ].join(" ")}
+    >
+      <td className="px-4 py-2.5 text-p-text max-w-[240px]">
+        <span className="line-clamp-2">{item.original_text}</span>
+      </td>
+      <td className="px-4 py-2.5 text-p-text-muted max-w-[180px]">
+        <span className="line-clamp-2">{item.normalized_text ?? "—"}</span>
+      </td>
+      <td className="px-4 py-2.5">
+        <div className="flex flex-wrap gap-1">
+          {item.current_codes.map((c) => (
+            <span key={c.code_id} className="chip text-xs gap-1">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: codeColor(c.code_number) }} />
+              {c.label}
+            </span>
+          ))}
+        </div>
+      </td>
+      <td className="px-4 py-2.5">
+        {item.in_sample ? (
+          <span className="badge-warning">En muestra</span>
+        ) : (
+          <span className="text-xs text-p-text-faint">Fuera de muestra</span>
+        )}
+      </td>
+      <td className="px-4 py-2.5 text-xs text-p-text-muted">—</td>
+      <td className="px-4 py-2.5 text-right">
+        <span className="text-[10px] text-p-text-faint">Solo lectura</span>
+      </td>
+    </tr>
   );
 }
 
@@ -882,7 +1137,7 @@ interface AuditRowProps {
   newCodeLabel: string;
   commentOpen: boolean;
   commentDraft: string;
-  commentInputRef: React.RefObject<HTMLInputElement | null>;
+  commentInputRef: RefObject<HTMLInputElement | null>;
   confirmDelete: boolean;
   onFocus: () => void;
   onToggleReassign: () => void;
