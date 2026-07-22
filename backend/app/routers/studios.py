@@ -454,6 +454,31 @@ def delete_round(
     user: CurrentUser = Depends(current_user),
 ):
     require_capability(db, user["id"], "rounds.manage")
+    # Otra ronda puede haber homologado su libro desde ESTA (subprojects.source_subproject_id
+    # -> subprojects_source_subproject_id_fkey): borrar rompe esa FK con un
+    # IntegrityError crudo de Postgres. Se chequea antes para devolver un 409
+    # legible en vez de un 500 (bug reportado: el wizard recreaba la ronda al
+    # reanudar y esto reventaba sin aviso).
+    referenced = db.execute(
+        text("""
+            select 1 from subprojects child
+              join subprojects mine on mine.id = child.source_subproject_id
+             where mine.round_id = :round
+             limit 1
+        """),
+        {"round": round_id},
+    ).scalar()
+    if referenced:
+        raise HTTPException(
+            409,
+            {
+                "code": "round_referenced_by_homologation",
+                "message": (
+                    "Otra ronda ya heredó el libro de códigos de esta ronda; "
+                    "no se puede eliminar sin dejar esa herencia rota."
+                ),
+            },
+        )
     deleted = db.execute(
         text("delete from rounds where id = :id returning id"),
         {"id": round_id},
@@ -965,11 +990,22 @@ class FieldSelection(BaseModel):
     coding_type: str | None = None
 
 
+class SheetImportSpec(BaseModel):
+    sheet: str
+    column_map: dict[str, str]
+
+
 class ImportIn(BaseModel):
     verbatims_sheet: str
     codebook_sheet: str | None = None
     codebook_coding_type: str | None = None
     column_map: dict[str, str] | None = None
+    # Hojas adicionales del mismo Excel (p.ej. una hoja de Marcas y otra de
+    # Razones, en vez de columnas separadas dentro de la misma hoja). Cada una
+    # se parsea con su propio column_map y sus filas se SUMAN a las de
+    # verbatims_sheet antes de un único insert_verbatims — una sola carga
+    # atómica (un snapshot, una pasada de duplicados), no N cargas.
+    extra_sheets: list[SheetImportSpec] | None = None
     source_label: str | None = None
     field_selections: list[FieldSelection] | None = None
     single_code_by_type: dict[str, bool] | None = None
@@ -1127,6 +1163,8 @@ def import_file(
             rows = dau.parse_verbatims(content)
         else:
             rows = excel.parse_verbatims(content, payload.verbatims_sheet, payload.column_map)
+            for extra in payload.extra_sheets or []:
+                rows += excel.parse_verbatims(content, extra.sheet, extra.column_map)
     except (ValueError, KeyError) as exc:
         raise HTTPException(400, f"Hoja de verbatims inválida: {exc}") from exc
 

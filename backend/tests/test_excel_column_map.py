@@ -120,3 +120,42 @@ def test_parse_verbatims_preserves_realid_and_source_row():
     assert rows[0]["respondent_external_id"] == "7"
     assert rows[0]["realid"] == "persona-abc"
     assert rows[0]["source_row_number"] == 2
+
+
+def test_parse_verbatims_two_sheets_concatenate_without_cross_contamination():
+    """El router (`POST .../import`, `extra_sheets`) parsea la hoja principal y
+    cada hoja extra por separado y SUMA sus filas antes de un único
+    insert_verbatims — esto reproduce esa concatenación a nivel de parser: dos
+    hojas separadas (Marcas / Razones), mismo Respondent ID por persona, deben
+    combinarse sin que el source_row_number (reiniciado por hoja) ni el
+    question_key de una se filtre a la otra."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    marcas_sheet = wb.active
+    marcas_sheet.title = "Marcas"
+    marcas_sheet.append(["Respondent ID", "Marca mencionada"])
+    marcas_sheet.append(["1", "gloria"])
+    razones_sheet = wb.create_sheet("Razones")
+    razones_sheet.append(["Respondent ID", "Motivo"])
+    razones_sheet.append(["1", "buen sabor"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    content = buf.getvalue()
+
+    brand_rows = excel.parse_verbatims(
+        content, "Marcas", {"respondent_id": "Respondent ID", "brands": "Marca mencionada"}
+    )
+    reason_rows = excel.parse_verbatims(
+        content, "Razones", {"respondent_id": "Respondent ID", "reasons": "Motivo"}
+    )
+    combined = brand_rows + reason_rows
+
+    assert len(combined) == 2
+    assert {r["question_key"] for r in combined} == {"brands", "reasons"}
+    # Mismo Respondent ID en ambas hojas -> mismo respondent_external_id, para
+    # que insert_verbatims los cuelgue del mismo encuestado (conflict key
+    # (round_id, imported_file_id, respondent_external_id) en `respondents`).
+    assert {r["respondent_external_id"] for r in combined} == {"1"}
+    assert combined[0]["original_text"] == "gloria"
+    assert combined[1]["original_text"] == "buen sabor"
