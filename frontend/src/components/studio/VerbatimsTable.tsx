@@ -27,7 +27,7 @@ export function VerbatimsTable({
   processingOverlay = null,
 }: VerbatimsTableProps) {
   return (
-    <div className="card overflow-hidden relative min-h-[280px]">
+    <div className="card overflow-hidden relative min-h-[500px]">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-p-border text-left">

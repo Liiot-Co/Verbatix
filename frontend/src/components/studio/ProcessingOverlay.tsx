@@ -12,11 +12,11 @@ const STAGES = [
   { id: "complete", icon: PartyPopper, label: "Listo" },
 ] as const;
 
-function getStage(status: string | undefined, codedPct: number): StageId {
-  if (codedPct === 100) return "complete";
-  if (codedPct >= 75) return "coding_almost";
-  if (codedPct >= 40) return "coding_progress";
-  if (codedPct > 0) return "coding_started";
+function getStage(status: string | undefined, effectivePct: number): StageId {
+  if (effectivePct === 100) return "complete";
+  if (effectivePct >= 75) return "coding_almost";
+  if (effectivePct >= 40) return "coding_progress";
+  if (effectivePct > 0) return "coding_started";
   if (status === "processing") return "processing";
   if (status === "files_uploaded") return "uploaded";
   return "processing";
@@ -49,11 +49,19 @@ export default function ProcessingOverlay({
   resolved,
   pollCount = 0,
 }: ProcessingOverlayProps) {
-  const stageId = getStage(status, codedPct);
   const totalCoded = autoCoded + resolved;
   const totalPending = pendingReview + anomalies;
   const total = totalCoded + totalPending;
-  const progress = total > 0 ? Math.round((totalCoded / total) * 100) : codedPct;
+  // When real coded-group data is available, use it directly.
+  // While the engine is still starting (total=0, codedPct=0), drive a smooth
+  // asymptotic fake-progress from pollCount so the bar isn't frozen at 0%.
+  // Each poll is ~8 s; the curve approaches 88% but never reaches it, so it
+  // never looks "done" before the real data arrives.
+  const fakeProgress = total === 0 && codedPct === 0 && pollCount > 0
+    ? Math.round(88 * (1 - Math.exp(-pollCount / 6)))
+    : null;
+  const progress = total > 0 ? Math.round((totalCoded / total) * 100) : (fakeProgress ?? codedPct);
+  const stageId = getStage(status, progress);
   const isComplete = stageId === "complete";
   const activeIndex = STAGES.findIndex(s => s.id === stageId);
 
