@@ -418,7 +418,7 @@ def list_codebook_sources(
                   join studies p
                     on p.id = target.id
                     or (
-                      target.study_id is not null
+                      target.project_id is not null
                       and p.project_id = target.project_id
                     )
                   join rounds r on r.study_id = p.id
