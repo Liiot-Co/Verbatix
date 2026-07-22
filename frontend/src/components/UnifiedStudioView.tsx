@@ -17,6 +17,7 @@ import { can } from "@/lib/capabilities";
 import { StudioHeader } from "./studio/StudioHeader";
 import { StudioSummaryCards } from "./studio/StudioSummaryCards";
 import { VerbatimsTable } from "./studio/VerbatimsTable";
+import PendingClassificationTable from "./studio/PendingClassificationTable";
 import CodebookDraftReview from "./CodebookDraftReview";
 
 function playProcessingFinishedSound() {
@@ -82,6 +83,7 @@ export default function UnifiedStudioView() {
   const [search, setSearch] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fullscreenResolution, setFullscreenResolution] = useState(false);
+  const [focusGroupId, setFocusGroupId] = useState<string | null>(null);
   const [pollCount, setPollCount] = useState(0);
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
@@ -307,17 +309,20 @@ export default function UnifiedStudioView() {
         />
       ) : null}
 
-      <div className="inline-flex rounded-lg border border-p-border p-0.5 self-start">
+      <div className="flex items-center gap-2 self-start">
+        <span className="text-xs font-semibold text-p-text-muted uppercase tracking-wide">Clasificando:</span>
+        <div className="inline-flex rounded-lg border border-p-border p-0.5">
         {round.subprojects.map((subproject) => (
           <button
             key={subproject.id}
             type="button"
             onClick={() => setActiveSubprojectId(subproject.id)}
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${activeSubproject?.id === subproject.id ? "bg-p-accent-soft text-p-accent font-medium" : "text-p-text-muted hover:text-p-text"}`}
+            className={`px-5 py-2 text-sm rounded-md transition-colors ${activeSubproject?.id === subproject.id ? "bg-p-accent-mid/15 text-p-accent-mid font-medium" : "text-p-text-muted hover:text-p-text"}`}
           >
             {subproject.coding_type === "brands" ? "Marcas" : "Razones"}
           </button>
         ))}
+        </div>
       </div>
 
       {canViewResolution && preliminary && (
@@ -348,14 +353,14 @@ export default function UnifiedStudioView() {
           <button
             type="button"
             onClick={() => setSummaryView("pending")}
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${summaryView === "pending" ? "bg-p-accent-soft text-p-accent font-medium" : "text-p-text-muted hover:text-p-text"}`}
+            className={`px-5 py-2 text-sm rounded-md transition-colors ${summaryView === "pending" ? "bg-p-accent-mid/15 text-p-accent-mid font-medium" : "text-p-text-muted hover:text-p-text"}`}
           >
             Pendientes
           </button>
           <button
             type="button"
             onClick={() => setSummaryView("coded")}
-            className={`px-3 py-1.5 text-sm rounded-md transition-colors ${summaryView === "coded" ? "bg-p-accent-soft text-p-accent font-medium" : "text-p-text-muted hover:text-p-text"}`}
+            className={`px-5 py-2 text-sm rounded-md transition-colors ${summaryView === "coded" ? "bg-p-accent-mid/15 text-p-accent-mid font-medium" : "text-p-text-muted hover:text-p-text"}`}
           >
             Codificados
           </button>
@@ -376,13 +381,11 @@ export default function UnifiedStudioView() {
 
       {summaryView === "pending" && canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution ? (
         <div className="bg-p-surface border border-p-border rounded-xl shadow-sm overflow-hidden h-[calc(100vh-14rem)] mt-2">
-          <ResolutionCenter
+          <PendingClassificationTable
             subprojectId={activeSubproject?.id ?? ""}
             codingType={activeSubproject?.coding_type ?? "brands"}
-            roundId={roundId}
-            onClose={() => setFullscreenResolution(false)}
-            inline={true}
             onResolved={() => { loadData(); loadVerbatims(); }}
+            onFocusRow={(groupId) => { setFocusGroupId(groupId); setFullscreenResolution(true); }}
           />
         </div>
       ) : (
@@ -435,8 +438,9 @@ export default function UnifiedStudioView() {
           subprojectId={activeSubproject.id}
           codingType={activeSubproject.coding_type}
           roundId={roundId}
-          onClose={() => setFullscreenResolution(false)}
+          onClose={() => { setFullscreenResolution(false); setFocusGroupId(null); }}
           onResolved={() => { loadData(); loadVerbatims(); }}
+          initialFocusGroupId={focusGroupId}
         />
       )}
 

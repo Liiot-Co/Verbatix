@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Sparkles, X, Search } from "lucide-react";
+import { Sparkles, X, Search, Trophy } from "lucide-react";
+import { motion } from "framer-motion";
 import { bulkResolve, getResolutionQueue, getResolutionSummary, getRoundCodes, resolveMentionGroup } from "@/api/client";
 import type { ResolutionQueueItem, ResolutionSummary, RoundCode } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -19,10 +20,13 @@ interface ResolutionCenterProps {
   onClose: () => void;
   inline?: boolean;
   onResolved?: () => void;
+  /** Seeds the sidebar's 1x1 card to this group on open — e.g. a row's "modo
+   *  enfoque" button in the batch table. Applied once per mount. */
+  initialFocusGroupId?: string | null;
 }
 
 /** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
-export default function ResolutionCenter({ subprojectId, codingType, roundId, onClose, inline = false, onResolved }: ResolutionCenterProps) {
+export default function ResolutionCenter({ subprojectId, codingType, roundId, onClose, inline = false, onResolved, initialFocusGroupId = null }: ResolutionCenterProps) {
   const showToast = useVerbatixStore((s) => s.showToast);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -59,6 +63,11 @@ export default function ResolutionCenter({ subprojectId, codingType, roundId, on
     loadQueue();
     getRoundCodes(subprojectId, false).then(setCodes);
   }, [loadQueue, subprojectId]);
+
+  useEffect(() => {
+    if (initialFocusGroupId) setFocusGroupId(initialFocusGroupId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount/seed
+  }, [initialFocusGroupId]);
 
   const toggleSelect = useCallback(
     (groupId: string, index: number, shiftKey: boolean) => {
@@ -296,8 +305,30 @@ export default function ResolutionCenter({ subprojectId, codingType, roundId, on
                 </div>
               ))
             ) : queue.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-p-text-faint">
-                No hay grupos pendientes. ¡Todo al día!
+              <div className="flex-1 flex flex-col items-center justify-center p-8">
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.8, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  className="flex flex-col items-center justify-center text-center space-y-3"
+                >
+                  <div className="relative">
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 25, repeat: Infinity, ease: "linear" }}
+                      className="absolute -inset-6 bg-gradient-to-r from-p-success/20 to-p-accent/20 rounded-full blur-xl"
+                    />
+                    <motion.div 
+                      whileHover={{ scale: 1.05, rotate: [-2, 2, -2, 0] }}
+                      className="relative w-16 h-16 bg-gradient-to-tr from-p-success/10 to-p-success/30 border border-p-success/20 rounded-2xl flex items-center justify-center shadow-sm cursor-default"
+                    >
+                      <Trophy className="w-8 h-8 text-p-success drop-shadow-sm" />
+                    </motion.div>
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="font-heading text-xl font-bold bg-gradient-to-r from-p-success to-p-accent bg-clip-text text-transparent">¡Todo al día!</h3>
+                    <p className="text-sm text-p-text-muted">No hay grupos pendientes por clasificar.</p>
+                  </div>
+                </motion.div>
               </div>
             ) : (
               queue.map((g, i) => (
