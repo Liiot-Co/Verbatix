@@ -2,6 +2,8 @@
 export function guessExcelColumnMap(columns: string[]): {
   respondent_id?: string;
   verbatim?: string;
+  brands?: string;
+  reasons?: string;
 } {
   const normalized = columns.map((raw) => ({
     raw,

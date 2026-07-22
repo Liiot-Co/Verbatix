@@ -46,6 +46,7 @@ import type {
   RoundReport,
   RoundStatus,
   RoundSubproject,
+  SheetImportSpec,
   SignupPayload,
   SignupResponse,
   UploadedFile,
@@ -427,6 +428,10 @@ export async function importClientCatalog(
 export interface ImportSettings {
   codebookSheet?: string | undefined;
   codebookCodingType?: "brands" | "reasons" | undefined;
+  // Hojas adicionales del mismo Excel (Marcas y Razones en hojas separadas en
+  // vez de columnas dentro de la misma hoja) — se suman a verbatimsSheet en un
+  // único import atómico (un snapshot, una pasada de duplicados).
+  extraSheets?: SheetImportSpec[] | undefined;
   // REQ-03: etiqueta de la carga, confirmada/editada por el analista antes de importar.
   sourceLabel?: string | undefined;
   // Capturados al soltar el archivo — solo se usan si esta importación crea un
@@ -475,6 +480,7 @@ export async function importFile(
       codebook_sheet: settings.codebookSheet ?? null,
       codebook_coding_type: settings.codebookSheet ? settings.codebookCodingType : null,
       column_map: columnMap,
+      extra_sheets: settings.extraSheets ?? null,
       source_label: settings.sourceLabel ?? null,
       min_mentions_threshold: settings.minMentionsThreshold ?? null,
       audit_percentage: settings.auditPercentage ?? null,

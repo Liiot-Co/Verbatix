@@ -282,6 +282,14 @@ export interface ColumnMap {
   input_code?: string;
 }
 
+// Hoja adicional del mismo Excel (una hoja por Marcas y otra por Razones, en
+// vez de columnas separadas dentro de una misma hoja) — se suma a la hoja
+// principal en un solo import atómico.
+export interface SheetImportSpec {
+  sheet: string;
+  column_map: ColumnMap;
+}
+
 // POST /rounds/{id}/process — queued as a background task; poll round status.
 export interface ProcessResult {
   status: "queued";
