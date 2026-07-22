@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
     classification_batch_size: int = 50
+    # Tamaño de lote para proponer categorías de Razón (discover_reason_catalog /
+    # discover_new_reasons). Más chico que classification_batch_size a propósito:
+    # cada cluster pide un objeto COMPLETO (net+label+definición+criterios+
+    # ejemplos), no una decisión corta como classify_round — un lote grande aquí
+    # genera una respuesta enorme y se vuelve la llamada más lenta del pipeline.
+    reason_discovery_batch_size: int = 20
     # Concurrent classify_batch calls against the LLM API. Batches are independent,
     # so this divides wall-clock time almost linearly (each call is ~20-25s of I/O).
     llm_parallel_requests: int = 5

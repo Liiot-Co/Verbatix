@@ -4,7 +4,12 @@ criterio que test_semantic_cache.py)."""
 import uuid
 from unittest.mock import patch
 
-from app.pipeline.semantic.cluster import cluster_by_similarity, discover_new_reasons, discover_reason_catalog
+from app.pipeline.semantic.cluster import (
+    _propose_reason_codes_parallel,
+    cluster_by_similarity,
+    discover_new_reasons,
+    discover_reason_catalog,
+)
 
 
 def test_cluster_by_similarity_groups_near_duplicates_and_keeps_distinct_apart():
@@ -46,9 +51,10 @@ def test_cluster_by_similarity_is_independent_of_input_order():
 
 
 class FakeResult:
-    def __init__(self, scalar=None, mappings_list=None, rowcount=0):
+    def __init__(self, scalar=None, mappings_list=None, rowcount=0, scalars_list=None):
         self._scalar = scalar
         self._mappings_list = mappings_list if mappings_list is not None else []
+        self._scalars_list = scalars_list if scalars_list is not None else []
         self.rowcount = rowcount
 
     def scalar(self):
@@ -57,18 +63,22 @@ class FakeResult:
     def mappings(self):
         return self
 
+    def scalars(self):
+        return self
+
     def all(self):
-        return self._mappings_list
+        return self._mappings_list or self._scalars_list
 
     def first(self):
         return self._mappings_list[0] if self._mappings_list else None
 
 
 class FakeSession:
-    def __init__(self, codebook_id=None, has_own_codes=False, candidates=None):
+    def __init__(self, codebook_id=None, has_own_codes=False, candidates=None, existing_nets=None):
         self.codebook_id = codebook_id
         self.has_own_codes = has_own_codes
         self.candidates = candidates or []
+        self.existing_nets = existing_nets or []
         self.inserted_codes: list[dict] = []
         self.group_updates: list[dict] = []
 
@@ -79,6 +89,8 @@ class FakeSession:
             return FakeResult(scalar=self.codebook_id)
         if "exists(select 1 from codes where codebook_id" in sql:
             return FakeResult(scalar=self.has_own_codes)
+        if "select name from nets" in sql:
+            return FakeResult(scalars_list=self.existing_nets)
         if "from mention_groups" in sql:
             return FakeResult(mappings_list=self.candidates)
         if "coalesce(max(code_number), 0) + 1" in sql:
@@ -192,6 +204,9 @@ class _NRResult:
     def mappings(self):
         return self
 
+    def scalars(self):
+        return self
+
     def all(self):
         return self._rows
 
@@ -206,10 +221,11 @@ class _NewReasonSession:
     """Fake que sirve subproyecto/origen, candidatos pendientes, códigos
     existentes (para el check de dedup) y captura los inserts."""
 
-    def __init__(self, origin, candidates, existing_codes=None):
+    def __init__(self, origin, candidates, existing_codes=None, existing_nets=None):
         self.origin = origin
         self.candidates = candidates
         self.existing_codes = existing_codes or []
+        self.existing_nets = existing_nets or []
         self.inserted_codes = []
         self.inserted_net_codes = []
         self.suggested = []
@@ -227,6 +243,8 @@ class _NewReasonSession:
             return _NRResult(rows=self.candidates)
         if "select id, label from codes" in sql:
             return _NRResult(rows=self.existing_codes)
+        if "select name from nets" in sql:
+            return _NRResult(rows=self.existing_nets)
         if "coalesce(max(code_number), 0) + 1" in sql:
             return _NRResult(scalar=1)
         if "study, p.external_code" in sql:
@@ -328,3 +346,92 @@ def test_discover_new_reasons_below_minimum_leaves_pending(monkeypatch):
 
     assert grouped == 0
     assert db.inserted_codes == []
+
+
+# --------------------------------------------------------------------------- #
+# Batching de la propuesta de categorías (_propose_reason_codes_parallel)
+# --------------------------------------------------------------------------- #
+def test_propose_reason_codes_parallel_single_batch_calls_propose_once(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "reason_discovery_batch_size", 20)
+    calls = []
+
+    def fake_propose(batch, context, existing_nets=None):
+        calls.append(list(batch))
+        return [{"index": i, "label": s} for i, s in enumerate(batch)]
+
+    with patch("app.pipeline.semantic.cluster.propose_reason_codes", side_effect=fake_propose):
+        result = _propose_reason_codes_parallel([f"cluster {i}" for i in range(5)], {})
+
+    assert len(calls) == 1  # cabe en un solo lote, no dispara el pool
+    assert [r["label"] for r in result] == [f"cluster {i}" for i in range(5)]
+
+
+def test_propose_reason_codes_parallel_splits_and_preserves_order(monkeypatch):
+    # 45 clusters con batch_size=20 -> 3 lotes en paralelo; el resultado debe
+    # volver en el MISMO orden que la entrada pese a correr concurrente (el
+    # caller hace zip(proposals, big_clusters) y depende de ese orden).
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "reason_discovery_batch_size", 20)
+    monkeypatch.setattr(settings, "llm_parallel_requests", 3)
+    summaries = [f"cluster {i}" for i in range(45)]
+    calls = []
+
+    def fake_propose(batch, context, existing_nets=None):
+        calls.append(list(batch))
+        return [{"index": i, "label": s} for i, s in enumerate(batch)]
+
+    with patch("app.pipeline.semantic.cluster.propose_reason_codes", side_effect=fake_propose):
+        result = _propose_reason_codes_parallel(summaries, {})
+
+    assert len(calls) == 3  # 20 + 20 + 5
+    assert [r["label"] for r in result] == summaries
+
+
+def test_propose_reason_codes_parallel_sends_same_existing_nets_to_every_batch(monkeypatch):
+    # Cada lote corre aislado (no ve los clusters de los otros); sin pasarles
+    # el MISMO vocabulario de nets ya existentes, cada uno puede inventar un
+    # nombre distinto para la misma idea ("Aroma" en el lote 1, "Sabor y
+    # Aroma" en el lote 2) — la fragmentación que motivó este fix.
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "reason_discovery_batch_size", 2)
+    seen_nets = []
+
+    def fake_propose(batch, context, existing_nets=None):
+        seen_nets.append(existing_nets)
+        return [{"index": i, "label": s} for i, s in enumerate(batch)]
+
+    with patch("app.pipeline.semantic.cluster.propose_reason_codes", side_effect=fake_propose):
+        _propose_reason_codes_parallel(
+            ["a", "b", "c", "d"], {}, existing_nets=["Sabor", "Precio"],
+        )
+
+    assert len(seen_nets) == 2  # 4 items / batch_size=2 -> 2 lotes
+    assert all(nets == ["Sabor", "Precio"] for nets in seen_nets)
+
+
+def test_discover_new_reasons_passes_existing_nets_to_llm(monkeypatch):
+    # discover_new_reasons corre en rondas HEREDADAS: el codebook importado ya
+    # trae nets (p.ej. de una ronda homologada anterior) — deben llegar al
+    # prompt para que el motor los reutilice en vez de inventar sinónimos.
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "auto_approve_scratch_codebook", True)
+    candidates = [
+        {"id": uuid.uuid4(), "normalized_text": "es rico", "sample_text": "Es rico", "frequency_count": 5},
+    ]
+    db = _NewReasonSession(
+        origin="inherited", candidates=candidates, existing_nets=["Sabor y Aroma", "Precio"],
+    )
+    seen_nets = []
+
+    def fake_propose(cluster_summaries, context, existing_nets=None):
+        seen_nets.append(existing_nets)
+        return [_PROPOSAL]
+
+    with (
+        patch("app.pipeline.semantic.cluster.embed_many", return_value=[[1.0, 0.0]]),
+        patch("app.pipeline.semantic.cluster.propose_reason_codes", side_effect=fake_propose),
+    ):
+        discover_new_reasons(db, uuid.uuid4(), min_mentions=3)
+
+    assert seen_nets == [["Sabor y Aroma", "Precio"]]

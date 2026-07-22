@@ -336,8 +336,24 @@ def _build_naming_prompt(representative_texts: list[str]) -> str:
     )
 
 
-def _build_reason_codebook_prompt(cluster_summaries: list[str], context: dict | None = None) -> str:
+def _build_reason_codebook_prompt(
+    cluster_summaries: list[str], context: dict | None = None, existing_nets: list[str] | None = None,
+) -> str:
     lines = "\n".join(f"{index}: {summary}" for index, summary in enumerate(cluster_summaries))
+    # Sin esta lista, cada llamada inventa nets a ciegas: la misma idea temática
+    # termina repartida en nets distintos entre rondas ("Aroma" / "Sabor y
+    # Aroma", "Tamaño" / "Tamaño/Cantidad") o, con la propuesta en paralelo por
+    # lotes (ver semantic/cluster._propose_reason_codes_parallel), incluso
+    # DENTRO de una misma corrida — cada lote ve solo su propio tramo de
+    # clusters y no puede reutilizar el net que otro lote acaba de nombrar. Ver
+    # los nets ya existentes (del codebook heredado + de rondas homologadas
+    # previas) es lo único que da al modelo con qué reutilizar en vez de
+    # sinónimos.
+    nets_block = (
+        "Nets ya existentes en este estudio (reutiliza el nombre EXACTO si la categoría "
+        "corresponde; no inventes un sinónimo si uno de estos ya cubre la idea): "
+        + (", ".join(existing_nets) if existing_nets else "ninguno todavía") + "\n"
+    )
     return (
         "Eres un analista senior construyendo un libro de códigos de RAZONES para una encuesta. "
         "Cada índice representa un cluster semántico ponderado por frecuencia e incluye ejemplos "
@@ -348,6 +364,7 @@ def _build_reason_codebook_prompt(cluster_summaries: list[str], context: dict | 
         "segura; evita duplicados léxicos como 'Precio'/'El precio'. Prefiere un libro compacto y "
         "exhaustivo antes que una categoría por frase. No inventes hechos que no aparezcan en los ejemplos.\n"
         f"Contexto del estudio: {json.dumps(context or {}, ensure_ascii=False)}\n\n"
+        f"{nets_block}\n"
         f"Clusters:\n{lines}\n\n"
         "Responde ÚNICAMENTE con JSON válido: "
         '{"prompt_version":"reason_codebook_proposal-v1","results":[{'
@@ -360,7 +377,7 @@ def _build_reason_codebook_prompt(cluster_summaries: list[str], context: dict | 
 
 
 def propose_reason_codes(
-    cluster_summaries: list[str], context: dict | None = None,
+    cluster_summaries: list[str], context: dict | None = None, existing_nets: list[str] | None = None,
 ) -> list[dict]:
     """Contrato estructurado para propuestas del libro de Razones."""
     if not cluster_summaries:
@@ -370,7 +387,10 @@ def propose_reason_codes(
         headers={"Authorization": f"Bearer {settings.llm_api_key}"},
         json={
             "model": settings.llm_model,
-            "messages": [{"role": "user", "content": _build_reason_codebook_prompt(cluster_summaries, context)}],
+            "messages": [{
+                "role": "user",
+                "content": _build_reason_codebook_prompt(cluster_summaries, context, existing_nets),
+            }],
             "response_format": {"type": "json_object"},
             "temperature": 0.0,
             "stream": False,

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import uuid
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 from sqlalchemy import text
@@ -32,6 +33,53 @@ from app.pipeline.llm.client import propose_reason_codes
 from app.pipeline.normalize import normalize
 
 from .embed import embed_many
+
+
+def _chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def _propose_reason_codes_parallel(
+    cluster_summaries: list[str], context: dict, existing_nets: list[str] | None = None,
+) -> list[dict]:
+    """Trocea `cluster_summaries` y llama a DeepSeek en paralelo, igual que
+    classify_round ya hace para clasificar (ver pipeline/llm/classify.py).
+
+    Sin esto, un estudio con decenas de clusters (84 medidos en producción)
+    mandaba TODOS en un solo request: el modelo tenía que generar
+    net+label+definición+inclusion/exclusion+ejemplos completos para cada uno
+    en una sola respuesta — la llamada más lenta de todo el pipeline de
+    Razones, más lenta que cualquier batch de classify_round (que solo pide
+    una decisión corta por item). Trocear + paralelizar no cambia qué se le
+    pide al modelo por cluster, solo cuántos le pide de una sentada.
+
+    `existing_nets` (nets ya persistidos en el codebook ANTES de esta corrida)
+    se manda IDÉNTICO a todos los lotes para que reutilicen el mismo
+    vocabulario en vez de inventar sinónimos cada uno por su cuenta — ver el
+    docstring de `_build_reason_codebook_prompt`. No cierra el caso de dos
+    lotes que en la MISMA corrida inventan un net nuevo cada uno para la misma
+    idea (ninguno ve lo que el otro acaba de proponer, corren en paralelo):
+    ese remanente lo resuelve un humano en Resolución, igual que cualquier
+    propuesta del motor.
+    """
+    batches = list(_chunks(cluster_summaries, settings.reason_discovery_batch_size))
+    if len(batches) <= 1:
+        return propose_reason_codes(cluster_summaries, context, existing_nets)
+
+    results_by_batch: dict[int, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=settings.llm_parallel_requests) as pool:
+        futures = {
+            pool.submit(propose_reason_codes, batch, context, existing_nets): index
+            for index, batch in enumerate(batches)
+        }
+        for future in as_completed(futures):
+            results_by_batch[futures[future]] = future.result()
+
+    ordered: list[dict] = []
+    for index in range(len(batches)):
+        ordered.extend(results_by_batch[index])
+    return ordered
 
 
 def cluster_by_similarity(
@@ -169,6 +217,17 @@ def cluster_by_similarity(
     )
 
 
+def _existing_net_names(db: Session, codebook_id) -> list[str]:
+    """Nets ya persistidos en el codebook, para dárselos al LLM como vocabulario
+    a reutilizar (ver `_build_reason_codebook_prompt`) en vez de que invente un
+    sinónimo por cada corrida ("Aroma" / "Sabor y Aroma", "Tamaño" /
+    "Tamaño/Cantidad" — fragmentación observada en producción)."""
+    return db.execute(
+        text("select name from nets where codebook_id = :cb order by display_order, name"),
+        {"cb": codebook_id},
+    ).scalars().all()
+
+
 def _find_code_by_label(db: Session, codebook_id, label_key: str) -> str | None:
     """Mismo check que `fuzzy/catalog._find_code_by_label` (marcas), para Razones:
     evita minar un código duplicado cuando ya existe uno con ese label — p.ej.
@@ -272,7 +331,10 @@ def discover_new_reasons(db: Session, subproject_id: uuid.UUID, min_mentions: in
         """),
         {"sp": subproject_id},
     ).mappings().first()
-    proposals = propose_reason_codes(cluster_summaries, dict(context_row) if context_row else {})
+    proposals = _propose_reason_codes_parallel(
+        cluster_summaries, dict(context_row) if context_row else {},
+        existing_nets=_existing_net_names(db, codebook_id),
+    )
 
     next_number = db.execute(
         text("""
@@ -451,7 +513,10 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
         """),
         {"sp": subproject_id},
     ).mappings().first()
-    proposals = propose_reason_codes(cluster_summaries, dict(context_row) if context_row else {})
+    proposals = _propose_reason_codes_parallel(
+        cluster_summaries, dict(context_row) if context_row else {},
+        existing_nets=_existing_net_names(db, codebook_id),
+    )
 
     next_number = db.execute(
         text("""
