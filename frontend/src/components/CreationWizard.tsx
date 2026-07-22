@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   BookOpen,
   Check,
-  ChevronDown,
   ChevronLeft,
   FileSpreadsheet,
   Files,
