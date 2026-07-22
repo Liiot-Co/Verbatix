@@ -2,11 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronLeft, ChevronRight, FolderOpen, Plus, Search, Sparkles } from "lucide-react";
-import { createProject, getProjects } from "@/api/client";
-import type { ProjectListItem } from "@/api/types";
+import { createProyecto, getProyectos } from "@/api/client";
+import type { ProyectoListItem } from "@/api/types";
 import { useKeyboardShortcuts, registerShortcuts, type PageShortcut } from "@/hooks/useKeyboardShortcuts";
 import GlowCard, { GlowCardGrid, glowVariantForIndex } from "@/components/GlowCard";
-import AvatarStack from "@/components/AvatarStack";
 import WaitingAssignmentsHome from "@/components/WaitingAssignmentsHome";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { can } from "@/lib/capabilities";
@@ -17,14 +16,6 @@ import { PRESENCE_CATALOG, type PresenceStatus } from "@/lib/presence";
 
 const PAGE_SIZE = 10;
 const RECENT_COUNT = 3;
-
-const ANALYTIC_OPTIONS = [
-  { value: "", label: "Todos" },
-  { value: "brands", label: "Marcas" },
-  { value: "reasons", label: "Razones" },
-  { value: "both", label: "Marcas y Razones" },
-  { value: "none", label: "Sin objetivo" },
-];
 
 const ICON_CLASSES = [
   "project-row-icon-1",
@@ -45,10 +36,9 @@ function formatRelativeDate(iso: string): string {
   return date.toLocaleDateString("es", { day: "numeric", month: "short", year: "numeric" });
 }
 
-function studySummaryLabel(studies: number, rounds: number): string {
-  const s = studies === 1 ? "1 estudio" : `${studies} estudios`;
-  const r = rounds === 1 ? "1 ronda" : `${rounds} rondas`;
-  return `${s} · ${r}`;
+function projectSummaryLabel(studies: number): string {
+  if (studies === 0) return "Sin estudios";
+  return studies === 1 ? "1 estudio" : `${studies} estudios`;
 }
 
 export default function ProjectDashboard() {
@@ -56,15 +46,13 @@ export default function ProjectDashboard() {
   const user = useVerbatixStore((state) => state.user);
   const canManageProjects = can(user, "projects.manage");
 
-  const [projects, setProjects] = useState<ProjectListItem[]>([]);
+  const [projects, setProjects] = useState<ProyectoListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [filterTarget, setFilterTarget] = useState("");
   const [page, setPage] = useState(1);
   const [presenceOpen, setPresenceOpen] = useState(false);
   const presenceStatus: PresenceStatus = user?.presence_status ?? "disponible";
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createExternalCode, setCreateExternalCode] = useState("");
   const [createName, setCreateName] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -74,14 +62,14 @@ export default function ProjectDashboard() {
       setLoading(false);
       return;
     }
-    getProjects()
+    getProyectos()
       .then(setProjects)
       .finally(() => setLoading(false));
   }, [user]);
 
   useEffect(() => {
     setPage(1);
-  }, [searchQuery, filterTarget]);
+  }, [searchQuery]);
 
   const sortedByRecent = useMemo(
     () => [...projects].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
@@ -93,18 +81,13 @@ export default function ProjectDashboard() {
   const filteredProjects = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     let result = sortedByRecent;
-    if (filterTarget) {
-      result = result.filter((p) => p.analytic_target === filterTarget);
-    }
     if (q) {
       result = result.filter(
-        (p) =>
-          p.name.toLowerCase().includes(q) ||
-          (p.external_code || "").toLowerCase().includes(q)
+        (p) => p.name.toLowerCase().includes(q)
       );
     }
     return result;
-  }, [sortedByRecent, searchQuery, filterTarget]);
+  }, [sortedByRecent, searchQuery]);
 
   const totalPages = Math.max(1, Math.ceil(filteredProjects.length / PAGE_SIZE));
   const paginatedProjects = filteredProjects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -117,7 +100,6 @@ export default function ProjectDashboard() {
   };
 
   const openCreateModal = () => {
-    setCreateExternalCode("");
     setCreateName("");
     setCreateError(null);
     setShowCreateModal(true);
@@ -125,13 +107,13 @@ export default function ProjectDashboard() {
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!createExternalCode.trim() || !createName.trim()) return;
+    if (!createName.trim()) return;
     setCreating(true);
     setCreateError(null);
     try {
-      const project = await createProject(createExternalCode.trim(), createName.trim());
+      const proyecto = await createProyecto(createName.trim());
       setShowCreateModal(false);
-      navigate(`/wizard?projectId=${project.id}`);
+      navigate(`/projects/${proyecto.id}`);
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : "No se pudo crear el proyecto");
     } finally {
@@ -203,16 +185,6 @@ export default function ProjectDashboard() {
               aria-label="Buscar proyectos"
             />
           </div>
-          <select
-            value={filterTarget}
-            onChange={(e) => setFilterTarget(e.target.value)}
-            className="input text-sm rounded-xl py-2"
-            aria-label="Filtrar por objetivo analítico"
-          >
-            {ANALYTIC_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
         </div>
       </div>
 
@@ -279,9 +251,9 @@ export default function ProjectDashboard() {
                       key={project.id}
                       to={`/projects/${project.id}`}
                       variant={glowVariantForIndex(idx)}
-                      label={project.external_code}
+                      label="Proyecto"
                       title={project.name}
-                      footer={studySummaryLabel(project.studies_count, project.rounds_count)}
+                      footer={projectSummaryLabel(project.projects_count)}
                     />
                   ))}
                 </GlowCardGrid>
@@ -324,21 +296,18 @@ export default function ProjectDashboard() {
                             {project.name}
                           </div>
                           <div className="text-[11px] font-subtitle text-p-text-faint mt-0.5 truncate">
-                            {project.external_code}
-                            <span className="mx-1.5 text-p-border-mid">·</span>
-                            {studySummaryLabel(project.studies_count, project.rounds_count)}
+                            {projectSummaryLabel(project.projects_count)}
                             <span className="mx-1.5 text-p-border-mid">·</span>
                             {formatRelativeDate(project.created_at)}
                           </div>
                         </div>
-                        <AvatarStack projectId={project.id} users={project.assigned_users_preview} total={project.assigned_users_count} />
                         <span
                           className={[
                             "shrink-0 uppercase tracking-wide",
-                            project.rounds_count > 0 ? "badge-success" : "badge-warning",
+                            project.projects_count > 0 ? "badge-success" : "badge-warning",
                           ].join(" ")}
                         >
-                          {project.studies_count > 0 ? "Activo" : "Sin estudios"}
+                          {project.projects_count > 0 ? "Activo" : "Sin estudios"}
                         </span>
                       </Link>
                     );
@@ -399,23 +368,13 @@ export default function ProjectDashboard() {
 
             <div className="space-y-3">
               <label className="block space-y-1">
-                <span className="text-xs font-semibold text-p-text-muted">Código externo</span>
-                <input
-                  type="text"
-                  className="input text-sm rounded-xl w-full"
-                  value={createExternalCode}
-                  onChange={(e) => setCreateExternalCode(e.target.value)}
-                  autoFocus
-                  required
-                />
-              </label>
-              <label className="block space-y-1">
                 <span className="text-xs font-semibold text-p-text-muted">Nombre</span>
                 <input
                   type="text"
                   className="input text-sm rounded-xl w-full"
                   value={createName}
                   onChange={(e) => setCreateName(e.target.value)}
+                  autoFocus
                   required
                 />
               </label>
@@ -435,7 +394,7 @@ export default function ProjectDashboard() {
               <button
                 type="submit"
                 className="btn-primary text-xs py-1.5 px-3.5 rounded-full"
-                disabled={creating || !createExternalCode.trim() || !createName.trim()}
+                disabled={creating || !createName.trim()}
               >
                 {creating ? "Creando..." : "Crear proyecto"}
               </button>

@@ -10,6 +10,7 @@ import TeamAdminPage from "@/components/TeamAdminPage";
 import CapabilityGuard from "@/components/CapabilityGuard";
 import ProjectDashboard from "@/components/ProjectDashboard";
 import ProjectDetail from "@/components/ProjectDetail";
+import StudyDetail from "@/components/StudyDetail";
 import CreationWizard from "@/components/CreationWizard";
 import UnifiedStudioView from "@/components/UnifiedStudioView";
 import AuditView from "@/components/AuditView";
@@ -42,6 +43,7 @@ export default function App() {
                   <Routes>
                     <Route path="/" element={<ProjectDashboard />} />
                     <Route path="/projects/:projectId" element={<ProjectDetail />} />
+                    <Route path="/studies/:projectId" element={<StudyDetail />} />
                     <Route path="/wizard/:step?" element={<CapabilityGuard capability="projects.manage"><CreationWizard /></CapabilityGuard>} />
                     <Route path="/team" element={<CapabilityGuard capability="users.manage"><TeamAdminPage /></CapabilityGuard>} />
                     <Route path="/notifications" element={<NotificationsInbox />} />
