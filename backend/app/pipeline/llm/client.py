@@ -67,14 +67,29 @@ class ResidualResponse(BaseModel):
     results: list[ResidualDecision]
 
 
+_LIST_CAP = 8
+
+
 class ReasonCodeProposal(BaseModel):
     index: int = Field(ge=0)
     net: str = Field(min_length=1, max_length=80)
     label: str = Field(min_length=1, max_length=120)
     definition: str = Field(min_length=1, max_length=500)
-    inclusion_criteria: list[str] = Field(min_length=1, max_length=8)
-    exclusion_criteria: list[str] = Field(min_length=1, max_length=8)
-    examples: list[str] = Field(min_length=1, max_length=8)
+    inclusion_criteria: list[str] = Field(min_length=1)
+    exclusion_criteria: list[str] = Field(min_length=1)
+    examples: list[str] = Field(min_length=1)
+
+    @field_validator("inclusion_criteria", "exclusion_criteria", "examples", mode="before")
+    @classmethod
+    def _truncate_list(cls, v: object) -> object:
+        """Silently cap oversized lists instead of hard-failing validation.
+
+        The LLM occasionally returns more than _LIST_CAP items; truncating is
+        safer than aborting the entire round with a ValidationError.
+        """
+        if isinstance(v, list) and len(v) > _LIST_CAP:
+            return v[:_LIST_CAP]
+        return v
 
 
 class ReasonCodebookResponse(BaseModel):
