@@ -209,7 +209,7 @@ def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resam
             create_audit_item(db, review_id, item["verbatim_id"], item["codes"])
 
     round_state = db.execute(
-        text("select status, project_id from rounds where id = :id"), {"id": round_id}
+        text("select status, study_id from rounds where id = :id"), {"id": round_id}
     ).mappings().first()
     previous_round_status = round_state["status"] if round_state else None
     set_round_status(db, round_id, "audit_pending")
@@ -225,7 +225,7 @@ def start_audit_session(db: Session, subproject_id: uuid.UUID, *, user_id, resam
     db.commit()
     if previous_round_status != "audit_pending" and round_state:
         try:
-            recipients = project_supervisor_ids(db, round_state["project_id"])
+            recipients = project_supervisor_ids(db, round_state["study_id"])
             if not recipients:
                 recipients = global_admin_ids(db)
             recipients = [recipient for recipient in set(recipients) if recipient != user_id]
