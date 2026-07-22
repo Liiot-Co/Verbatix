@@ -13,4 +13,4 @@ httpx2>=0.28
 requests>=2.32
 polars>=1.0
 rapidfuzz>=3.14
-fastembed>=0.4
+fastembed==0.5.1

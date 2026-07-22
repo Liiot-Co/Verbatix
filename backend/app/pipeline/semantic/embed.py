@@ -3,6 +3,13 @@ directly — fastembed (ONNX-only, no torch) chosen over sentence-transformers
 for dependency weight; swapping models/libraries later stays contained here.
 Multilingual model (not the English-only default) since verbatims are
 Spanish.
+
+fastembed pinned to 0.5.1 in requirements.txt: 0.6+ switched this model from
+CLS to mean pooling, silently changing the embedding vectors. The cosine
+thresholds calibrated against this pipeline (semantic_cache_similarity_threshold,
+reason_cluster_similarity_threshold in core/config.py) assume CLS pooling —
+upgrading without recalibrating would shift similarity scores with no error,
+just quietly worse clustering/cache hits.
 """
 from functools import lru_cache
 
