@@ -364,6 +364,10 @@ def discover_catalog_from_frequency(
 
     # Numeración correlativa a partir del último code de marca no-system,
     # respetando cualquier código ya presente en el libro.
+    # Serializa la asignación de code_number: subprojects corren en threads
+    # paralelos (process.py) — sin este lock dos hilos leen el mismo max()
+    # antes de que el otro inserte, chocando en codes_codebook_id_code_number_key.
+    db.execute(text("select id from codebooks where id = :cb for update"), {"cb": codebook_id})
     next_number = db.execute(
         text("""
             select coalesce(max(code_number), 0) + 1 from codes
@@ -553,6 +557,9 @@ def discover_new_brands(
             clusters[norm] = [cand]
             cluster_reprs.append(norm)
 
+    # Serializa la asignación de code_number entre subprojects paralelos —
+    # ver comentario equivalente más arriba en este archivo.
+    db.execute(text("select id from codebooks where id = :cb for update"), {"cb": codebook_id})
     next_number = db.execute(
         text("""
             select coalesce(max(code_number), 0) + 1 from codes

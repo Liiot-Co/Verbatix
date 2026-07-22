@@ -336,6 +336,10 @@ def discover_new_reasons(db: Session, subproject_id: uuid.UUID, min_mentions: in
         existing_nets=_existing_net_names(db, codebook_id),
     )
 
+    # Serializa la asignación de code_number: subprojects corren en threads
+    # paralelos (process.py) y sin este lock dos hilos leen el mismo max()
+    # antes de que el otro inserte, chocando en codes_codebook_id_code_number_key.
+    db.execute(text("select id from codebooks where id = :cb for update"), {"cb": codebook_id})
     next_number = db.execute(
         text("""
             select coalesce(max(code_number), 0) + 1 from codes
@@ -518,6 +522,9 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
         existing_nets=_existing_net_names(db, codebook_id),
     )
 
+    # Serializa la asignación de code_number entre subprojects paralelos —
+    # ver comentario equivalente más arriba en este archivo.
+    db.execute(text("select id from codebooks where id = :cb for update"), {"cb": codebook_id})
     next_number = db.execute(
         text("""
             select coalesce(max(code_number), 0) + 1 from codes
