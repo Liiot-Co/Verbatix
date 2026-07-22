@@ -230,7 +230,7 @@ def create_codebook(
     db.execute(
         text("""
             insert into codebooks (
-              id, project_id, coding_type, version, parent_codebook_id, origin, status
+              id, study_id, coding_type, version, parent_codebook_id, origin, status
             )
             values (:id, :project, :ct, :v, :parent, :origin, :status)
         """),
@@ -1584,25 +1584,7 @@ def round_export_blockers(db: Session, round_id: uuid.UUID) -> list[str]:
               +
               (select count(*) from mention_groups mg
                 join subprojects sp on sp.id = mg.subproject_id
-                where sp.round_id = :round and mg.status = 'conflict') as conflicts,
-              (select count(*) from subprojects sp
-                where sp.round_id = :round
-                  and not exists (
-                    select 1 from audit_sessions ases
-                    where ases.subproject_id = sp.id
-                      and ases.status = 'approved'
-                      and (
-                        not exists (
-                          select 1 from processing_runs pr
-                          where pr.subproject_id = sp.id
-                        )
-                        or ases.processing_run_id = (
-                          select pr.id from processing_runs pr
-                          where pr.subproject_id = sp.id
-                          order by pr.created_at desc limit 1
-                        )
-                      )
-                  )) as missing_or_stale_audits
+                where sp.round_id = :round and mg.status = 'conflict') as conflicts
         """),
         {"round": round_id},
     ).mappings().first() or {}
@@ -1612,7 +1594,6 @@ def round_export_blockers(db: Session, round_id: uuid.UUID) -> list[str]:
     unapproved_codebooks = int(state.get("unapproved_codebooks") or 0)
     unresolved_groups = int(state.get("unresolved_groups") or 0)
     conflicts = int(state.get("conflicts") or 0)
-    missing_or_stale_audits = int(state.get("missing_or_stale_audits") or 0)
     if source_files == 0:
         blockers.append("la ronda no tiene un snapshot de población de origen")
     elif ready_source_files != source_files:
@@ -1623,8 +1604,6 @@ def round_export_blockers(db: Session, round_id: uuid.UUID) -> list[str]:
         blockers.append(f"{unresolved_groups} grupos sin decisión final")
     if conflicts:
         blockers.append(f"{conflicts} conflictos de clasificación o memoria")
-    if missing_or_stale_audits:
-        blockers.append(f"{missing_or_stale_audits} auditorías faltantes o desactualizadas")
     return blockers
 
 
