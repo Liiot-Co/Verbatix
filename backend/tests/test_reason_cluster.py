@@ -4,7 +4,7 @@ criterio que test_semantic_cache.py)."""
 import uuid
 from unittest.mock import patch
 
-from app.pipeline.semantic.cluster import cluster_by_similarity, discover_reason_catalog
+from app.pipeline.semantic.cluster import cluster_by_similarity, discover_new_reasons, discover_reason_catalog
 
 
 def test_cluster_by_similarity_groups_near_duplicates_and_keeps_distinct_apart():
@@ -180,3 +180,151 @@ def test_discover_reason_catalog_noop_when_no_pending_candidates():
     n = discover_reason_catalog(db, uuid.uuid4(), min_mentions=3)
 
     assert n == 0
+
+
+# --------------------------------------------------------------------------- #
+# Categorías de Razón nuevas en rondas HEREDADAS (discover_new_reasons)
+# --------------------------------------------------------------------------- #
+class _NRResult:
+    def __init__(self, rows=None, scalar=None, mapping=None):
+        self._rows, self._scalar, self._mapping = rows or [], scalar, mapping
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+    def first(self):
+        return self._mapping
+
+    def scalar(self):
+        return self._scalar
+
+
+class _NewReasonSession:
+    """Fake que sirve subproyecto/origen, candidatos pendientes, códigos
+    existentes (para el check de dedup) y captura los inserts."""
+
+    def __init__(self, origin, candidates, existing_codes=None):
+        self.origin = origin
+        self.candidates = candidates
+        self.existing_codes = existing_codes or []
+        self.inserted_codes = []
+        self.inserted_net_codes = []
+        self.suggested = []
+        self.inserted_verbatim_codes = []
+        self.coded_verbatims = []
+
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        if "sp.coding_type" in sql and "cb.origin" in sql:
+            return _NRResult(mapping={
+                "codebook_id": "cb-1", "coding_type": "reasons",
+                "codebook_origin": self.origin,
+            })
+        if "from mention_groups" in sql and "pending_review" in sql:
+            return _NRResult(rows=self.candidates)
+        if "select id, label from codes" in sql:
+            return _NRResult(rows=self.existing_codes)
+        if "coalesce(max(code_number), 0) + 1" in sql:
+            return _NRResult(scalar=1)
+        if "study, p.external_code" in sql:
+            return _NRResult(mapping={})
+        if "select id from nets" in sql:
+            return _NRResult(scalar=None)
+        if sql.strip().startswith("insert into codes"):
+            self.inserted_codes.append(params)
+        elif sql.strip().startswith("insert into net_codes"):
+            self.inserted_net_codes.append(params)
+        elif sql.strip().startswith("update mention_groups"):
+            self.suggested.append(params)
+        elif sql.strip().startswith("insert into verbatim_codes"):
+            self.inserted_verbatim_codes.append(params)
+        elif sql.strip().startswith("update verbatims"):
+            self.coded_verbatims.append(params)
+        return _NRResult()
+
+
+_PROPOSAL = {
+    "net": "Experiencia sensorial",
+    "label": "Buen sabor",
+    "definition": "Valora positivamente el sabor.",
+    "inclusion_criteria": ["Expresa agrado por el sabor"],
+    "exclusion_criteria": ["Solo menciona precio"],
+    "examples": ["Es rico"],
+}
+
+
+def test_discover_new_reasons_is_noop_for_scratch_round():
+    # En scratch ya descubre su catálogo discover_reason_catalog: no duplica.
+    db = _NewReasonSession(
+        origin="scratch",
+        candidates=[{"id": uuid.uuid4(), "normalized_text": "es rico", "sample_text": "Es rico", "frequency_count": 9}],
+    )
+
+    assert discover_new_reasons(db, uuid.uuid4(), min_mentions=3) == 0
+    assert db.inserted_codes == []
+
+
+def test_discover_new_reasons_creates_code_when_cluster_reaches_minimum(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "auto_approve_scratch_codebook", True)
+    candidates = [
+        {"id": uuid.uuid4(), "normalized_text": "es rico", "sample_text": "Es rico", "frequency_count": 5},
+    ]
+    db = _NewReasonSession(origin="inherited", candidates=candidates)
+
+    with (
+        patch("app.pipeline.semantic.cluster.embed_many", return_value=[[1.0, 0.0]]),
+        patch("app.pipeline.semantic.cluster.propose_reason_codes", return_value=[_PROPOSAL]),
+    ):
+        grouped = discover_new_reasons(db, uuid.uuid4(), min_mentions=3)
+
+    assert grouped == 1
+    assert len(db.inserted_codes) == 1
+    assert db.inserted_codes[0]["label"] == "Buen sabor"
+    assert db.inserted_codes[0]["approval"] == "approved"
+    assert db.suggested[0]["status"] == "auto_coded"
+    assert len(db.inserted_verbatim_codes) == 1
+
+
+def test_discover_new_reasons_reuses_existing_code_with_same_label(monkeypatch):
+    # Paralelo del bug de Marcas: "Buen sabor" ya tiene código en el libro
+    # (heredado, quizás todavía pending) — no se debe minar uno duplicado.
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "auto_approve_scratch_codebook", True)
+    candidates = [
+        {"id": uuid.uuid4(), "normalized_text": "es rico", "sample_text": "Es rico", "frequency_count": 5},
+    ]
+    db = _NewReasonSession(
+        origin="inherited",
+        candidates=candidates,
+        existing_codes=[{"id": "code-sabor-existing", "label": "Buen sabor"}],
+    )
+
+    with (
+        patch("app.pipeline.semantic.cluster.embed_many", return_value=[[1.0, 0.0]]),
+        patch("app.pipeline.semantic.cluster.propose_reason_codes", return_value=[_PROPOSAL]),
+    ):
+        grouped = discover_new_reasons(db, uuid.uuid4(), min_mentions=3)
+
+    assert grouped == 1
+    assert db.inserted_codes == []
+    assert db.suggested[0]["code"] == "code-sabor-existing"
+    assert db.inserted_verbatim_codes[0]["code"] == "code-sabor-existing"
+
+
+def test_discover_new_reasons_below_minimum_leaves_pending(monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "auto_approve_scratch_codebook", True)
+    candidates = [
+        {"id": uuid.uuid4(), "normalized_text": "es rico", "sample_text": "Es rico", "frequency_count": 1},
+    ]
+    db = _NewReasonSession(origin="inherited", candidates=candidates)
+
+    with patch("app.pipeline.semantic.cluster.embed_many", return_value=[[1.0, 0.0]]):
+        grouped = discover_new_reasons(db, uuid.uuid4(), min_mentions=3)
+
+    assert grouped == 0
+    assert db.inserted_codes == []

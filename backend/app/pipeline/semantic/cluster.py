@@ -169,6 +169,223 @@ def cluster_by_similarity(
     )
 
 
+def _find_code_by_label(db: Session, codebook_id, label_key: str) -> str | None:
+    """Mismo check que `fuzzy/catalog._find_code_by_label` (marcas), para Razones:
+    evita minar un código duplicado cuando ya existe uno con ese label — p.ej.
+    'pending' de una corrida anterior e invisible para el codebook que ve
+    classify_round (que solo lee `approval_status = 'approved'`)."""
+    if not label_key:
+        return None
+    rows = db.execute(
+        text("""
+            select id, label from codes
+            where codebook_id = :cb and is_active
+              and coalesce(is_system, false) = false
+        """),
+        {"cb": codebook_id},
+    ).mappings().all()
+    for row in rows:
+        if normalize(row["label"]) == label_key:
+            return str(row["id"])
+    return None
+
+
+def discover_new_reasons(db: Session, subproject_id: uuid.UUID, min_mentions: int) -> int:
+    """Categorías de Razón NUEVAS por similitud semántica, en rondas que HEREDAN
+    el libro (no scratch).
+
+    `discover_reason_catalog` solo corre con libro vacío (scratch): una vez que
+    el codebook tiene contenido propio, se vuelve no-op (ver su docstring). Eso
+    dejaba a las rondas heredadas SIN forma de descubrir una categoría real que
+    nunca estuvo en el libro importado — classify_round solo puede elegir entre
+    los codes ya aprobados de ESE codebook, así que una idea nueva ("empaque
+    práctico" en un estudio que nunca la codificó) caía entera al residual 97
+    "Otras menciones" en vez de proponerse como categoría. Mismo problema que
+    resolvió `discover_new_brands` para Marcas — esta función es su paralelo.
+
+    Corre sobre lo que quedó `pending_review` ANTES del caché semántico / LLM
+    (mismo lugar del pipeline que discover_new_brands respecto al fuzzy de
+    Marcas — ver `_process_subproject`), agrupa por embeddings + DeepSeek
+    (igual que el bootstrap) y, por cada cluster cuya frecuencia sumada alcanza
+    el mínimo, reusa un código existente con el mismo label si lo hay
+    (`_find_code_by_label`) o propone uno nuevo. Los clusters chicos siguen
+    `pending_review` hacia caché/LLM sin tocarse. No hace commit: el caller
+    cierra la transacción del subproyecto.
+    """
+    row = db.execute(
+        text("""
+            select sp.codebook_id, sp.coding_type, cb.origin as codebook_origin
+              from subprojects sp
+              join codebooks cb on cb.id = sp.codebook_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().first()
+    if not row or row["coding_type"] != "reasons":
+        return 0
+    # Las rondas scratch ya descubren su catálogo en discover_reason_catalog.
+    if row["codebook_origin"] == "scratch":
+        return 0
+    codebook_id = row["codebook_id"]
+    if codebook_id is None:
+        return 0
+
+    candidates = db.execute(
+        text("""
+            select id, normalized_text, sample_text, frequency_count
+            from mention_groups
+            where subproject_id = :sp and status = 'pending_review' and normalized_text <> ''
+            order by frequency_count desc, normalized_text
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+    if not candidates:
+        return 0
+
+    vectors = embed_many([c["normalized_text"] for c in candidates])
+    items = [
+        (c["sample_text"] or c["normalized_text"], vector, c["frequency_count"], c["id"])
+        for c, vector in zip(candidates, vectors)
+    ]
+    clusters = cluster_by_similarity(items, settings.reason_cluster_similarity_threshold)
+    big_clusters = [c for c in clusters if c["total_frequency"] >= min_mentions]
+    if not big_clusters:
+        return 0
+
+    cluster_summaries = [
+        (
+            f"Representante: {cluster['representative']}. "
+            f"Ejemplos centrales: {'; '.join(cluster['central_examples'])}. "
+            f"Ejemplos de frontera: {'; '.join(cluster['boundary_examples']) or 'ninguno'}."
+        )
+        for cluster in big_clusters
+    ]
+    context_row = db.execute(
+        text("""
+            select p.name as study, p.external_code,
+                   cat.name as product_category, sp.single_code_per_response
+              from subprojects sp
+              join rounds r on r.id = sp.round_id
+              join studies p on p.id = r.study_id
+              left join categories cat on cat.id = r.category_id
+             where sp.id = :sp
+        """),
+        {"sp": subproject_id},
+    ).mappings().first()
+    proposals = propose_reason_codes(cluster_summaries, dict(context_row) if context_row else {})
+
+    next_number = db.execute(
+        text("""
+            select coalesce(max(code_number), 0) + 1 from codes
+            where codebook_id = :cb and coalesce(is_system, false) = false
+        """),
+        {"cb": codebook_id},
+    ).scalar() or 1
+
+    # Misma política que discover_new_brands: paridad con scratch si el motor
+    # auto-aprueba lo descubierto por frecuencia; sin el flag, gate humano.
+    auto = settings.auto_approve_scratch_codebook
+    code_approval = "approved" if auto else "pending"
+    group_status = "auto_coded" if auto else "suggested"
+
+    grouped = 0
+    winner_by_label: dict[str, str] = {}
+    for proposal, cluster in zip(proposals, big_clusters, strict=True):
+        label = proposal["label"]
+        label_key = normalize(label)
+        member_ids = cluster["member_ids"]
+        if not member_ids:
+            continue
+
+        # Dedup en dos niveles: contra lo ya minado EN ESTE batch (DeepSeek
+        # etiquetando dos clusters igual) y contra lo que YA existe en el libro
+        # (una corrida anterior, quizás todavía 'pending').
+        code_id = winner_by_label.get(label_key) or _find_code_by_label(db, codebook_id, label_key)
+        if code_id is None:
+            code_id = str(uuid.uuid4())
+            db.execute(
+                text("""
+                    insert into codes (
+                      id, codebook_id, code_number, label, definition,
+                      inclusion_criteria, exclusion_criteria, examples,
+                      origin, approval_status
+                    )
+                    values (
+                      :id, :cb, :n, :label, :definition,
+                      cast(:inclusions as jsonb), cast(:exclusions as jsonb), cast(:examples as jsonb),
+                      'engine_auto', :approval
+                    )
+                """),
+                {
+                    "id": code_id, "cb": codebook_id, "n": next_number,
+                    "label": label,
+                    "definition": proposal["definition"],
+                    "inclusions": json.dumps(proposal["inclusion_criteria"]),
+                    "exclusions": json.dumps(proposal["exclusion_criteria"]),
+                    "examples": json.dumps(proposal["examples"]),
+                    "approval": code_approval,
+                },
+            )
+            net_name = proposal["net"].strip()
+            net_id = db.execute(
+                text("select id from nets where codebook_id = :cb and lower(name) = lower(:name) limit 1"),
+                {"cb": codebook_id, "name": net_name},
+            ).scalar()
+            if net_id is None:
+                net_id = uuid.uuid4()
+                db.execute(
+                    text("""
+                        insert into nets (id, codebook_id, name, origin, display_order)
+                        values (:id, :cb, :name, 'engine_auto', :ord)
+                    """),
+                    {"id": net_id, "cb": codebook_id, "name": net_name, "ord": next_number},
+                )
+            db.execute(
+                text("""
+                    insert into net_codes (id, net_id, code_id, display_order)
+                    values (:id, :net, :code, :ord)
+                    on conflict (net_id, code_id) do nothing
+                """),
+                {"id": uuid.uuid4(), "net": net_id, "code": code_id, "ord": next_number},
+            )
+            next_number += 1
+        winner_by_label[label_key] = code_id
+
+        db.execute(
+            text("""
+                update mention_groups
+                   set status = :status, suggested_code_id = :code
+                 where id = any(:ids)
+            """),
+            {"status": group_status, "code": code_id, "ids": member_ids},
+        )
+        if auto:
+            # Escribe la clasificación activa (igual que discover_new_brands): así
+            # cuenta como auto-codificada y no cae al residual 97 ni la re-toma el LLM.
+            db.execute(
+                text("""
+                    insert into verbatim_codes (id, verbatim_id, code_id, output_index,
+                                                source, confidence_score, matched_alias,
+                                                is_active)
+                    select gen_random_uuid(), v.id, :code, 1, 'semantic_cache', 1.0,
+                           v.normalized_text, true
+                    from verbatims v where v.mention_group_id = any(:ids)
+                    on conflict (verbatim_id, code_id) do update set is_active = true
+                """),
+                {"code": code_id, "ids": member_ids},
+            )
+            db.execute(
+                text("""
+                    update verbatims set coding_status = 'auto_coded'
+                     where mention_group_id = any(:ids)
+                """),
+                {"ids": member_ids},
+            )
+        grouped += len(member_ids)
+
+    return grouped
+
+
 def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions: int) -> int:
     """Idempotente: si el codebook ya tiene algún code propio (no-system) no
     hace nada, igual que discover_catalog_from_frequency para marcas — una vez

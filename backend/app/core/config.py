@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # alcanza el mínimo de menciones (p.ej. 'wong' con 4 >= 3) nace como código
     # 'pending' (propuesta a confirmar), en vez de caer al residual 95.
     discover_new_brands_in_inherited_rounds: bool = True
+    # Mismo mecanismo que arriba, para Razones: en rondas que HEREDAN el libro,
+    # agrupa por similitud semántica lo que el LLM/caché no reconoció y, si un
+    # cluster alcanza el mínimo de menciones, propone una categoría nueva en vez
+    # de dejarlo caer entero al residual 97 "Otras menciones".
+    discover_new_reasons_in_inherited_rounds: bool = True
     # Gate de AUTO-CIERRE del fuzzy de marcas (distinto del filtro de recall de
     # fuzzy/scoring.py, que solo decide si un candidato es elegible). Un candidato
     # fuzzy solo se auto-cierra si su score y su margen top1-top2 superan estos

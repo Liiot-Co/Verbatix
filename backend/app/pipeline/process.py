@@ -35,7 +35,7 @@ from app.pipeline.llm import classify_round
 from app.pipeline.llm.client import propose_brand_codes
 from app.pipeline.normalize import normalize, strip_leading_article
 from app.pipeline.semantic import cache as semantic_cache
-from app.pipeline.semantic.cluster import discover_reason_catalog
+from app.pipeline.semantic.cluster import discover_new_reasons, discover_reason_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -901,8 +901,18 @@ def _process_subproject(db: Session, subproject_id: uuid.UUID, coding_type: str,
             {"sp": subproject_id},
         ).scalar()
         discover_reason_catalog(db, subproject_id, min_mentions or 2)
+        # Sobre lo que el libro heredado NO reconoce, proponer categorías nuevas
+        # por similitud semántica (paralelo de discover_new_brands para Marcas):
+        # sin esto, una idea nueva no prevista en el codebook importado caía
+        # entera al residual 97 en vez de proponerse. No-op en rondas scratch
+        # (discover_reason_catalog ya las cubrió arriba).
+        new_reason_suggestions = (
+            discover_new_reasons(db, subproject_id, min_mentions or 2)
+            if settings.discover_new_reasons_in_inherited_rounds
+            else 0
+        )
         fuzzy_result = {
-            "run_id": None, "groups_classified": 0, "suggestions": 0,
+            "run_id": None, "groups_classified": 0, "suggestions": new_reason_suggestions,
             "anomalies": 0, "total": 0,
         }
 
