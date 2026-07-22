@@ -746,6 +746,34 @@ export interface AuditCodeReview {
   status: AuditCodeReviewStatus;
 }
 
+/** Código en la población completa (vista «Ver todo»), sin estado de revisión. */
+export interface AuditPopulationCode {
+  id: string;
+  code: { id: string; code_number: number; label: string; net: string | null };
+  items_count: number;
+}
+
+export interface AuditPopulationCodes {
+  total: number;
+  codes: AuditPopulationCode[];
+}
+
+export interface AuditPopulationItem {
+  id: string;
+  verbatim_id: string;
+  original_text: string;
+  normalized_text: string | null;
+  coding_status: CodingStatus;
+  current_codes: AuditItemCode[];
+  /** Está incluido en la muestra de auditoría actual. */
+  in_sample: boolean;
+}
+
+export interface AuditPopulationItemList {
+  total: number;
+  items: AuditPopulationItem[];
+}
+
 export interface AuditItemCode {
   code_id: string;
   code_number: number;

@@ -206,7 +206,10 @@ export default function CreationWizard() {
 
   // Proyecto: ya existe al entrar acá (modal del dashboard crea el proyecto
   // antes de navegar a /wizard?projectId=...).
-  type WizardProject = Pick<ProjectDetail, "id" | "name" | "external_code">;
+  type WizardProject = Pick<
+    ProjectDetail,
+    "id" | "name" | "external_code" | "project_id" | "project_name"
+  >;
   const [project, setProject] = useState<WizardProject | null>(null);
 
   // Modo "agregar carga" a una ronda existente (antes AddLoadView).
@@ -343,6 +346,8 @@ export default function CreationWizard() {
           id: detail.study_id,
           name: detail.study_name,
           external_code: detail.study_external_code ?? "",
+          project_id: detail.project_id,
+          project_name: detail.project_name,
         });
         setActiveProjectId(detail.study_id);
         setRound(detail);

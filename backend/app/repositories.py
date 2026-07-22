@@ -2595,6 +2595,124 @@ def list_audit_code_reviews(db: Session, session_id: str) -> list[dict]:
     ]
 
 
+def list_audit_population_codes(db: Session, subproject_id: uuid.UUID) -> tuple[list[dict], int]:
+    """Población completa agrupada por código primario (output_index=1).
+
+    Misma agrupación que usa el muestreo de auditoría, pero sin filtrar por
+    muestra: sirve para la vista «Ver todo» del front.
+    """
+    rows = db.execute(
+        text("""
+            select c.id as code_id, c.code_number, c.label, n.name as net,
+                   count(*) as items_count
+            from verbatims v
+            join verbatim_codes vc
+              on vc.verbatim_id = v.id and vc.is_active and vc.output_index = 1
+            join codes c on c.id = vc.code_id
+            left join net_codes nc on nc.code_id = c.id
+            left join nets n on n.id = nc.net_id
+            where v.subproject_id = :sp
+            group by c.id, n.name
+            order by c.code_number
+        """),
+        {"sp": subproject_id},
+    ).mappings().all()
+    codes = [
+        {
+            "id": str(r["code_id"]),
+            "code": {
+                "id": str(r["code_id"]),
+                "code_number": r["code_number"],
+                "label": r["label"],
+                "net": r["net"],
+            },
+            "items_count": int(r["items_count"]),
+        }
+        for r in rows
+    ]
+    total = sum(c["items_count"] for c in codes)
+    return codes, total
+
+
+def list_audit_population_items(
+    db: Session,
+    subproject_id: uuid.UUID,
+    code_id: uuid.UUID,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict], int]:
+    """Verbatims de la población completa cuyo código primario es `code_id`."""
+    rows = db.execute(
+        text("""
+            select v.id as verbatim_id, v.original_text, v.normalized_text, v.coding_status,
+                   coalesce(
+                     jsonb_agg(
+                       jsonb_build_object(
+                         'code_id', c.id, 'code_number', c.code_number,
+                         'label', c.label, 'source', vc.source
+                       ) order by vc.output_index
+                     ) filter (where vc.id is not null),
+                     '[]'::jsonb
+                   ) as current_codes,
+                   exists (
+                     select 1
+                     from audit_items ai
+                     join audit_code_reviews acr on acr.id = ai.audit_code_review_id
+                     join audit_sessions ases on ases.id = acr.audit_session_id
+                     where ai.verbatim_id = v.id
+                       and ases.subproject_id = :sp
+                       and ases.id = (
+                         select id from audit_sessions
+                         where subproject_id = :sp
+                         order by created_at desc
+                         limit 1
+                       )
+                   ) as in_sample
+            from verbatims v
+            join verbatim_codes primary_vc
+              on primary_vc.verbatim_id = v.id
+             and primary_vc.is_active
+             and primary_vc.output_index = 1
+             and primary_vc.code_id = :code
+            left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
+            left join codes c on c.id = vc.code_id
+            where v.subproject_id = :sp
+            group by v.id
+            order by v.created_at, v.id
+            limit :lim offset :off
+        """),
+        {"sp": subproject_id, "code": code_id, "lim": limit, "off": offset},
+    ).mappings().all()
+
+    total = db.execute(
+        text("""
+            select count(*)
+            from verbatims v
+            join verbatim_codes primary_vc
+              on primary_vc.verbatim_id = v.id
+             and primary_vc.is_active
+             and primary_vc.output_index = 1
+             and primary_vc.code_id = :code
+            where v.subproject_id = :sp
+        """),
+        {"sp": subproject_id, "code": code_id},
+    ).scalar()
+
+    items = [
+        {
+            "id": str(r["verbatim_id"]),
+            "verbatim_id": str(r["verbatim_id"]),
+            "original_text": r["original_text"],
+            "normalized_text": r["normalized_text"],
+            "coding_status": r["coding_status"],
+            "current_codes": r["current_codes"],
+            "in_sample": bool(r["in_sample"]),
+        }
+        for r in rows
+    ]
+    return items, int(total or 0)
+
+
 def list_audit_items(db: Session, review_id: uuid.UUID, limit: int, offset: int) -> tuple[list[dict], int]:
     rows = db.execute(
         text("""

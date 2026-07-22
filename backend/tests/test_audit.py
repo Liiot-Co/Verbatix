@@ -89,6 +89,15 @@ def test_sample_pct_100_is_whole_population():
     assert len(select_sample(pop, 100, seed=7)) == 37
 
 
+def test_audit_population_endpoints_are_wired():
+    """Los endpoints de «Ver todo» deben existir en el router de auditoría."""
+    from app.routers import audit as audit_router
+
+    paths = {route.path for route in audit_router.router.routes}
+    assert "/subprojects/{subproject_id}/audit/population/codes" in paths
+    assert "/subprojects/{subproject_id}/audit/population/codes/{code_id}/items" in paths
+
+
 def test_sample_size_is_ceil_with_min_one():
     # ceil(10 * 6%) = 1 — con pct > 0 y población no vacía nunca da 0.
     assert len(select_sample(_population(10), 6, seed=7)) == 1

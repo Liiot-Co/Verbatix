@@ -25,6 +25,8 @@ from app.repositories import (
     get_audit_summary,
     list_audit_code_reviews,
     list_audit_items,
+    list_audit_population_codes,
+    list_audit_population_items,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["audit"])
@@ -149,6 +151,36 @@ def audit_code_reviews(
     if not session:
         raise HTTPException(404, "El subproyecto no tiene sesión de auditoría")
     return list_audit_code_reviews(db, session["id"])
+
+
+@router.get("/subprojects/{subproject_id}/audit/population/codes")
+def audit_population_codes(
+    subproject_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    """Vista «Ver todo»: 100% de lo codificado, agrupado por código primario."""
+    require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "audit.view")
+    codes, total = list_audit_population_codes(db, subproject_id)
+    return {"total": total, "codes": codes}
+
+
+@router.get("/subprojects/{subproject_id}/audit/population/codes/{code_id}/items")
+def audit_population_items(
+    subproject_id: uuid.UUID,
+    code_id: uuid.UUID,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(current_user),
+):
+    require_subproject(db, subproject_id, user["id"])
+    require_capability(db, user["id"], "audit.view")
+    items, total = list_audit_population_items(
+        db, subproject_id, code_id, max(1, min(limit, 500)), max(0, offset)
+    )
+    return {"total": total, "items": items}
 
 
 @router.get("/audit-code-reviews/{review_id}/items")
