@@ -19,6 +19,9 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
 # volumen). Ese camino NO escribe schema_migrations, así que al subir el
 # backend hay que detectar lo ya materializado y solo registrar el ledger.
 _ALREADY_PRESENT = {
+    "000_schema_final.sql": (
+        "select 1 from pg_trigger where tgname = 't_studies'"
+    ),
     "000_local_auth_stub.sql": "select to_regclass('auth.users')",
     "001_schema_v8.sql": "select to_regclass('public.assignments')",
     "002_local_auth_rbac.sql": (
