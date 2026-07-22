@@ -82,6 +82,7 @@ export default function UnifiedStudioView() {
   const [search, setSearch] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fullscreenResolution, setFullscreenResolution] = useState(false);
+  const [pollCount, setPollCount] = useState(0);
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
 
   const loadData = useCallback(async () => {
@@ -152,6 +153,7 @@ export default function UnifiedStudioView() {
     }
     if (wasProcessing.current && round?.status === "preliminary_ready") {
       wasProcessing.current = false;
+      setPollCount(0);
       showToast("Procesamiento terminado", "success");
       playProcessingFinishedSound();
       loadVerbatims();
@@ -161,6 +163,7 @@ export default function UnifiedStudioView() {
   useEffect(() => {
     if (!autoProcessing) return;
     const id = setInterval(() => {
+      setPollCount((c) => c + 1);
       Promise.all([loadData(), loadVerbatims()]);
     }, 8000);
     return () => clearInterval(id);
@@ -240,6 +243,7 @@ export default function UnifiedStudioView() {
   const justFinished = totalGroups > 0 && codedPct === 100;
 
   const isProcessingNow = autoProcessing || processing;
+  const showOverlay = isProcessingNow || (autoProcessing && !isResolutionPhase(round?.status));
   const activeSubproject = round.subprojects.find((subproject) => subproject.id === activeSubprojectId)
     ?? round.subprojects[0];
 
@@ -260,7 +264,7 @@ export default function UnifiedStudioView() {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => navigate(`/projects/${round.study_id}`)}
+          onClick={() => navigate(`/studies/${round.study_id}`)}
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-p-text-faint hover:text-p-text hover:bg-p-bg-subtle transition-colors"
           title="Volver"
           aria-label="Volver"
@@ -270,14 +274,15 @@ export default function UnifiedStudioView() {
         <Breadcrumb
           items={[
             { label: "Proyectos", to: "/" },
-            { label: round.study_name, to: `/projects/${round.study_id}` },
+            ...(round.project_name ? [{ label: round.project_name, to: `/projects/${round.project_id}` }] : []),
+            { label: round.study_name, to: `/studies/${round.study_id}` },
             { label: "Procesamiento" },
           ]}
         />
       </div>
 
       <div
-        className={`grid grid-cols-1 gap-4 items-start ${canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
+        className={`grid grid-cols-1 gap-4 items-start ${canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution && summaryView !== "pending" ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
         style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
       >
       <div className="space-y-4 min-w-0 order-2 xl:order-none">
@@ -369,15 +374,37 @@ export default function UnifiedStudioView() {
         </motion.button>
       </div>
 
-      <VerbatimsTable
-        loading={isProcessingNow || loading}
-        rows={visible}
-        search={search}
-      />
+      {summaryView === "pending" && canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution ? (
+        <div className="bg-p-surface border border-p-border rounded-xl shadow-sm overflow-hidden h-[calc(100vh-14rem)] mt-2">
+          <ResolutionCenter
+            subprojectId={activeSubproject?.id ?? ""}
+            codingType={activeSubproject?.coding_type ?? "brands"}
+            roundId={roundId}
+            onClose={() => setFullscreenResolution(false)}
+            inline={true}
+          />
+        </div>
+      ) : (
+        <VerbatimsTable
+          loading={loading && !round}
+          rows={visible}
+          search={search}
+          processingOverlay={showOverlay ? {
+            visible: true,
+            status: round?.status,
+            codedPct,
+            autoCoded,
+            pendingReview,
+            anomalies,
+            resolved,
+            pollCount,
+          } : null}
+        />
+      )}
 
       </div>
 
-      {canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution && (
+      {canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution && summaryView !== "pending" && (
         <motion.div
           initial={{ opacity: 0, x: 40, scale: 0.95 }}
           animate={{ opacity: 1, x: 0, scale: 1 }}
