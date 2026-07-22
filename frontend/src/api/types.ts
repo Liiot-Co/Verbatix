@@ -97,6 +97,14 @@ export interface ProyectoStudyItem {
   analytic_target: "brands" | "reasons" | "both" | "none";
 }
 
+// GET /proyectos returns a bare array.
+export interface ProyectoListItem {
+  id: string;
+  name: string;
+  projects_count: number; // which means studies_count
+  created_at: string;
+}
+
 // GET /projects returns a bare array, no pagination envelope.
 export interface ProjectListItem {
   id: string;
@@ -149,6 +157,7 @@ export interface ProjectDetail {
   external_code: string;
   name: string;
   project_id: string | null;
+  project_name: string | null;
   rounds: RoundSummary[];
   categories: { id: string; name: string }[];
   created_at: string;

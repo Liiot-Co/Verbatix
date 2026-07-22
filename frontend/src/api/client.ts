@@ -32,6 +32,7 @@ import type {
   ProjectDetail,
   ProjectListItem,
   ProyectoDetail,
+  ProyectoListItem,
   ProyectoStudyItem,
   ResolutionQueue,
   ResolutionSummary,
@@ -239,8 +240,25 @@ export async function setPresence(status: PresenceStatus): Promise<{ status: Pre
 
 /* ── Proyectos ── */
 
+export async function getProyectos(params?: { q?: string }): Promise<ProyectoListItem[]> {
+  const qs = params && params.q ? `?q=${encodeURIComponent(params.q)}` : "";
+  return request<ProyectoListItem[]>(`/proyectos${qs}`);
+}
+
 export async function getProyectoProjects(proyectoId: string): Promise<ProyectoStudyItem[]> {
   return request<ProyectoStudyItem[]>(`/proyectos/${proyectoId}/projects`);
+}
+
+export async function createProyecto(name: string): Promise<{ id: string; name: string }> {
+  return request("/proyectos", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function getProyecto(proyectoId: string): Promise<ProyectoDetail> {
+  return request<ProyectoDetail>(`/proyectos/${proyectoId}`);
 }
 
 /* ── Projects ── */
@@ -263,8 +281,8 @@ export async function createProject(
   });
 }
 
-export async function getProject(projectId: string): Promise<ProyectoDetail | ProjectDetail> {
-  return request<ProyectoDetail | ProjectDetail>(`/projects/${projectId}`);
+export async function getProject(projectId: string): Promise<ProjectDetail> {
+  return request<ProjectDetail>(`/projects/${projectId}`);
 }
 
 // round-sequence-and-homologation (Task 1): siguiente round_number esperado
