@@ -382,6 +382,7 @@ export default function UnifiedStudioView() {
             roundId={roundId}
             onClose={() => setFullscreenResolution(false)}
             inline={true}
+            onResolved={() => { loadData(); loadVerbatims(); }}
           />
         </div>
       ) : (
@@ -435,6 +436,7 @@ export default function UnifiedStudioView() {
           codingType={activeSubproject.coding_type}
           roundId={roundId}
           onClose={() => setFullscreenResolution(false)}
+          onResolved={() => { loadData(); loadVerbatims(); }}
         />
       )}
 

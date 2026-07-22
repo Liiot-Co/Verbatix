@@ -18,10 +18,11 @@ interface ResolutionCenterProps {
   roundId: string;
   onClose: () => void;
   inline?: boolean;
+  onResolved?: () => void;
 }
 
 /** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
-export default function ResolutionCenter({ subprojectId, codingType, roundId, onClose, inline = false }: ResolutionCenterProps) {
+export default function ResolutionCenter({ subprojectId, codingType, roundId, onClose, inline = false, onResolved }: ResolutionCenterProps) {
   const showToast = useVerbatixStore((s) => s.showToast);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -91,10 +92,11 @@ export default function ResolutionCenter({ subprojectId, codingType, roundId, on
       });
       showToast("Sugerencia aprobada", "success");
       loadQueue();
+      onResolved?.();
     } catch {
       showToast("Error al aprobar sugerencia", "error");
     }
-  }, [codingType, loadQueue, showToast]);
+  }, [codingType, loadQueue, showToast, onResolved]);
 
   const approveSelectedSuggestions = useCallback(async () => {
     const suggs = queue.filter(g => selected.has(g.id) && g.suggested_code);
@@ -111,12 +113,13 @@ export default function ResolutionCenter({ subprojectId, codingType, roundId, on
       showToast(`${suggs.length} sugerencias aprobadas`, "success");
       setSelected(new Set());
       loadQueue();
+      onResolved?.();
     } catch {
       showToast("Error al aprobar sugerencias", "error");
     } finally {
       setBulkAssigning(false);
     }
-  }, [queue, selected, codingType, loadQueue, showToast]);
+  }, [queue, selected, codingType, loadQueue, showToast, onResolved]);
 
   useEffect(() => {
     registerShortcuts("resolution-center", [
@@ -192,13 +195,14 @@ export default function ResolutionCenter({ subprojectId, codingType, roundId, on
           showToast(`${result.resolved.length} grupos resueltos`, "success");
         }
         loadQueue();
+        onResolved?.();
       } catch {
         showToast("No se pudo resolver el lote. Intenta de nuevo.", "error");
       } finally {
         setBulkAssigning(false);
       }
     },
-    [selected, subprojectId, codingType, showToast, loadQueue]
+    [subprojectId, codingType, selected, loadQueue, showToast, onResolved]
   );
 
   const content = (
@@ -359,7 +363,10 @@ export default function ResolutionCenter({ subprojectId, codingType, roundId, on
             subprojectId={subprojectId}
             codingType={codingType}
             auditRoundId={roundId}
-            onResolved={loadQueue}
+            onResolved={() => {
+              loadQueue();
+              onResolved?.();
+            }}
             focusGroupId={focusGroupId}
             onFocusHandled={() => setFocusGroupId(null)}
           />
