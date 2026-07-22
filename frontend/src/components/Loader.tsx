@@ -59,7 +59,7 @@ export default function Loader({
         <div className="w-full max-w-xs">
           <div className="h-1.5 rounded-full bg-p-bg-subtle overflow-hidden">
             <motion.div
-              className="h-full bg-gradient-to-r from-p-accent to-p-accent-mid rounded-full"
+              className="h-full bg-[linear-gradient(to_right,#5A228B,#FF4D6D,#FF6A33,#FFC300)] rounded-full"
               initial={{ width: 0 }}
               animate={{ width: `${Math.min(progress, 100)}%` }}
               transition={{ duration: 0.6, ease: [0.19, 1, 0.22, 1] }}

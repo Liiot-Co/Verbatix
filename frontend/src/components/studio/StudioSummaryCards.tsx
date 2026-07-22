@@ -47,8 +47,8 @@ export function StudioSummaryCards({
         <div className="h-2 rounded-full bg-p-bg-subtle overflow-hidden">
           <motion.div
             className={[
-              "h-full bg-gradient-to-r",
-              justFinished ? "from-p-success to-p-success" : "from-p-accent to-p-accent-mid",
+              "h-full rounded-full",
+              justFinished ? "bg-p-success" : "bg-[linear-gradient(to_right,#5A228B,#FF4D6D,#FF6A33,#FFC300)]",
             ].join(" ")}
             initial={{ width: 0 }}
             animate={{ width: `${codedPct}%` }}

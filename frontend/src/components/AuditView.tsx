@@ -685,7 +685,7 @@ export default function AuditView() {
               key={subproject.id}
               type="button"
               onClick={() => setActiveSubprojectId(subproject.id)}
-              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${activeSubproject?.id === subproject.id ? "bg-p-accent-soft text-p-accent font-medium" : "text-p-text-muted hover:text-p-text"}`}
+              className={`px-5 py-2 text-sm rounded-md transition-colors ${activeSubproject?.id === subproject.id ? "bg-p-accent-mid/15 text-p-accent-mid font-medium" : "text-p-text-muted hover:text-p-text"}`}
             >
               {subproject.coding_type === "brands" ? "Marcas" : "Razones"}
             </button>
@@ -784,8 +784,8 @@ export default function AuditView() {
             >
               <motion.div
                 className={[
-                  "h-full bg-gradient-to-r",
-                  summary.target_met ? "from-p-success to-p-success" : "from-p-accent to-p-accent-mid",
+                  "h-full rounded-full",
+                  summary.target_met ? "bg-p-success" : "bg-[linear-gradient(to_right,#5A228B,#FF4D6D,#FF6A33,#FFC300)]",
                 ].join(" ")}
                 initial={{ width: 0 }}
                 animate={{ width: `${progressPct}%` }}

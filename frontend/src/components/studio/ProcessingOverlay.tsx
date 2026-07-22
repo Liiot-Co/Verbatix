@@ -114,8 +114,13 @@ export default function ProcessingOverlay({
                 const isActive = idx === activeIndex;
                 
                 let iconBg = "bg-p-surface border-p-border text-p-text-faint";
-                if (isActive) iconBg = "bg-p-accent border-p-accent text-white shadow-lg shadow-p-accent/30";
-                else if (isPassed) iconBg = "bg-p-success border-p-success text-white";
+                if (isActive) {
+                  iconBg = isComplete 
+                    ? "bg-p-success border-p-success text-white shadow-lg shadow-p-success/30"
+                    : "bg-p-accent border-p-accent text-white shadow-lg shadow-p-accent/30";
+                } else if (isPassed) {
+                  iconBg = "bg-p-success border-p-success text-white";
+                }
 
                 return (
                   <div key={stage.id} className="flex flex-col items-center gap-3 bg-p-surface px-2">
@@ -124,8 +129,8 @@ export default function ProcessingOverlay({
                       animate={{ scale: isActive ? 1.15 : 1 }}
                       className={`relative w-10 h-10 rounded-full flex items-center justify-center border-2 transition-colors duration-500 ${iconBg}`}
                     >
-                      <Icon className={`w-4 h-4 ${isActive ? "animate-pulse" : ""}`} />
-                      {isActive && (
+                      <Icon className={`w-4 h-4 ${isActive && !isComplete ? "animate-pulse" : ""}`} />
+                      {isActive && !isComplete && (
                         <motion.div
                           className="absolute inset-0 rounded-full border border-p-accent"
                           animate={{ scale: [1, 1.5], opacity: [0.8, 0] }}
@@ -150,7 +155,7 @@ export default function ProcessingOverlay({
                 </div>
                 <div className="h-2 rounded-full bg-p-bg-subtle overflow-hidden">
                   <motion.div
-                    className={`h-full rounded-full bg-gradient-to-r ${isComplete ? "from-p-success to-p-success" : "from-p-accent to-p-accent-mid"}`}
+                    className={`h-full rounded-full ${isComplete ? "bg-p-success" : "bg-[linear-gradient(to_right,#5A228B,#FF4D6D,#FF6A33,#FFC300)]"}`}
                     initial={{ width: 0 }}
                     animate={{ width: `${Math.min(progress, 100)}%` }}
                     transition={{ duration: 0.7, ease: [0.19, 1, 0.22, 1] }}
