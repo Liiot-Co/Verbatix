@@ -56,6 +56,7 @@ class FakeSession:
                 "code_number": 1,
                 "label": "Gloria",
                 "net": "NETO LACTEOS",
+                "coding_type": "brands",
                 "frequency": 40,
             },
             {
@@ -63,9 +64,11 @@ class FakeSession:
                 "code_number": 2,
                 "label": "Alpina",
                 "net": "NETO LACTEOS",
+                "coding_type": "brands",
                 "frequency": 25,
             },
         ]
+        self.totals_by_type = [("brands", 100)]
         self.samples = {
             CODE_A: ["GLORIA", "gloria leche"],
             CODE_B: ["Alpina"],
@@ -79,6 +82,8 @@ class FakeSession:
             return FakeResult(mappings_list=self.status_rows)
         if "from processing_runs pr" in sql:
             return FakeResult(scalar=self.processed_at)
+        if "sp.coding_type" in sql and "group by sp.coding_type" in sql:
+            return FakeResult(mappings_list=self.totals_by_type)
         if "count(distinct v.id) as frequency" in sql and "not c.is_system" in sql:
             return FakeResult(mappings_list=self.code_rows)
         if "limit 3" in sql and "original_text" in sql:

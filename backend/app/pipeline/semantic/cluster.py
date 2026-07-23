@@ -20,6 +20,8 @@ por embeddings), ahora contra un codebook que ya tiene contenido real.
 """
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,15 +36,48 @@ from app.pipeline.normalize import normalize
 
 from .embed import embed_many
 
+logger = logging.getLogger(__name__)
+
+_RETRY_DELAY_SECONDS = 2.0
+
 
 def _chunks(items: list, size: int):
     for i in range(0, len(items), size):
         yield items[i : i + size]
 
 
+def _propose_reason_codes_with_retry(
+    batch: list[str], context: dict, existing_nets: list[str] | None,
+) -> list[dict] | None:
+    """Un reintento ante fallo transitorio (red/timeout/JSON malformado) antes de
+    descartar el lote — igual que classify_round ya hace para batches de
+    clasificación (ver pipeline/llm/classify._classify_batch_with_retry).
+
+    Sin esto, un solo lote con una respuesta malformada de DeepSeek tumbaba la
+    ronda ENTERA (la excepción subía sin capturar hasta scheduler._run_round),
+    descartando el trabajo ya hecho de cualquier otro subproyecto en la misma
+    ronda. Si el lote sigue fallando tras el retry, se descarta: sus clusters
+    se quedan sin propuesta esta corrida y se reintentan en la próxima
+    ejecución de discover_reason_catalog — no bloquean el resto.
+    """
+    try:
+        return propose_reason_codes(batch, context, existing_nets)
+    except Exception:
+        logger.warning("Lote de propuesta de razones falló (%d clusters); reintentando una vez", len(batch))
+        time.sleep(_RETRY_DELAY_SECONDS)
+        try:
+            return propose_reason_codes(batch, context, existing_nets)
+        except Exception:
+            logger.exception(
+                "Lote de propuesta de razones falló tras retry; %d clusters se descartan esta corrida",
+                len(batch),
+            )
+            return None
+
+
 def _propose_reason_codes_parallel(
     cluster_summaries: list[str], context: dict, existing_nets: list[str] | None = None,
-) -> list[dict]:
+) -> list[dict | None]:
     """Trocea `cluster_summaries` y llama a DeepSeek en paralelo, igual que
     classify_round ya hace para clasificar (ver pipeline/llm/classify.py).
 
@@ -65,20 +100,22 @@ def _propose_reason_codes_parallel(
     """
     batches = list(_chunks(cluster_summaries, settings.reason_discovery_batch_size))
     if len(batches) <= 1:
-        return propose_reason_codes(cluster_summaries, context, existing_nets)
+        result = _propose_reason_codes_with_retry(cluster_summaries, context, existing_nets)
+        return result if result is not None else [None] * len(cluster_summaries)
 
-    results_by_batch: dict[int, list[dict]] = {}
+    results_by_batch: dict[int, list[dict] | None] = {}
     with ThreadPoolExecutor(max_workers=settings.llm_parallel_requests) as pool:
         futures = {
-            pool.submit(propose_reason_codes, batch, context, existing_nets): index
+            pool.submit(_propose_reason_codes_with_retry, batch, context, existing_nets): index
             for index, batch in enumerate(batches)
         }
         for future in as_completed(futures):
             results_by_batch[futures[future]] = future.result()
 
-    ordered: list[dict] = []
-    for index in range(len(batches)):
-        ordered.extend(results_by_batch[index])
+    ordered: list[dict | None] = []
+    for index, batch in enumerate(batches):
+        result = results_by_batch[index]
+        ordered.extend(result if result is not None else [None] * len(batch))
     return ordered
 
 
@@ -357,6 +394,10 @@ def discover_new_reasons(db: Session, subproject_id: uuid.UUID, min_mentions: in
     grouped = 0
     winner_by_label: dict[str, str] = {}
     for proposal, cluster in zip(proposals, big_clusters, strict=True):
+        if proposal is None:
+            # Lote descartado tras agotar el retry en _propose_reason_codes_with_retry;
+            # su cluster queda pending_review y se reintenta en la próxima corrida.
+            continue
         label = proposal["label"]
         label_key = normalize(label)
         member_ids = cluster["member_ids"]
@@ -542,6 +583,10 @@ def discover_reason_catalog(db: Session, subproject_id: uuid.UUID, min_mentions:
     # apuntan a ese único código.
     winner_by_label: dict[str, uuid.UUID] = {}
     for proposal, cluster in zip(proposals, big_clusters, strict=True):
+        if proposal is None:
+            # Lote descartado tras agotar el retry en _propose_reason_codes_with_retry;
+            # su cluster queda pending_review y se reintenta en la próxima corrida.
+            continue
         label = proposal["label"]
         label_key = normalize(label)
         existing_code = winner_by_label.get(label_key)

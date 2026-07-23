@@ -72,6 +72,7 @@ export default function ResolutionSidebar({
   subprojectId,
   codingType,
   auditRoundId,
+  roundFullyResolved = true,
   onResolved,
   onExpand,
   focusGroupId,
@@ -80,6 +81,10 @@ export default function ResolutionSidebar({
   subprojectId: string;
   codingType: CodingType;
   auditRoundId?: string;
+  /** Round-wide completion (all subprojects, brands + reasons), not just this one — gates the
+   * audit suggestion so it doesn't appear after finishing only one coding type. Defaults to true
+   * for callers that don't track the other subproject (standalone usages). */
+  roundFullyResolved?: boolean;
   /** Called after each successful resolve — lets a parent (e.g. a queue list) refresh. */
   onResolved?: () => void;
   /** Shows a fullscreen-expand button in the header when provided. */
@@ -494,29 +499,23 @@ export default function ResolutionSidebar({
         (w) => w.charAt(0).toUpperCase() + w.slice(1),
       );
       // frequency_count a veces llega undefined/NaN → tratar como 0 para no
-      // saltarse la confirmación. Umbral: summary o 3 (default DB).
+      // saltarse el aviso. Umbral: summary o 3 (default DB).
       const rawFreq = currentCard.frequency_count ?? detail?.frequency_count ?? 0;
       const frequency = Number.isFinite(Number(rawFreq)) ? Number(rawFreq) : 0;
       const rawThr = summary?.min_mentions_threshold;
       const threshold = Number.isFinite(Number(rawThr)) && Number(rawThr) > 0
         ? Number(rawThr)
         : 3;
+      const belowThreshold = frequency < threshold;
 
-      let confirmedForce = force;
-      if (!confirmedForce && frequency < threshold) {
-        // window.confirm: no depende del panel React (que se borraba por
-        // carreras de cola/efectos). Si el usuario cancela, no hay POST.
-        const ok = window.confirm(
-          `“${capitalized}” tiene solo ${frequency} ${frequency === 1 ? "mención" : "menciones"}.\n` +
-            `El mínimo del estudio es ${threshold}.\n\n` +
-            `¿Crear la marca de todas formas?`,
+      // Aviso informativo, no bloqueante: nunca impide crear la mención,
+      // solo avisa cuando queda por debajo del mínimo del estudio.
+      if (belowThreshold) {
+        showToast(
+          `“${capitalized}” queda con ${frequency} ${frequency === 1 ? "mención" : "menciones"}, ` +
+            `por debajo del mínimo de ${threshold} para ${noun}s.`,
+          "info",
         );
-        if (!ok) {
-          setShowNewCodeInput(true);
-          setNewCodeLabel(capitalized);
-          return;
-        }
-        confirmedForce = true;
       }
 
       pendingBelowThresholdRef.current = null;
@@ -527,17 +526,14 @@ export default function ResolutionSidebar({
         code_ids: [],
         new_code: { label: capitalized },
         add_alias: addAlias,
-        // Tras confirmación explícita (o frecuencia ya suficiente) el humano puede crear.
-        force_below_threshold: confirmedForce || frequency < threshold,
+        // El backend puede volver a chequear el umbral; el humano ya vio el aviso.
+        force_below_threshold: force || belowThreshold,
       };
       setResolving(true);
       void (async () => {
         const groupId = currentCard.id;
         try {
-          const result = await resolveMentionGroup(groupId, {
-            ...decision,
-            force_below_threshold: confirmedForce || frequency < threshold,
-          });
+          const result = await resolveMentionGroup(groupId, decision);
           setQueue((q) => q.filter((g) => g.id !== groupId));
           setTotal((t) => Math.max(0, t - 1));
           setResolvedThisSession((n) => n + 1);
@@ -555,47 +551,6 @@ export default function ResolutionSidebar({
           loadSummary();
           onResolved?.();
         } catch (err) {
-          // Red de seguridad: si el backend aún rechaza (desfase de umbral/
-          // frecuencia), ofrecer confirm nativo y reintentar forzado.
-          if (err instanceof ApiError && err.status === 422) {
-            const ok = window.confirm(
-              `${err.message}\n\n¿Crear “${capitalized}” de todas formas?`,
-            );
-            if (ok) {
-              try {
-                const result = await resolveMentionGroup(groupId, {
-                  ...decision,
-                  force_below_threshold: true,
-                });
-                setQueue((q) => q.filter((g) => g.id !== groupId));
-                setTotal((t) => Math.max(0, t - 1));
-                setResolvedThisSession((n) => n + 1);
-                lastResolvedRef.current = groupId;
-                if (result.codes_assigned?.length) {
-                  setCodes((prev) => {
-                    const existingIds = new Set(prev.map((c) => c.id));
-                    const fresh = result.codes_assigned.filter(
-                      (c) => !c.is_system && !existingIds.has(c.id),
-                    );
-                    return fresh.length ? [...prev, ...fresh] : prev;
-                  });
-                }
-                showToast(`“${capitalized}” creada`, "success");
-                loadSummary();
-                onResolved?.();
-                return;
-              } catch (retryErr) {
-                showToast(
-                  retryErr instanceof ApiError ? retryErr.message : "No se pudo crear la marca.",
-                  "error",
-                );
-                return;
-              }
-            }
-            setShowNewCodeInput(true);
-            setNewCodeLabel(capitalized);
-            return;
-          }
           if (err instanceof ApiError) {
             showToast(err.message, "error");
           } else {
@@ -611,6 +566,7 @@ export default function ResolutionSidebar({
       detail?.frequency_count,
       addAlias,
       summary?.min_mentions_threshold,
+      noun,
       showToast,
       loadSummary,
       onResolved,
@@ -841,10 +797,18 @@ export default function ResolutionSidebar({
               <CheckCircle2 className="w-6 h-6 text-p-success" />
             </div>
             <div>
-              <div className="font-semibold text-sm text-p-text mb-0.5">¡Todo clasificado!</div>
-              <div className="text-sm text-p-text-muted">Podés seguir a la auditoría cuando quieras.</div>
+              <div className="font-semibold text-sm text-p-text mb-0.5">
+                {roundFullyResolved
+                  ? "¡Todo clasificado!"
+                  : `¡${codingType === "brands" ? "Marcas" : "Razones"} completado!`}
+              </div>
+              <div className="text-sm text-p-text-muted">
+                {roundFullyResolved
+                  ? "Podés seguir a la auditoría cuando quieras."
+                  : `Cambiá a ${codingType === "brands" ? "Razones" : "Marcas"} para terminar la ronda.`}
+              </div>
             </div>
-            {auditRoundId && (
+            {roundFullyResolved && auditRoundId && (
               <Link to={`/rounds/${auditRoundId}/audit`} className="btn-primary text-xs py-1.5 px-3 mt-1">
                 Ir a auditoría
               </Link>

@@ -17,6 +17,9 @@ interface ResolutionCenterProps {
   subprojectId: string;
   codingType: "brands" | "reasons";
   roundId: string;
+  /** Round-wide completion (brands + reasons) — forwarded to the embedded sidebar so it doesn't
+   * suggest the audit until both coding types are done. Defaults to true when omitted. */
+  roundFullyResolved?: boolean;
   onClose: () => void;
   inline?: boolean;
   onResolved?: () => void;
@@ -26,7 +29,7 @@ interface ResolutionCenterProps {
 }
 
 /** Fullscreen advanced resolution editor — opened from ResolutionSidebar's expand button. */
-export default function ResolutionCenter({ subprojectId, codingType, roundId, onClose, inline = false, onResolved, initialFocusGroupId = null }: ResolutionCenterProps) {
+export default function ResolutionCenter({ subprojectId, codingType, roundId, roundFullyResolved = true, onClose, inline = false, onResolved, initialFocusGroupId = null }: ResolutionCenterProps) {
   const showToast = useVerbatixStore((s) => s.showToast);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -394,6 +397,7 @@ export default function ResolutionCenter({ subprojectId, codingType, roundId, on
             subprojectId={subprojectId}
             codingType={codingType}
             auditRoundId={roundId}
+            roundFullyResolved={roundFullyResolved}
             onResolved={() => {
               loadQueue();
               onResolved?.();

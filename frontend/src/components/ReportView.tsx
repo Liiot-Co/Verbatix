@@ -14,7 +14,6 @@ import {
   ClipboardCheck,
   Download,
   FilePlus2,
-  FileSpreadsheet,
   Loader2,
   Sparkles,
   TrendingUp,
@@ -36,6 +35,9 @@ const AUDIT_BADGE: Record<
   in_progress: { label: "Auditoría en curso", className: "badge-warning" },
   approved: { label: "Auditado", className: "badge-success" },
 };
+
+const CODING_TYPE_ORDER: CodingType[] = ["brands", "reasons"];
+const CODING_TYPE_LABEL: Record<CodingType, string> = { brands: "marcas", reasons: "razones" };
 
 const BAR_PASTELS = [
   "linear-gradient(90deg, #C4B8E8, #E8E0F8)",
@@ -235,22 +237,28 @@ export default function ReportView() {
       .finally(() => setLoading(false));
   }, [roundId, showToast]);
 
-  const codingType: CodingType = studio?.subprojects.find((subproject) => subproject.coding_type === "brands")?.coding_type ?? "brands";
-  const typeLabel = codingType === "brands" ? "marcas" : "razones";
-  const topCodes = useMemo(() => (report?.codes ?? []).slice(0, 5), [report?.codes]);
-
-  const cloudCodes = useMemo(() => {
-    const codes = [...(report?.codes ?? [])]
-      .sort((a, b) => b.frequency - a.frequency)
-      .slice(0, 22);
-    if (codes.length === 0) return [];
-    const freqs = codes.map((c) => c.frequency);
-    const min = Math.min(...freqs);
-    const max = Math.max(...freqs);
-    return codes.map((c, index) => {
-      const style = wordCloudStyle(c.frequency, min, max, index);
-      return { ...c, ...style };
-    });
+  const sections = useMemo(() => {
+    const byType = new Map<CodingType, ReportCodeStat[]>();
+    for (const code of report?.codes ?? []) {
+      const list = byType.get(code.coding_type) ?? [];
+      list.push(code);
+      byType.set(code.coding_type, list);
+    }
+    return CODING_TYPE_ORDER
+      .filter((ct) => byType.has(ct))
+      .map((codingType) => {
+        const codes = byType.get(codingType)!;
+        const topCodes = codes.slice(0, 5);
+        const cloudSource = [...codes].sort((a, b) => b.frequency - a.frequency).slice(0, 22);
+        const cloudCodes = (() => {
+          if (cloudSource.length === 0) return [];
+          const freqs = cloudSource.map((c) => c.frequency);
+          const min = Math.min(...freqs);
+          const max = Math.max(...freqs);
+          return cloudSource.map((c, index) => ({ ...c, ...wordCloudStyle(c.frequency, min, max, index) }));
+        })();
+        return { codingType, typeLabel: CODING_TYPE_LABEL[codingType], codes, topCodes, cloudCodes };
+      });
   }, [report?.codes]);
 
   const handleExport = useCallback(
@@ -319,6 +327,14 @@ export default function ReportView() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0 self-start">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-white bg-p-text hover:bg-p-text/90 transition-colors shrink-0 disabled:opacity-50"
+            onClick={() => setShowExportModal(true)}
+          >
+            <Download className="w-4 h-4" />
+            Exportar ZIP
+          </button>
           {canAddLoad && (
             <button
               type="button"
@@ -381,70 +397,61 @@ export default function ReportView() {
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <section className={`glow-card-hover ${HOVER_GLOW_CLASS[glowVariantForIndex(0)]} p-5 space-y-3 transition-transform hover:-translate-y-0.5`}>
-          <SectionHeader
-            icon={<BarChart3 className="w-4 h-4 text-p-accent" />}
-            title={`Top 5 ${typeLabel}`}
-            subtitle="Distribución de menciones"
-          />
-          {topCodes.length === 0 ? (
-            <p className="text-sm text-p-text-faint py-6 text-center">Sin códigos con frecuencia.</p>
-          ) : (
-            <div className="space-y-2.5">
-              {topCodes.map((code, index) => (
-                <TopBar
-                  key={code.id}
-                  code={code}
-                  rank={index + 1}
-                  maxPct={topCodes[0]?.pct ?? 1}
-                  gradient={barPastel(index)}
-                />
-              ))}
-            </div>
+      {sections.map((section, sectionIndex) => (
+        <div key={section.codingType} className="space-y-3">
+          {sections.length > 1 && (
+            <h2 className="text-xs font-bold uppercase tracking-[0.1em] text-p-text-faint">
+              {section.typeLabel}
+            </h2>
           )}
-        </section>
-
-        <section className={`glow-card-hover ${HOVER_GLOW_CLASS[glowVariantForIndex(1)]} p-5 space-y-4 transition-transform hover:-translate-y-0.5`}>
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-p-text-faint">
-              Nube de respuestas
-            </p>
-            <h2 className="text-base font-bold text-p-text mt-0.5">Mapa semántico</h2>
-          </div>
-          {cloudCodes.length === 0 ? (
-            <p className="text-sm text-p-text-faint py-6 text-center">Sin datos para la nube.</p>
-          ) : (
-            <WordCloud codes={cloudCodes} />
-          )}
-        </section>
-      </div>
-
-      <div className={`glow-card-hover ${HOVER_GLOW_CLASS[glowVariantForIndex(2)]} p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-transform hover:-translate-y-0.5`}>
-        <div className="flex items-start gap-4">
-          <div className="w-11 h-11 rounded-xl bg-p-text flex items-center justify-center shrink-0 shadow-sm">
-            <FileSpreadsheet className="w-5 h-5 text-white" />
-          </div>
-          <div className="space-y-1">
-            <p className="text-sm font-bold uppercase tracking-wide text-p-text">
-              Libro de Códigos listo
-            </p>
-            <p className="text-xs text-p-text-muted leading-relaxed max-w-lg">
-              Excel, SQL, OnNextCase y MDD disponibles para exportar.{" "}
-              {formatCount(report?.verbatims_total ?? 0)} registros ·{" "}
-              {report?.codes.length ?? 0} {typeLabel}
-            </p>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {(() => {
+              const barCard = (
+                <section key="bar" className={`glow-card-hover ${HOVER_GLOW_CLASS[glowVariantForIndex(sectionIndex * 2)]} p-5 space-y-3 transition-transform hover:-translate-y-0.5`}>
+                  <SectionHeader
+                    icon={<BarChart3 className="w-4 h-4 text-p-accent" />}
+                    title={`Top 5 ${section.typeLabel}`}
+                    subtitle="Distribución de menciones"
+                  />
+                  {section.topCodes.length === 0 ? (
+                    <p className="text-sm text-p-text-faint py-6 text-center">Sin códigos con frecuencia.</p>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {section.topCodes.map((code, index) => (
+                        <TopBar
+                          key={code.id}
+                          code={code}
+                          rank={index + 1}
+                          maxPct={section.topCodes[0]?.pct ?? 1}
+                          gradient={barPastel(index)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              );
+              const cloudCard = (
+                <section key="cloud" className={`glow-card-hover ${HOVER_GLOW_CLASS[glowVariantForIndex(sectionIndex * 2 + 1)]} p-5 space-y-4 transition-transform hover:-translate-y-0.5`}>
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-p-text-faint">
+                      Nube de respuestas
+                    </p>
+                    <h2 className="text-base font-bold text-p-text mt-0.5">Mapa semántico</h2>
+                  </div>
+                  {section.cloudCodes.length === 0 ? (
+                    <p className="text-sm text-p-text-faint py-6 text-center">Sin datos para la nube.</p>
+                  ) : (
+                    <WordCloud codes={section.cloudCodes} />
+                  )}
+                </section>
+              );
+              return section.codingType === "reasons" ? [cloudCard, barCard] : [barCard, cloudCard];
+            })()}
           </div>
         </div>
-        <button
-          type="button"
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-p-text hover:bg-p-text/90 transition-colors shrink-0 disabled:opacity-50"
-          onClick={() => setShowExportModal(true)}
-        >
-          <Download className="w-4 h-4" />
-          Exportar ZIP
-        </button>
-      </div>
+      ))}
+
+
 
       {showExportModal && (
         <ExportModal

@@ -94,7 +94,14 @@ _MULTI_RESPONSE_PATTERNS: tuple[re.Pattern[str], ...] = (
 def guess_coding_type(question_key: str) -> str | None:
     """Coding_type conocido de antemano para question_keys que siguen la plantilla
     NBS_UNAID*, o None si el campo es específico del estudio y necesita
-    clasificación manual (classify_question)."""
+    clasificación manual (classify_question).
+
+    "brands"/"reasons" literales son la question_key sintética que
+    excel.parse_verbatims arma cuando el wizard mapeó esa hoja/columna
+    explícitamente a Marcas o Razones (modo split-sheet) — ya vienen
+    clasificadas, no hay nada que adivinar."""
+    if question_key in ("brands", "reasons"):
+        return question_key
     for pattern, coding_type in _KNOWN_CODING_TYPES:
         if pattern.match(question_key):
             return coding_type

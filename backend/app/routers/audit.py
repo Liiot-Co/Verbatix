@@ -53,7 +53,7 @@ def _round_audit_readiness(
         select sp.id, sp.coding_type,
                count(mg.id) as total,
                count(mg.id) filter (
-                 where mg.status in ('anomaly', 'below_threshold', 'pending_review')
+                 where mg.status not in ('auto_coded', 'resolved')
                ) as pending,
                count(mg.id) filter (where mg.status = 'auto_coded') as auto_coded,
                count(mg.id) filter (where mg.status = 'resolved') as resolved

@@ -51,12 +51,6 @@ import Breadcrumb from "./Breadcrumb";
 
 const ITEMS_PAGE = 200;
 
-const ITEM_CHIP: Record<AuditItem["status"], { label: string; className: string }> = {
-  pending: { label: "Sin revisar", className: "badge-pending" },
-  correct: { label: "Correcto", className: "badge-success" },
-  reassigned: { label: "Corregido", className: "badge-warning" },
-};
-
 const REVIEW_CHIP: Record<AuditCodeReview["status"], { label: string; className: string }> = {
   pending: { label: "Pendiente", className: "badge-pending" },
   approved: { label: "Aprobado", className: "badge-success" },
@@ -1060,10 +1054,10 @@ function AuditMasterDetail({
             <table className="w-full text-sm" aria-label={tableAria}>
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide text-p-text-faint border-b border-p-border">
+                  <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Respondent ID</th>
                   <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Respuesta</th>
                   <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Normalizado</th>
                   <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Código actual</th>
-                  <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Qué se hizo</th>
                   <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider">Comentario</th>
                   <th className="px-4 py-2.5 font-semibold text-p-text-muted text-xs uppercase tracking-wider text-right">Acciones</th>
                 </tr>
@@ -1095,6 +1089,7 @@ function PopulationRow({
         focused ? "bg-p-accent/5" : "hover:bg-p-bg-subtle/60",
       ].join(" ")}
     >
+      <td className="px-4 py-2.5 text-xs text-p-text-muted whitespace-nowrap">{item.respondent_external_id ?? "—"}</td>
       <td className="px-4 py-2.5 text-p-text max-w-[240px]">
         <span className="line-clamp-2">{item.original_text}</span>
       </td>
@@ -1111,14 +1106,13 @@ function PopulationRow({
           ))}
         </div>
       </td>
-      <td className="px-4 py-2.5">
+      <td className="px-4 py-2.5 text-xs text-p-text-muted">
         {item.in_sample ? (
           <span className="badge-warning">En muestra</span>
         ) : (
-          <span className="text-xs text-p-text-faint">Fuera de muestra</span>
+          <span className="text-p-text-faint">Fuera de muestra</span>
         )}
       </td>
-      <td className="px-4 py-2.5 text-xs text-p-text-muted">—</td>
       <td className="px-4 py-2.5 text-right">
         <span className="text-[10px] text-p-text-faint">Solo lectura</span>
       </td>
@@ -1178,12 +1172,7 @@ function AuditRow({
   onConfirmDelete,
 }: AuditRowProps) {
   const currentUser = useVerbatixStore((state) => state.user);
-  const chip = ITEM_CHIP[item.status];
   const removed = item.current_codes.length === 0;
-  const changed =
-    item.status === "reassigned" ||
-    JSON.stringify(item.codes_snapshot.map((c) => c.code_id)) !==
-      JSON.stringify(item.current_codes.map((c) => c.code_id));
 
   return (
     <>
@@ -1195,6 +1184,7 @@ function AuditRow({
           focused ? "bg-p-accent/5" : "hover:bg-p-bg-subtle/60",
         ].join(" ")}
       >
+        <td className="px-4 py-2.5 text-xs text-p-text-muted whitespace-nowrap">{item.respondent_external_id ?? "—"}</td>
         <td className="px-4 py-2.5 text-p-text max-w-[240px]">
           <span className="line-clamp-2">{item.original_text}</span>
         </td>
@@ -1217,16 +1207,6 @@ function AuditRow({
               ))}
             </div>
           )}
-        </td>
-        <td className="px-4 py-2.5">
-          <div className="flex flex-col gap-1 items-start">
-            <span className={chip.className}>{chip.label}</span>
-            {changed && item.codes_snapshot.length > 0 && (
-              <span className="text-[10px] text-p-text-faint" title="Códigos al momento del muestreo">
-                antes: {item.codes_snapshot.map((c) => c.label).join(", ")}
-              </span>
-            )}
-          </div>
         </td>
         <td className="px-4 py-2.5 text-xs text-p-text-muted max-w-[140px]">
           <span className="line-clamp-2">{item.comments[item.comments.length - 1]?.content ?? item.comment ?? "—"}</span>

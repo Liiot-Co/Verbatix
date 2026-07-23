@@ -1257,7 +1257,7 @@ export default function CreationWizard() {
       const projectId = project?.id ?? existingRound?.study_id;
       if (projectId) await runBatch(projectId);
     }
-    goToStep("review");
+    goToStep(withProfile ? "profile" : "review");
   };
 
   // Task 3: dispara el cruce explícito (duplicados + perfil) sobre la carga
@@ -2291,7 +2291,7 @@ export default function CreationWizard() {
                           className="btn-secondary text-sm py-2 w-full justify-center"
                           onClick={() => {
                             setShowProfileStep(false);
-                            void handleContinueToReview();
+                            void handleContinueToReview(false);
                           }}
                         >
                           {submitting ? "Importando..." : "Continuar sin perfil"}
@@ -2302,7 +2302,7 @@ export default function CreationWizard() {
                           className="btn-primary text-sm py-2 w-full justify-center"
                           onClick={() => {
                             setShowProfileStep(true);
-                            void handleContinueToReview();
+                            void handleContinueToReview(true);
                           }}
                         >
                           {submitting ? "Importando..." : "Continuar con perfil"}

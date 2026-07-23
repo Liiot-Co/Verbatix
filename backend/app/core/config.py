@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Risk bands for ordering suggestions in review. They do not authorize
     # auto-close: model self-confidence is not a calibrated probability.
     llm_confidence_threshold_brands: float = 0.6
-    llm_confidence_threshold_reasons: float = 0.6
+    llm_confidence_threshold_reasons: float = 0.85
     # Gate for creating a *pending* reusable-memory proposal. Human approval is
     # still required before lookup can consume it.
     llm_promotion_confidence_threshold: float = 0.9
@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # armar el codebook desde cero (pipeline/semantic/cluster.py). Más laxo que
     # semantic_cache (0.9) a propósito: acá se agrupan distintas FORMAS de decir
     # una misma idea para formar una categoría, no se busca un near-duplicado.
-    reason_cluster_similarity_threshold: float = 0.75
+    reason_cluster_similarity_threshold: float = 0.82
 
     # Rollout controls. Exact approved memory and closed system rules always
     # auto-close. The learned engines auto-close only when they pass the
@@ -85,7 +85,11 @@ class Settings(BaseSettings):
     # "Menciones confusas/Incorrectas", Razones al 97 "Otras menciones". Garantiza
     # cobertura ~100%; el analista reclasifica en Resolución lo que sea una marca
     # real rara. Los grupos con sugerencia real (suggested) NO se tocan.
-    residual_to_confuso: bool = True
+    # Razones queda en False por defecto: un código 97 genérico oculta que la
+    # categoría real todavía no existe en el libro, así que se prefiere dejar el
+    # grupo en pending_review para que un humano lo resuelva en vez de cerrarlo.
+    residual_brands_to_confuso: bool = True
+    residual_reasons_to_confuso: bool = False
     residual_brand_system_type: str = "anomaly"          # code 95
     residual_reason_system_type: str = "other_mentions"  # code 97
 

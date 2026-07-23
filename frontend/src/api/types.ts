@@ -624,6 +624,7 @@ export interface CodeSuggestion {
   id: string;
   code_number: number;
   label: string;
+  is_system: boolean;
 }
 
 export interface ResolutionQueueItem {
@@ -775,6 +776,8 @@ export interface AuditPopulationItem {
   current_codes: AuditItemCode[];
   /** Está incluido en la muestra de auditoría actual. */
   in_sample: boolean;
+  respondent_external_id: string | null;
+  real_id: string | null;
 }
 
 export interface AuditPopulationItemList {
@@ -802,6 +805,8 @@ export interface AuditItem {
   comment: string | null;
   comments: AuditComment[];
   reviewed_at: string | null;
+  respondent_external_id: string | null;
+  real_id: string | null;
 }
 
 export interface AuditComment {
@@ -863,6 +868,7 @@ export interface ReportCodeStat {
   code_number: number;
   label: string;
   net: string | null;
+  coding_type: CodingType;
   frequency: number;
   pct: number;
   samples: string[];

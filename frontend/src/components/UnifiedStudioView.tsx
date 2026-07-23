@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Keyboard, Search } from "lucide-react";
+import { ArrowLeft, Keyboard, Search, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getPreliminary, getResolutionSummary, getRound, getVerbatimsSummary, isProcessingRequired, processRound } from "@/api/client";
 import { isResolutionPhase } from "@/lib/studioStatus";
-import type { PreliminarySummary, ResolutionSummary, RoundStatus, VerbatimSummaryRow } from "@/api/types";
+import type { CodingType, PreliminarySummary, ResolutionSummary, RoundStatus, VerbatimSummaryRow } from "@/api/types";
 import Breadcrumb from "./Breadcrumb";
 import ResolutionSidebar from "./ResolutionSidebar";
 import ResolutionCenter from "./ResolutionCenter";
@@ -19,6 +19,53 @@ import { StudioSummaryCards } from "./studio/StudioSummaryCards";
 import { VerbatimsTable } from "./studio/VerbatimsTable";
 import PendingClassificationTable from "./studio/PendingClassificationTable";
 import CodebookDraftReview from "./CodebookDraftReview";
+
+/** Fullscreen shell for PendingClassificationTable as the "detailed" resolution view — opened from ResolutionSidebar's expand button, keeping the sidebar as the default surface. */
+function DetailedResolutionView({
+  subprojectId,
+  codingType,
+  onClose,
+  onResolved,
+  onFocusRow,
+}: {
+  subprojectId: string;
+  codingType: CodingType;
+  onClose: () => void;
+  onResolved: () => void;
+  onFocusRow: (groupId: string) => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-p-bg flex flex-col">
+      <div className="flex items-center justify-between gap-4 flex-wrap px-6 py-4 border-b border-p-border shrink-0">
+        <h1 className="font-heading text-2xl font-semibold text-p-text tracking-tight">Centro de Resolución Detallada</h1>
+        <button
+          onClick={onClose}
+          className="btn-ghost text-xs py-1.5 px-2"
+          title="Cerrar (Esc)"
+          aria-label="Cerrar"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 px-6 py-4">
+        <PendingClassificationTable
+          subprojectId={subprojectId}
+          codingType={codingType}
+          onResolved={onResolved}
+          onFocusRow={onFocusRow}
+        />
+      </div>
+    </div>
+  );
+}
 
 function playProcessingFinishedSound() {
   try {
@@ -76,13 +123,14 @@ export default function UnifiedStudioView() {
   const [activeSubprojectId, setActiveSubprojectId] = useState<string | null>(null);
   const [preliminary, setPreliminary] = useState<PreliminarySummary | null>(null);
   const [, setResolution] = useState<ResolutionSummary | null>(null);
-  const [summaryView, setSummaryView] = useState<"pending" | "coded">("pending");
+  const [summaryView, setSummaryView] = useState<"pending" | "coded">("coded");
   const [summaryRows, setSummaryRows] = useState<VerbatimSummaryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [search, setSearch] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fullscreenResolution, setFullscreenResolution] = useState(false);
+  const [showDetailedResolution, setShowDetailedResolution] = useState(false);
   const [focusGroupId, setFocusGroupId] = useState<string | null>(null);
   const [pollCount, setPollCount] = useState(0);
   const { width: sidebarWidth, startResizing } = useSidebarResize(460, 320, 800);
@@ -284,7 +332,7 @@ export default function UnifiedStudioView() {
       </div>
 
       <div
-        className={`grid grid-cols-1 gap-4 items-start ${canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution && summaryView !== "pending" ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
+        className={`grid grid-cols-1 gap-4 items-start ${canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution ? "xl:[grid-template-columns:1fr_var(--sidebar-w)]" : ""}`}
         style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
       >
       <div className="space-y-4 min-w-0 order-2 xl:order-none">
@@ -331,7 +379,7 @@ export default function UnifiedStudioView() {
           momentum={momentum}
           codedPct={codedPct}
           justFinished={justFinished}
-          onOpenResolution={() => setFullscreenResolution(true)}
+          onOpenResolution={() => setShowDetailedResolution(true)}
         />
       )}
 
@@ -352,17 +400,17 @@ export default function UnifiedStudioView() {
         <div className="inline-flex rounded-lg border border-p-border p-0.5 shrink-0">
           <button
             type="button"
-            onClick={() => setSummaryView("pending")}
-            className={`px-5 py-2 text-sm rounded-md transition-colors ${summaryView === "pending" ? "bg-p-accent-mid/15 text-p-accent-mid font-medium" : "text-p-text-muted hover:text-p-text"}`}
-          >
-            Pendientes
-          </button>
-          <button
-            type="button"
             onClick={() => setSummaryView("coded")}
             className={`px-5 py-2 text-sm rounded-md transition-colors ${summaryView === "coded" ? "bg-p-accent-mid/15 text-p-accent-mid font-medium" : "text-p-text-muted hover:text-p-text"}`}
           >
             Codificados
+          </button>
+          <button
+            type="button"
+            onClick={() => setSummaryView("pending")}
+            className={`px-5 py-2 text-sm rounded-md transition-colors ${summaryView === "pending" ? "bg-p-accent-mid/15 text-p-accent-mid font-medium" : "text-p-text-muted hover:text-p-text"}`}
+          >
+            Pendientes
           </button>
         </div>
         <motion.button
@@ -379,36 +427,25 @@ export default function UnifiedStudioView() {
         </motion.button>
       </div>
 
-      {summaryView === "pending" && canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution ? (
-        <div className="bg-p-surface border border-p-border rounded-xl shadow-sm overflow-hidden h-[calc(100vh-14rem)] mt-2">
-          <PendingClassificationTable
-            subprojectId={activeSubproject?.id ?? ""}
-            codingType={activeSubproject?.coding_type ?? "brands"}
-            onResolved={() => { loadData(); loadVerbatims(); }}
-            onFocusRow={(groupId) => { setFocusGroupId(groupId); setFullscreenResolution(true); }}
-          />
-        </div>
-      ) : (
-        <VerbatimsTable
-          loading={loading && !round}
-          rows={visible}
-          search={search}
-          processingOverlay={showOverlay ? {
-            visible: true,
-            status: round?.status,
-            codedPct,
-            autoCoded,
-            pendingReview,
-            anomalies,
-            resolved,
-            pollCount,
-          } : null}
-        />
-      )}
+      <VerbatimsTable
+        loading={loading && !round}
+        rows={visible}
+        search={search}
+        processingOverlay={showOverlay ? {
+          visible: true,
+          status: round?.status,
+          codedPct,
+          autoCoded,
+          pendingReview,
+          anomalies,
+          resolved,
+          pollCount,
+        } : null}
+      />
 
       </div>
 
-      {canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution && summaryView !== "pending" && (
+      {canViewResolution && preliminary && !isProcessingNow && !fullscreenResolution && (
         <motion.div
           initial={{ opacity: 0, x: 40, scale: 0.95 }}
           animate={{ opacity: 1, x: 0, scale: 1 }}
@@ -426,8 +463,9 @@ export default function UnifiedStudioView() {
             subprojectId={activeSubproject?.id ?? ""}
             codingType={activeSubproject?.coding_type ?? "brands"}
             auditRoundId={roundId}
+            roundFullyResolved={!hasPending}
             onResolved={() => { loadData(); loadVerbatims(); }}
-            onExpand={() => setFullscreenResolution(true)}
+            onExpand={() => setShowDetailedResolution(true)}
           />
         </motion.div>
       )}
@@ -438,9 +476,20 @@ export default function UnifiedStudioView() {
           subprojectId={activeSubproject.id}
           codingType={activeSubproject.coding_type}
           roundId={roundId}
+          roundFullyResolved={!hasPending}
           onClose={() => { setFullscreenResolution(false); setFocusGroupId(null); }}
           onResolved={() => { loadData(); loadVerbatims(); }}
           initialFocusGroupId={focusGroupId}
+        />
+      )}
+
+      {canViewResolution && showDetailedResolution && !isProcessingNow && activeSubproject && (
+        <DetailedResolutionView
+          subprojectId={activeSubproject.id}
+          codingType={activeSubproject.coding_type}
+          onClose={() => setShowDetailedResolution(false)}
+          onResolved={() => { loadData(); loadVerbatims(); }}
+          onFocusRow={(groupId) => { setFocusGroupId(groupId); setFullscreenResolution(true); }}
         />
       )}
 

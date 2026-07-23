@@ -1,23 +1,17 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, Cpu, Sparkles, Network, CheckCircle2, PartyPopper } from "lucide-react";
 
-type StageId = "uploaded" | "processing" | "coding_started" | "coding_progress" | "coding_almost" | "complete";
+type StageId = "uploaded" | "processing" | "complete";
 
 const STAGES = [
   { id: "uploaded", icon: Upload, label: "Preparando" },
-  { id: "processing", icon: Cpu, label: "Iniciando motor" },
-  { id: "coding_started", icon: Sparkles, label: "Estructurando" },
-  { id: "coding_progress", icon: Network, label: "Agrupando" },
-  { id: "coding_almost", icon: CheckCircle2, label: "Ajustando" },
+  { id: "processing", icon: Cpu, label: "Procesando" },
   { id: "complete", icon: PartyPopper, label: "Listo" },
 ] as const;
 
 function getStage(status: string | undefined, effectivePct: number): StageId {
   if (effectivePct === 100) return "complete";
-  if (effectivePct >= 75) return "coding_almost";
-  if (effectivePct >= 40) return "coding_progress";
-  if (effectivePct > 0) return "coding_started";
-  if (status === "processing") return "processing";
+  if (effectivePct > 0 || status === "processing") return "processing";
   if (status === "files_uploaded") return "uploaded";
   return "processing";
 }
@@ -100,7 +94,7 @@ export default function ProcessingOverlay({
                     animate={{ opacity: [1, 0.3, 1] }}
                     transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
                   />
-                  {pollCount > 0 ? `Analizando datos (actualización ${pollCount})...` : "Iniciando análisis..."}
+                  {pollCount > 0 ? "Analizando datos..." : "Iniciando análisis..."}
                 </p>
               )}
             </div>

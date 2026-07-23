@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
 import { Maximize2, Plus, Search, X, Trophy } from "lucide-react";
 import {
   bulkResolve,
   createRoundCode,
   getResolutionQueue,
+  getResolutionSummary,
   getRoundCodes,
   resolveMentionGroup,
 } from "@/api/client";
@@ -11,7 +13,7 @@ import type { CodingType, ResolutionQueueItem, RoundCode } from "@/api/types";
 import { registerShortcuts, useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useVerbatixStore } from "@/store/useVerbatixStore";
 import { STATUS_CHIP } from "@/lib/resolutionStatus";
-import { codingTypeLabel } from "@/lib/projectTree";
+import { codingTypeLabel, codingTypeNoun } from "@/lib/projectTree";
 
 const PAGE_SIZE = 100;
 
@@ -185,6 +187,7 @@ export default function PendingClassificationTable({
   const [total, setTotal] = useState(0);
   const [codes, setCodes] = useState<RoundCode[]>([]);
   const [systemCodes, setSystemCodes] = useState<RoundCode[]>([]);
+  const [minMentions, setMinMentions] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -224,6 +227,9 @@ export default function PendingClassificationTable({
         setSystemCodes(
           all.filter((c) => c.is_system).sort((a, b) => a.code_number - b.code_number),
         );
+      }),
+      getResolutionSummary(subprojectId).then((summary) => {
+        setMinMentions(summary.min_mentions_threshold ?? null);
       }),
     ]).finally(() => setLoading(false));
   }, [subprojectId, loadQueue]);
@@ -325,6 +331,22 @@ export default function PendingClassificationTable({
     [subprojectId, selected, codingType, refresh, showToast],
   );
 
+  // Informative, non-blocking heads-up when the group(s) behind a brand-new
+  // code don't reach the round's min_mentions_threshold — never blocks creation.
+  const warnIfBelowThreshold = useCallback(
+    (label: string, frequencies: number[]) => {
+      if (minMentions == null || frequencies.length === 0) return;
+      const lowest = Math.min(...frequencies);
+      if (lowest >= minMentions) return;
+      const noun = codingTypeNoun(codingType);
+      showToast(
+        `“${label}” queda con ${lowest} ${lowest === 1 ? "mención" : "menciones"}, por debajo del mínimo de ${minMentions} para ${noun}s.`,
+        "info",
+      );
+    },
+    [minMentions, codingType, showToast],
+  );
+
   // Mints a code that doesn't exist yet (rare/one-off mention that doesn't
   // fit any existing code) and assigns it right away — no separate "create
   // codebook entry" trip needed.
@@ -334,13 +356,15 @@ export default function PendingClassificationTable({
       try {
         const created = await createRoundCode(subprojectId, { label });
         setCodes((prev) => [...prev, created]);
+        const group = queue.find((g) => g.id === groupId);
+        warnIfBelowThreshold(label, group ? [group.frequency_count] : []);
         await assignRow(groupId, created.id);
       } catch {
         showToast("No se pudo crear el código.", "error");
         setBusy(false);
       }
     },
-    [subprojectId, assignRow, showToast],
+    [subprojectId, assignRow, showToast, queue, warnIfBelowThreshold],
   );
 
   const createAndAssignSelection = useCallback(
@@ -349,13 +373,15 @@ export default function PendingClassificationTable({
       try {
         const created = await createRoundCode(subprojectId, { label });
         setCodes((prev) => [...prev, created]);
+        const frequencies = queue.filter((g) => selected.has(g.id)).map((g) => g.frequency_count);
+        warnIfBelowThreshold(label, frequencies);
         await assignSelection(created.id);
       } catch {
         showToast("No se pudo crear el código.", "error");
         setBusy(false);
       }
     },
-    [subprojectId, assignSelection, showToast],
+    [subprojectId, assignSelection, showToast, queue, selected, warnIfBelowThreshold],
   );
 
   const openAssignPopup = useCallback(() => {

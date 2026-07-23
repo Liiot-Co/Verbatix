@@ -1876,11 +1876,11 @@ def get_resolution_queue(
         text(f"""
             select g.id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
                    c.id as suggested_code_id, c.code_number as suggested_code_number,
-                   c.label as suggested_code_label
+                   c.label as suggested_code_label, coalesce(c.is_system, false) as suggested_code_is_system
             from mention_groups g
             left join codes c on c.id = g.suggested_code_id
             where {query_cond}
-            order by g.frequency_count desc, g.normalized_text
+            order by coalesce(c.is_system, false) asc, g.frequency_count desc, g.normalized_text
             limit :lim offset :off
         """),
         params,
@@ -1906,6 +1906,7 @@ def get_resolution_queue(
                     "id": str(r["suggested_code_id"]),
                     "code_number": r["suggested_code_number"],
                     "label": r["suggested_code_label"],
+                    "is_system": r["suggested_code_is_system"],
                 }
                 if r["suggested_code_id"]
                 else None
@@ -2027,7 +2028,7 @@ def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) ->
         text("""
             select g.id, g.subproject_id, g.normalized_text, g.sample_text, g.frequency_count, g.status,
                    c.id as suggested_code_id, c.code_number as suggested_code_number,
-                   c.label as suggested_code_label
+                   c.label as suggested_code_label, coalesce(c.is_system, false) as suggested_code_is_system
             from mention_groups g
             left join codes c on c.id = g.suggested_code_id
             where g.id = :id
@@ -2066,6 +2067,7 @@ def get_group_detail(db: Session, group_id: uuid.UUID, sample_limit: int = 5) ->
                 "id": str(group["suggested_code_id"]),
                 "code_number": group["suggested_code_number"],
                 "label": group["suggested_code_label"],
+                "is_system": group["suggested_code_is_system"],
             }
             if group["suggested_code_id"]
             else None
@@ -2645,6 +2647,7 @@ def list_audit_population_items(
     rows = db.execute(
         text("""
             select v.id as verbatim_id, v.original_text, v.normalized_text, v.coding_status,
+                   resp.respondent_external_id, resp.realid,
                    coalesce(
                      jsonb_agg(
                        jsonb_build_object(
@@ -2676,8 +2679,9 @@ def list_audit_population_items(
              and primary_vc.code_id = :code
             left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             left join codes c on c.id = vc.code_id
+            left join respondents resp on resp.id = v.respondent_id
             where v.subproject_id = :sp
-            group by v.id
+            group by v.id, resp.respondent_external_id, resp.realid
             order by v.created_at, v.id
             limit :lim offset :off
         """),
@@ -2707,6 +2711,8 @@ def list_audit_population_items(
             "coding_status": r["coding_status"],
             "current_codes": r["current_codes"],
             "in_sample": bool(r["in_sample"]),
+            "respondent_external_id": r["respondent_external_id"],
+            "real_id": r["realid"],
         }
         for r in rows
     ]
@@ -2718,6 +2724,7 @@ def list_audit_items(db: Session, review_id: uuid.UUID, limit: int, offset: int)
         text("""
             select i.id, i.status, i.comment, i.codes_snapshot, i.reviewed_at,
                    v.id as verbatim_id, v.original_text, v.normalized_text, v.coding_status,
+                   resp.respondent_external_id, resp.realid,
                    coalesce(
                      jsonb_agg(
                        jsonb_build_object(
@@ -2741,8 +2748,9 @@ def list_audit_items(db: Session, review_id: uuid.UUID, limit: int, offset: int)
             join verbatims v on v.id = i.verbatim_id
             left join verbatim_codes vc on vc.verbatim_id = v.id and vc.is_active
             left join codes c on c.id = vc.code_id
+            left join respondents resp on resp.id = v.respondent_id
             where i.audit_code_review_id = :review
-            group by i.id, v.id
+            group by i.id, v.id, resp.respondent_external_id, resp.realid
             order by v.created_at, v.id
             limit :lim offset :off
         """),
@@ -2767,6 +2775,8 @@ def list_audit_items(db: Session, review_id: uuid.UUID, limit: int, offset: int)
             "comment": r["comment"],
             "comments": r["comments"],
             "reviewed_at": r["reviewed_at"].isoformat() if r["reviewed_at"] else None,
+            "respondent_external_id": r["respondent_external_id"],
+            "real_id": r["realid"],
         }
         for r in rows
     ]
@@ -3094,9 +3104,10 @@ def log_action(
 # =====================================================================
 
 def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
-    """Métricas del reporte: totales, % auto/manual (coding_status) y frecuencia por código.
-    Suma a través de los subproyectos de la ronda (Marcas + Razones), no de un único
-    coding_type — la ronda ya no tiene uno solo (sección 2.5/2.6 del documento v8)."""
+    """Métricas del reporte: totales, % auto/manual (coding_status) globales de la ronda,
+    y frecuencia por código etiquetada con su coding_type (Marcas / Razones) para que el
+    frontend arme una sección por cada uno. El pct de cada código es relativo al total de
+    verbatims de SU coding_type, no al total de la ronda."""
     total = db.execute(
         text("""
             select count(*) from verbatims v
@@ -3129,9 +3140,20 @@ def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
         {"round": round_id},
     ).scalar()
 
+    totals_by_type = dict(db.execute(
+        text("""
+            select sp.coding_type, count(*) as n
+            from verbatims v
+            join subprojects sp on sp.id = v.subproject_id
+            where sp.round_id = :round
+            group by sp.coding_type
+        """),
+        {"round": round_id},
+    ).all())
+
     code_rows = db.execute(
         text("""
-            select c.id, c.code_number, c.label, n.name as net,
+            select c.id, c.code_number, c.label, n.name as net, sp.coding_type,
                    count(distinct v.id) as frequency
             from codes c
             join codebooks cb on cb.id = c.codebook_id
@@ -3141,7 +3163,7 @@ def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
             left join verbatim_codes vc on vc.code_id = c.id and vc.is_active
             left join verbatims v on v.id = vc.verbatim_id
             where sp.round_id = :round and c.is_active and not c.is_system
-            group by c.id, c.code_number, c.label, n.name
+            group by c.id, c.code_number, c.label, n.name, sp.coding_type
             order by frequency desc, c.code_number
         """),
         {"round": round_id},
@@ -3161,13 +3183,15 @@ def get_round_report(db: Session, round_id: uuid.UUID) -> dict:
             {"code_id": row["id"]},
         ).scalars().all()
         freq = row["frequency"]
+        type_total = totals_by_type.get(row["coding_type"], 0)
         codes.append({
             "id": str(row["id"]),
             "code_number": row["code_number"],
             "label": row["label"],
             "net": row["net"],
+            "coding_type": row["coding_type"],
             "frequency": freq,
-            "pct": round(freq / total, 4) if total else 0.0,
+            "pct": round(freq / type_total, 4) if type_total else 0.0,
             "samples": list(samples),
         })
 

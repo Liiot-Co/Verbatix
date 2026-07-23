@@ -721,21 +721,30 @@ create table if not exists code_stats (
 -- =====================================================================
 -- 15. TRIGGERS
 -- =====================================================================
+drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function handle_new_user();
 
+drop trigger if exists t_projects on projects;
 create trigger t_projects before update on projects   for each row execute function touch_updated_at();
+drop trigger if exists t_studies on studies;
 create trigger t_studies  before update on studies    for each row execute function touch_updated_at();
+drop trigger if exists t_rounds on rounds;
 create trigger t_rounds   before update on rounds     for each row execute function touch_updated_at();
+drop trigger if exists t_subprojects on subprojects;
 create trigger t_subprojects before update on subprojects for each row execute function touch_updated_at();
+drop trigger if exists t_users on users;
 create trigger t_users    before update on users      for each row execute function touch_updated_at();
+drop trigger if exists t_audit_comments on audit_comments;
 create trigger t_audit_comments before update on audit_comments for each row execute function touch_updated_at();
 
+drop trigger if exists codes_code_number_immutable on codes;
 create trigger codes_code_number_immutable
   before update of code_number on codes
   for each row execute function prevent_code_number_reassignment();
 
+drop trigger if exists imported_files_ready_snapshot_immutable on imported_files;
 create trigger imported_files_ready_snapshot_immutable
   before update of dataset_snapshot on imported_files
   for each row execute function prevent_ready_dataset_snapshot_update();

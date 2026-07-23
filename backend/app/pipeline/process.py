@@ -811,7 +811,8 @@ def _apply_residual_confuso_bucket(
     marca real poco frecuente. Los grupos `suggested` NO se tocan: conservan la
     sugerencia real para que el humano la confirme, en vez de perderla en el 95.
     """
-    if not settings.residual_to_confuso:
+    flag = settings.residual_brands_to_confuso if coding_type == "brands" else settings.residual_reasons_to_confuso
+    if not flag:
         return 0
     system_type = (
         settings.residual_brand_system_type

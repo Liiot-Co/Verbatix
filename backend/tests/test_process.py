@@ -221,7 +221,7 @@ def test_residual_confuso_bucket_closes_unresolved_to_system_code():
             return FakeResult(scalars_list=[g1, g2])
         return FakeResult()
 
-    with patch.object(settings, "residual_to_confuso", True):
+    with patch.object(settings, "residual_brands_to_confuso", True):
         n = _apply_residual_confuso_bucket(FakeSession(execute=fake_execute), uuid.uuid4(), "brands")
 
     assert n == 2
@@ -235,8 +235,16 @@ def test_residual_confuso_bucket_closes_unresolved_to_system_code():
 def test_residual_confuso_bucket_respects_flag_off():
     from app.pipeline.process import _apply_residual_confuso_bucket
 
-    with patch.object(settings, "residual_to_confuso", False):
+    with patch.object(settings, "residual_brands_to_confuso", False):
         n = _apply_residual_confuso_bucket(FakeSession(), uuid.uuid4(), "brands")
+    assert n == 0
+
+
+def test_residual_confuso_bucket_defaults_reasons_to_manual_review():
+    """Razones no tiene el bucket 97 activado por defecto: queda pending_review."""
+    from app.pipeline.process import _apply_residual_confuso_bucket
+
+    n = _apply_residual_confuso_bucket(FakeSession(), uuid.uuid4(), "reasons")
     assert n == 0
 
 

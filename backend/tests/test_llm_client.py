@@ -23,6 +23,121 @@ def test_reasons_prompt_keeps_permissive_97_rule():
     assert "Usa 97 (otras menciones) solo cuando" in prompt
 
 
+def test_reasons_prompt_instructs_net_level_match_before_97():
+    """El caso reportado: 'omega', 'dha', 'fortificada' deben ir al código del net
+    Vitaminas (aunque el ejemplo literal no aparezca en el codebook), no a 97."""
+    prompt = _build_prompt(
+        codebook=[{"code_number": 19, "label": "Que sea nutritiva", "net": "Vitaminas"}],
+        verbatims=[], coding_type="reasons",
+    )
+    assert "TEMA (net) de algún código" in prompt
+    assert "no exijas que el término sea idéntico a un ejemplo ya visto" in prompt
+
+
+@pytest.mark.parametrize("mention", ["omega", "dha", "fortificada", "minerales", "suplementos"])
+def test_classify_batch_routes_vitamin_mentions_to_net_code_not_97(mention):
+    """Antes de la regla, 'omega'/'dha'/etc. caían a 97 (otras menciones) por no
+    coincidir literalmente con ningún ejemplo del código de nutrientes/vitaminas."""
+    response = FakeResponse({
+        "prompt_version": PROMPT_VERSIONS["reasons"],
+        "results": [{
+            "group_id": "g1", "decision": "assign", "code_numbers": [19],
+            "ordered_ideas": [mention], "evidence": mention,
+            "ambiguity_reason": None, "confidence": 0.85,
+        }],
+    })
+    codebook = [{"code_number": 19, "label": "Que sea nutritiva", "net": "Vitaminas"}]
+    with patch("app.pipeline.llm.client.requests.post", return_value=response):
+        result = classify_batch(codebook, [{"id": "g1", "text": mention}], "reasons")
+    assert result[0]["code_numbers"] == [19]
+
+
+def test_reasons_prompt_instructs_specific_label_when_net_has_multiple_codes():
+    """Edge case: dos códigos comparten net 'Nutrientes' (Vitaminas vs Proteína).
+    El modelo no debe usar el net como excusa para asignar cualquiera al azar."""
+    prompt = _build_prompt(
+        codebook=[
+            {"code_number": 19, "label": "Vitaminas", "net": "Nutrientes"},
+            {"code_number": 20, "label": "Proteína", "net": "Nutrientes"},
+        ],
+        verbatims=[], coding_type="reasons",
+    )
+    assert "elige el label más específico" in prompt
+
+
+def test_reasons_prompt_forbids_forcing_opposite_valence_into_same_theme_code():
+    """Edge case: 'mal sabor' no debe forzarse en un código de net 'Sabor'/'Buen sabor'
+    solo porque comparten tema — la valencia es opuesta."""
+    prompt = _build_prompt(
+        codebook=[{"code_number": 12, "label": "Buen sabor", "net": "Sabor"}],
+        verbatims=[], coding_type="reasons",
+    )
+    assert "sentido opuesto" in prompt
+    assert "no lo fuerces ahí solo porque el tema coincide" in prompt
+
+
+@pytest.mark.parametrize(
+    "mention,expected_code",
+    [("omega", 19), ("proteina", 20)],
+)
+def test_classify_batch_picks_specific_code_among_shared_net(mention, expected_code):
+    """Dos códigos comparten el net 'Nutrientes': el modelo debe distinguir cuál
+    label específico aplica en vez de tratarlos como intercambiables."""
+    response = FakeResponse({
+        "prompt_version": PROMPT_VERSIONS["reasons"],
+        "results": [{
+            "group_id": "g1", "decision": "assign", "code_numbers": [expected_code],
+            "ordered_ideas": [mention], "evidence": mention,
+            "ambiguity_reason": None, "confidence": 0.8,
+        }],
+    })
+    codebook = [
+        {"code_number": 19, "label": "Vitaminas", "net": "Nutrientes"},
+        {"code_number": 20, "label": "Proteína", "net": "Nutrientes"},
+    ]
+    with patch("app.pipeline.llm.client.requests.post", return_value=response):
+        result = classify_batch(codebook, [{"id": "g1", "text": mention}], "reasons")
+    assert result[0]["code_numbers"] == [expected_code]
+
+
+def test_classify_batch_abstains_on_opposite_valence_instead_of_forcing_positive_code():
+    """'mal sabor' contra un codebook que solo tiene 'Buen sabor' debe quedar
+    pendiente ([]), no forzado dentro del código de valencia contraria."""
+    response = FakeResponse({
+        "prompt_version": PROMPT_VERSIONS["reasons"],
+        "results": [{
+            "group_id": "g1", "decision": "abstain", "code_numbers": [],
+            "ordered_ideas": [], "evidence": "mal sabor",
+            "ambiguity_reason": "sentido opuesto al único código de sabor disponible",
+            "confidence": 0.3,
+        }],
+    })
+    codebook = [{"code_number": 12, "label": "Buen sabor", "net": "Sabor"}]
+    with patch("app.pipeline.llm.client.requests.post", return_value=response):
+        result = classify_batch(codebook, [{"id": "g1", "text": "mal sabor"}], "reasons")
+    assert result[0]["code_numbers"] == []
+
+
+def test_classify_batch_still_allows_97_for_non_thematic_vague_mention():
+    """'bueno'/'lactosa' sin tema propio en el codebook siguen cayendo a 97: la
+    regla nueva solo evita 97 cuando SÍ comparte tema con un net existente."""
+    response = FakeResponse({
+        "prompt_version": PROMPT_VERSIONS["reasons"],
+        "results": [{
+            "group_id": "g1", "decision": "assign", "code_numbers": [97],
+            "ordered_ideas": ["bueno"], "evidence": "bueno",
+            "ambiguity_reason": None, "confidence": 0.6,
+        }],
+    })
+    codebook = [
+        {"code_number": 19, "label": "Que sea nutritiva", "net": "Vitaminas"},
+        {"code_number": 97, "label": "Otras menciones", "net": None},
+    ]
+    with patch("app.pipeline.llm.client.requests.post", return_value=response):
+        result = classify_batch(codebook, [{"id": "g1", "text": "bueno"}], "reasons")
+    assert result[0]["code_numbers"] == [97]
+
+
 class FakeResponse:
     def __init__(self, payload):
         self.payload = payload
